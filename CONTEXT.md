@@ -7,3 +7,5 @@
 近期决定：2026-07-15 按用户要求将正式 Slurm 任务默认 CPU 从 8 调整为 12；12 CPU 尚未做同口径基准，不作性能更优声明。当前 `9000` 步与 `00:30:00` 时限对 BTC 明显不相容，在用户确认正式预算前不得直接提交。快捷方式保持“项目虚拟环境可执行文件 + 固定工作目录”结构；关闭 Web 服务窗口不取消 Slurm 作业。登录节点只作 SSH 跳板，训练节点由 Slurm 调度。
 
 Git 管理：2026-07-15 已建立私有仓库 `https://github.com/Jinqingchang/AlphaMaster`，本机 `main` 默认推送到该仓库；原作者仓库保留为 `upstream`。`.env`、Parquet、检查点、训练产物和本机运行状态继续由 `.gitignore` 排除。
+
+AI 配置：2026-07-15 已在本机忽略文件 `web_settings.json` 中配置 DeepSeek 用户密钥，通道固定为官方 `deepseek-v4-flash` / `https://api.deepseek.com`；已通过 AlphaMaster 自身流式调用完成真实响应验证。密钥不写入项目文档、Git 索引或远端仓库。
