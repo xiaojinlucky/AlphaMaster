@@ -1,0 +1,8 @@
+# Linux Slurm Worker：只保留离线 Parquet CPU 训练所需依赖，不安装 MT5/Web。
+torch>=2.0,<3
+numpy>=1.24,<3
+pandas>=2.0,<4
+pyarrow>=14
+python-dotenv>=1.0
+loguru>=0.7
+tqdm>=4.66

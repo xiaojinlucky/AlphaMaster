@@ -2,14 +2,14 @@
 from __future__ import annotations
 
 import json
+import secrets
 import sys
 import time
-import traceback
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -45,7 +45,7 @@ from web.strategy_file import (
 )
 from web.training_manager import training_manager
 from web.training_time import get_training_time_summary
-from web.training_package import build_training_export_zip, import_training_package
+from web.training_package import build_training_export_zip
 from web.backtest_manager import backtest_manager
 from web.realtime_manager import realtime_manager
 from web.data_sources.factory import list_sources
@@ -58,12 +58,105 @@ setup_logging()
 logger = get_logger()
 
 app = FastAPI(title="AlphaMaster Training", version="1.1.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost"})
+_TOKEN_EXEMPT_API_PATHS = frozenset({"/api/health", "/api/session"})
+_CONTROL_TOKEN = secrets.token_urlsafe(32)
+_SENSITIVE_SETTING_KEYS = frozenset(
+    {
+        "ai_api_key",
+        "feishu_webhook_url",
+        "feishu_secret",
+        "slurm_ssh_key",
+        "ssh_key",
+        "ssh_path",
+    }
 )
+
+
+def _effective_port(scheme: str, port: int | None) -> int | None:
+    if port is not None:
+        return port
+    return 443 if scheme == "https" else 80 if scheme == "http" else None
+
+
+def _parse_host_header(raw_host: str, scheme: str) -> tuple[str, int | None]:
+    try:
+        parsed = urlsplit(f"//{raw_host}")
+        port = _effective_port(scheme, parsed.port)
+    except ValueError as exc:
+        raise HTTPException(403, "非法 Host") from exc
+    hostname = (parsed.hostname or "").lower()
+    if (
+        hostname not in _LOOPBACK_HOSTS
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise HTTPException(403, "仅允许本机回环地址访问")
+    return hostname, port
+
+
+def _validate_origin(origin: str, *, request_scheme: str, host_port: int) -> None:
+    try:
+        parsed = urlsplit(origin)
+        origin_port = _effective_port(parsed.scheme.lower(), parsed.port)
+    except ValueError as exc:
+        raise HTTPException(403, "非法 Origin") from exc
+    if (
+        parsed.scheme.lower() != request_scheme.lower()
+        or (parsed.hostname or "").lower() not in _LOOPBACK_HOSTS
+        or origin_port != host_port
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise HTTPException(403, "仅允许同端口回环来源访问")
+
+
+def _public_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    def is_sensitive(key: str) -> bool:
+        normalized = key.lower()
+        return normalized in _SENSITIVE_SETTING_KEYS or (
+            "ssh" in normalized
+            and any(marker in normalized for marker in ("path", "key", "config", "known_hosts"))
+        )
+
+    public = {k: v for k, v in settings.items() if not is_sensitive(k)}
+    public["has_ai_api_key"] = bool(settings.get("ai_api_key"))
+    public["feishu_webhook_configured"] = bool(settings.get("feishu_webhook_url"))
+    public["feishu_secret_configured"] = bool(settings.get("feishu_secret"))
+    return public
+
+
+@app.middleware("http")
+async def enforce_local_control_boundary(request: Request, call_next):
+    try:
+        _, host_port = _parse_host_header(
+            request.headers.get("host", ""), request.url.scheme
+        )
+        origin = request.headers.get("origin")
+        if origin:
+            _validate_origin(
+                origin,
+                request_scheme=request.url.scheme,
+                host_port=host_port,
+            )
+        if (
+            request.url.path.startswith("/api/")
+            and request.url.path not in _TOKEN_EXEMPT_API_PATHS
+        ):
+            supplied = request.headers.get("x-alphamaster-control", "")
+            if not supplied or not secrets.compare_digest(supplied, _CONTROL_TOKEN):
+                raise HTTPException(403, "缺少或无效的本机控制令牌")
+    except HTTPException as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    return await call_next(request)
 
 
 class StartTrainingRequest(BaseModel):
@@ -116,11 +209,6 @@ class FeishuSettingsRequest(BaseModel):
     secret: str | None = None
 
 
-class FeishuTestRequest(BaseModel):
-    webhook_url: str | None = None
-    secret: str | None = None
-
-
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     started = time.perf_counter()
@@ -157,7 +245,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     log_error(f"{request.method} {request.url.path} crashed", exc)
     return JSONResponse(
         status_code=500,
-        content={"detail": str(exc), "traceback": traceback.format_exc()},
+        content={"detail": "服务器内部错误"},
     )
 
 
@@ -168,6 +256,17 @@ def _inspect_or_http(path: str) -> dict[str, Any]:
         raise HTTPException(404, str(e)) from e
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+
+
+def _job_to_dict(job: Any) -> dict[str, Any]:
+    if isinstance(job, dict):
+        return dict(job)
+    converter = getattr(job, "to_dict", None)
+    if callable(converter):
+        payload = converter()
+        if isinstance(payload, dict):
+            return payload
+    raise RuntimeError("训练管理器返回了非法任务结构")
 
 
 def _browse_data_file() -> dict[str, Any]:
@@ -303,6 +402,14 @@ def health() -> dict[str, str]:
     return {"status": "ok", "version": "1.1.0"}
 
 
+@app.get("/api/session")
+def api_session() -> JSONResponse:
+    return JSONResponse(
+        content={"control_token": _CONTROL_TOKEN},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.get("/api/routes")
 def api_routes() -> dict[str, Any]:
     routes = []
@@ -316,7 +423,9 @@ def api_routes() -> dict[str, Any]:
 
 @app.get("/api/debug/logs")
 def api_debug_logs(lines: int = 200) -> dict[str, Any]:
-    return debug_snapshot(lines)
+    if not is_debug_mode():
+        raise HTTPException(403, "调试模式未开启")
+    return debug_snapshot(max(1, min(int(lines), 500)))
 
 
 @app.post("/api/debug/client-log")
@@ -333,7 +442,7 @@ def api_client_log(req: ClientLogRequest) -> dict[str, bool]:
 
 @app.get("/api/settings")
 def api_get_settings() -> dict[str, Any]:
-    return load_settings()
+    return _public_settings(load_settings())
 
 
 @app.put("/api/settings")
@@ -356,7 +465,7 @@ def api_put_settings(req: SettingsRequest) -> dict[str, Any]:
     saved = save_settings(payload)
     if req.debug_mode is not None:
         set_debug_mode(req.debug_mode)
-    return {"ok": True, **saved}
+    return {"ok": True, **_public_settings(saved)}
 
 
 @app.get("/api/config")
@@ -373,7 +482,6 @@ def api_config() -> dict[str, Any]:
                 "valid": False,
                 "message": str(e),
             }
-    snap = debug_snapshot(1)
     strat_ctx = _strategy_context()
     return {
         "train_steps": ModelConfig.TRAIN_STEPS,
@@ -387,11 +495,9 @@ def api_config() -> dict[str, Any]:
         "strategy_file": strat_ctx["strategy_file"],
         "debug_mode": load_settings().get("debug_mode", False),
         "ai_provider": load_settings().get("ai_provider", "deepseek"),
-        "ai_api_key": load_settings().get("ai_api_key", ""),
+        "has_ai_api_key": bool(load_settings().get("ai_api_key")),
         "bt_commission_pct": settings.get("bt_commission_pct", 0.02),
         "bt_slippage_pct": settings.get("bt_slippage_pct", 0.01),
-        "server_log": snap["server_log"],
-        "error_log": snap["error_log"],
     }
 
 
@@ -475,14 +581,27 @@ def api_sync_best_strategy(symbol: str | None = None) -> dict[str, Any]:
     return {"ok": True, **info}
 
 
-def _progress_with_live_step(symbol: str, active: bool) -> dict[str, Any]:
+def _progress_with_live_step(
+    symbol: str,
+    active: bool,
+    job: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     p = get_symbol_progress(symbol)
     current_step = p.current_step
+    train_steps = p.train_steps
     if active:
         live = training_manager.parse_step_from_log()
-        if live is not None:
-            current_step = max(current_step, live)
-    train_steps = p.train_steps
+        current_step = live if live is not None else 0
+        live_parameters = (job or {}).get("training_parameters") or {}
+        live_train_steps = live_parameters.get("train_steps")
+        if (
+            isinstance(live_train_steps, int)
+            and not isinstance(live_train_steps, bool)
+            and live_train_steps > 0
+        ):
+            train_steps = live_train_steps
+        else:
+            train_steps = ModelConfig.TRAIN_STEPS
     progress_pct = min(100.0, 100.0 * current_step / train_steps) if train_steps > 0 else 0.0
     val_score = None
     hist = p.history or {}
@@ -538,7 +657,7 @@ def api_overview() -> dict[str, Any]:
         try:
             file_info = inspect_parquet_file(data_file)
             sym = file_info.get("symbol")
-            row = _progress_with_live_step(sym, active=False)
+            row = _progress_with_live_step(sym, active=False, job=job)
             progress = {
                 "symbol": row["symbol"],
                 "status": row["status"],
@@ -559,7 +678,7 @@ def api_overview() -> dict[str, Any]:
 
     if job and job.get("symbol") and active:
         sym = job["symbol"]
-        row = _progress_with_live_step(sym, active=True)
+        row = _progress_with_live_step(sym, active=True, job=job)
         progress = {
             "symbol": row["symbol"],
             "status": "running_job",
@@ -651,25 +770,8 @@ def api_export_training(symbol: str):
 
 
 @app.post("/api/training/import")
-async def api_import_training(
-    file: UploadFile = File(...),
-    symbol: str | None = Query(None, description="当前选择的品种，用于校验导入包是否一致"),
-) -> dict[str, Any]:
-    if training_manager.status().get("active"):
-        raise HTTPException(409, "训练进行中，请先停止再导入")
-
-    raw = await file.read()
-    if not raw:
-        raise HTTPException(400, "上传文件为空")
-
-    try:
-        return import_training_package(
-            raw,
-            file.filename or "upload.zip",
-            expected_symbol=symbol or None,
-        )
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+async def api_import_training() -> dict[str, Any]:
+    raise HTTPException(403, "第一阶段已禁用外部 ZIP/PT 训练包导入")
 
 
 @app.get("/api/training/status")
@@ -697,7 +799,7 @@ def api_training_start(req: StartTrainingRequest) -> dict[str, Any]:
         invalidate_checkpoint_cache()
     return {
         "ok": True,
-        "job": job.to_dict(),
+        "job": _job_to_dict(job),
         "data_file": info,
         "from_scratch": bool(req.from_scratch),
     }
@@ -1055,8 +1157,8 @@ def api_realtime_feishu_get() -> dict[str, Any]:
     s = load_settings()
     return {
         "enabled": bool(s.get("feishu_enabled")),
-        "webhook_url": s.get("feishu_webhook_url") or "",
-        "secret": s.get("feishu_secret") or "",
+        "webhook_configured": bool(s.get("feishu_webhook_url")),
+        "secret_configured": bool(s.get("feishu_secret")),
     }
 
 
@@ -1073,31 +1175,14 @@ def api_realtime_feishu_put(req: FeishuSettingsRequest) -> dict[str, Any]:
     return {
         "ok": True,
         "enabled": bool(saved.get("feishu_enabled")),
-        "webhook_url": saved.get("feishu_webhook_url") or "",
-        "secret": saved.get("feishu_secret") or "",
+        "webhook_configured": bool(saved.get("feishu_webhook_url")),
+        "secret_configured": bool(saved.get("feishu_secret")),
     }
 
 
 @app.post("/api/realtime/feishu/test")
-def api_realtime_feishu_test(req: FeishuTestRequest) -> dict[str, Any]:
-    from web.feishu_notify import send_text
-
-    url = (req.webhook_url or "").strip()
-    if not url:
-        url = (load_settings().get("feishu_webhook_url") or "").strip()
-    if not url:
-        raise HTTPException(400, "请先填写 Webhook URL")
-    secret = req.secret
-    if secret is None:
-        secret = load_settings().get("feishu_secret") or ""
-    ok, msg = send_text(
-        "✅ AlphaMaster 飞书通知测试：配置正常。信号方向转折时会推送提醒。",
-        webhook_url=url,
-        secret=secret or "",
-    )
-    if not ok:
-        raise HTTPException(400, msg)
-    return {"ok": True, "message": msg}
+def api_realtime_feishu_test() -> dict[str, Any]:
+    raise HTTPException(403, "第一阶段已禁用飞书测试请求")
 
 
 @app.get("/")

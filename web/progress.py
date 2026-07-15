@@ -1,10 +1,13 @@
 """Read training progress from checkpoints and strategy files."""
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any
 
 import torch
@@ -15,13 +18,105 @@ from model_core.vocab import FORMULA_VOCAB
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints"
 STRATEGIES_DIR = PROJECT_ROOT / "strategies"
+PUBLISHED_BUNDLE_FORMAT = "alphamaster_published_bundle_v1"
 
 
 def _safe_symbol_tag(symbol: str) -> str:
     return symbol.replace(".", "_")
 
 
+def _uses_slurm_backend() -> bool:
+    return os.environ.get("TRAINING_BACKEND", "").strip().lower() == "slurm"
+
+
+def published_pointer_path(symbol: str) -> Path:
+    return PROJECT_ROOT / "published_training" / f"current_{_safe_symbol_tag(symbol)}.json"
+
+
+def _published_artifact_path(artifact_root: Path, relative: str) -> Path:
+    posix = PurePosixPath(relative)
+    if posix.is_absolute() or not posix.parts or any(part in {"", ".", ".."} for part in posix.parts):
+        raise ValueError("发布指针含非法产物路径")
+    resolved = artifact_root.joinpath(*posix.parts).resolve()
+    if not resolved.is_relative_to(artifact_root):
+        raise ValueError("发布指针产物越出运行目录")
+    return resolved
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def get_published_bundle(symbol: str) -> dict[str, Any] | None:
+    """读取 Slurm 原子发布指针；任何字段不完整时都拒绝该整套产物。"""
+    if not _uses_slurm_backend():
+        return None
+    pointer = published_pointer_path(symbol)
+    try:
+        payload = json.loads(pointer.read_text(encoding="utf-8"))
+        if (
+            not isinstance(payload, dict)
+            or payload.get("format") != PUBLISHED_BUNDLE_FORMAT
+            or payload.get("symbol") != symbol
+            or not re.fullmatch(r"run_[A-Za-z0-9_-]+", str(payload.get("run_id") or ""))
+        ):
+            return None
+        artifact_root = Path(str(payload["artifact_root"])).resolve()
+        checkpoint_rel = payload.get("checkpoint_files")
+        strategy_rel = payload.get("strategy_file")
+        history_rel = payload.get("history_file")
+        hashes = payload.get("artifact_sha256")
+        if (
+            not isinstance(checkpoint_rel, list)
+            or not checkpoint_rel
+            or not all(isinstance(item, str) for item in checkpoint_rel)
+            or not isinstance(strategy_rel, str)
+            or not isinstance(history_rel, str)
+            or not isinstance(hashes, dict)
+            or any(
+                not re.fullmatch(
+                    rf"checkpoints/ckpt_{re.escape(symbol)}_step_\d+\.pt",
+                    item,
+                )
+                for item in checkpoint_rel
+            )
+            or strategy_rel != f"strategies/best_{symbol}.json"
+            or history_rel != f"training_history_{symbol}.json"
+        ):
+            return None
+        checkpoints = [_published_artifact_path(artifact_root, item) for item in checkpoint_rel]
+        strategy = _published_artifact_path(artifact_root, strategy_rel)
+        history = _published_artifact_path(artifact_root, history_rel)
+        required = [*checkpoint_rel, strategy_rel, history_rel]
+        artifact_paths = [*checkpoints, strategy, history]
+        if (
+            any(not path.is_file() for path in artifact_paths)
+            or any(not re.fullmatch(r"[0-9a-f]{64}", str(hashes.get(item) or "")) for item in required)
+            or any(
+                _sha256_file(path) != hashes[relative]
+                for relative, path in zip(required, artifact_paths)
+            )
+        ):
+            return None
+    except (OSError, ValueError, KeyError, json.JSONDecodeError):
+        return None
+    return {
+        **payload,
+        "artifact_root_path": artifact_root,
+        "checkpoint_paths": sorted(checkpoints, key=_step_from_name),
+        "strategy_path": strategy,
+        "history_path": history,
+    }
+
+
 def checkpoint_glob(symbol: str) -> list[Path]:
+    if _uses_slurm_backend():
+        bundle = get_published_bundle(symbol)
+        return list(bundle["checkpoint_paths"]) if bundle else []
     tag = _safe_symbol_tag(symbol)
     patterns = [
         f"ckpt_{symbol}_step_*.pt",
@@ -83,7 +178,7 @@ def _load_checkpoint_meta(path: Path) -> dict[str, Any]:
     if cached and cached[0] == mtime:
         return cached[1]
 
-    ckpt = torch.load(path, map_location="cpu", weights_only=False)
+    ckpt = torch.load(path, map_location="cpu", weights_only=True)
     meta = {
         "step": int(ckpt.get("step", _step_from_name(path))),
         "best_score": ckpt.get("best_score"),
@@ -105,13 +200,27 @@ def _decode_formula(tokens: list[int] | None) -> str | None:
 
 
 def _load_strategy(symbol: str) -> dict[str, Any] | None:
-    path = STRATEGIES_DIR / f"best_{symbol}.json"
+    bundle = get_published_bundle(symbol) if _uses_slurm_backend() else None
+    if _uses_slurm_backend() and not bundle:
+        return None
+    path = bundle["strategy_path"] if bundle else STRATEGIES_DIR / f"best_{symbol}.json"
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
+    if not isinstance(payload, dict):
+        return None
+    if bundle:
+        payload = dict(payload)
+        payload["run_id"] = bundle["run_id"]
+        payload["dataset_id"] = bundle.get("dataset_id")
+        payload["local_source"] = bundle.get("local_source")
+        payload["data_sha256"] = bundle.get("data_sha256")
+        payload["data_filename"] = bundle.get("data_filename")
+        payload["data_file"] = bundle.get("data_file")
+    return payload
 
 
 def _pick_training_history(
@@ -142,7 +251,23 @@ def get_symbol_progress(symbol: str) -> SymbolProgress:
     ckpt_path: str | None = None
     ckpt_mtime: float | None = None
 
-    hist_file = PROJECT_ROOT / f"training_history_{symbol}.json"
+    bundle = get_published_bundle(symbol) if _uses_slurm_backend() else None
+    if bundle and strategy:
+        published_train_steps = strategy.get("train_steps")
+        if (
+            isinstance(published_train_steps, int)
+            and not isinstance(published_train_steps, bool)
+            and published_train_steps > 0
+        ):
+            train_steps = published_train_steps
+    if _uses_slurm_backend():
+        hist_file = (
+            bundle["history_path"]
+            if bundle
+            else PROJECT_ROOT / "published_training" / "__missing_history__"
+        )
+    else:
+        hist_file = PROJECT_ROOT / f"training_history_{symbol}.json"
     file_history: dict[str, Any] | None = None
     if hist_file.exists():
         try:
@@ -160,7 +285,10 @@ def get_symbol_progress(symbol: str) -> SymbolProgress:
 
     if ckpts:
         latest = ckpts[-1]
-        ckpt_path = str(latest.relative_to(PROJECT_ROOT)).replace("\\", "/")
+        try:
+            ckpt_path = str(latest.relative_to(PROJECT_ROOT)).replace("\\", "/")
+        except ValueError:
+            ckpt_path = str(latest)
         ckpt_mtime = latest.stat().st_mtime
         try:
             meta = _load_checkpoint_meta(latest)
@@ -219,6 +347,29 @@ def build_strategy_export_filename(
 
 def list_strategies() -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    if _uses_slurm_backend():
+        pointer_dir = PROJECT_ROOT / "published_training"
+        if not pointer_dir.exists():
+            return rows
+        for pointer in sorted(pointer_dir.glob("current_*.json")):
+            try:
+                symbol = str(json.loads(pointer.read_text(encoding="utf-8"))["symbol"])
+            except (OSError, KeyError, TypeError, json.JSONDecodeError):
+                continue
+            data = _load_strategy(symbol)
+            if not data:
+                continue
+            formula = data.get("formula")
+            rows.append({
+                "file": f"best_{symbol}.json",
+                "symbol": symbol,
+                "timeframe": data.get("timeframe"),
+                "best_score": data.get("best_score"),
+                "formula_decoded": data.get("formula_decoded") or _decode_formula(formula),
+                "train_steps": data.get("train_steps"),
+                "mode": data.get("mode"),
+            })
+        return rows
     if not STRATEGIES_DIR.exists():
         return rows
     for path in sorted(STRATEGIES_DIR.glob("best_*.json")):

@@ -12,11 +12,13 @@ from web.settings import save_settings
 
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TRAINING_BACKEND", "local")
     strategies = tmp_path / "strategies"
     strategies.mkdir()
     settings_path = tmp_path / "web_settings.json"
     import web.progress as progress_mod
 
+    monkeypatch.setattr(progress_mod, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(progress_mod, "STRATEGIES_DIR", strategies)
     monkeypatch.setattr(sf, "STRATEGIES_DIR", strategies)
     monkeypatch.setattr(sf, "checkpoint_glob", lambda _symbol: [])

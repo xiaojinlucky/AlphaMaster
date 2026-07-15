@@ -8,6 +8,7 @@ train_file.py — 从单个 Parquet K 线文件训练
 """
 from __future__ import annotations
 
+import argparse
 import glob as _glob
 import json
 import pathlib
@@ -26,6 +27,40 @@ from data_pipeline.parquet_manager import ParquetDataManager, inspect_parquet_fi
 from model_core.config import ModelConfig
 from model_core.engine import AlphaEngine
 from model_core.vocab import VOCAB_VERSION
+
+
+DEFAULT_TRAIN_STEPS = ModelConfig.TRAIN_STEPS
+
+
+def _positive_int(value: str) -> int:
+    """解析严格正整数，拒绝符号、小数和非 ASCII 数字。"""
+    if not value or not value.isascii() or not value.isdigit():
+        raise argparse.ArgumentTypeError("必须是严格正整数")
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("必须大于 0")
+    return parsed
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="从单个 Parquet K 线文件训练")
+    parser.add_argument(
+        "--data-file",
+        required=True,
+        help="符合 {品种}_{周期}.parquet 命名规则的输入文件",
+    )
+    parser.add_argument(
+        "--from-scratch",
+        action="store_true",
+        help="清除当前工作目录中该品种的检查点并重新训练",
+    )
+    parser.add_argument(
+        "--train-steps",
+        type=_positive_int,
+        default=DEFAULT_TRAIN_STEPS,
+        help=f"本次训练步数，必须为严格正整数（默认: {DEFAULT_TRAIN_STEPS}）",
+    )
+    return parser
 
 
 def train_from_file(data_file: str, *, from_scratch: bool = False) -> AlphaEngine | None:
@@ -179,23 +214,12 @@ def _save_strategy(engine: AlphaEngine, symbol: str, timeframe: str, data_file: 
     print(f"  策略已保存: {path}")
 
 
-if __name__ == "__main__":
+def main(argv: list[str] | None = None) -> int:
+    args = build_arg_parser().parse_args(argv)
     ModelConfig.REWARD_MODE = "ftmo"
-
-    if "--data-file" not in sys.argv:
-        print("用法: python train_file.py --data-file PATH\\TO\\SYMBOL_TF.parquet [--from-scratch]")
-        print("示例: python train_file.py --data-file D:\\K线数据\\AAPL_H1.parquet")
-        sys.exit(1)
-
-    idx = sys.argv.index("--data-file")
-    if idx + 1 >= len(sys.argv):
-        print("错误: --data-file 后需要文件路径")
-        sys.exit(1)
-
-    data_file = sys.argv[idx + 1]
-    from_scratch = "--from-scratch" in sys.argv
+    ModelConfig.TRAIN_STEPS = args.train_steps
     t0 = time.time()
-    eng = train_from_file(data_file, from_scratch=from_scratch)
+    eng = train_from_file(args.data_file, from_scratch=args.from_scratch)
     elapsed = time.time() - t0
 
     if eng:
@@ -203,6 +227,11 @@ if __name__ == "__main__":
         print(f"\n<<< [{sym}] 训练完成: 最优分数={eng.best_score:.4f}，耗时 {elapsed/3600:.2f} 小时")
         if eng.best_formula:
             print(f"    {eng._decode_formula(eng.best_formula)}")
+        return 0
     else:
         print("\n<<< 训练失败")
-        sys.exit(1)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,6 +1,7 @@
 """Export / import training checkpoints as portable zip packages."""
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import re
@@ -18,6 +19,7 @@ from web.progress import (
     _decode_formula,
     _load_strategy,
     checkpoint_glob,
+    get_published_bundle,
     invalidate_checkpoint_cache,
 )
 
@@ -25,7 +27,30 @@ _CKPT_NAME_RE = re.compile(r"^ckpt_(.+)_step_(\d+)\.pt$", re.IGNORECASE)
 
 
 def _history_path(symbol: str) -> Path:
+    bundle = get_published_bundle(symbol)
+    if bundle:
+        return bundle["history_path"]
     return PROJECT_ROOT / f"training_history_{symbol}.json"
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _verify_published_bundle(bundle: dict[str, Any]) -> None:
+    hashes = bundle["artifact_sha256"]
+    pairs = [
+        *zip(bundle["checkpoint_files"], bundle["checkpoint_paths"]),
+        (bundle["strategy_file"], bundle["strategy_path"]),
+        (bundle["history_file"], bundle["history_path"]),
+    ]
+    for relative, path in pairs:
+        if _sha256_file(path) != hashes[relative]:
+            raise ValueError(f"发布训练包完整性校验失败: {relative}")
 
 
 def _symbol_from_ckpt_name(name: str) -> str | None:
@@ -34,7 +59,7 @@ def _symbol_from_ckpt_name(name: str) -> str | None:
 
 
 def _validate_checkpoint_file(path: Path) -> dict[str, Any]:
-    ckpt = torch.load(path, map_location="cpu", weights_only=False)
+    ckpt = torch.load(path, map_location="cpu", weights_only=True)
     artifact_version = ckpt.get("vocab_version")
     if artifact_version is None:
         raise ValueError(
@@ -48,6 +73,9 @@ def _validate_checkpoint_file(path: Path) -> dict[str, Any]:
 
 
 def build_training_export_zip(symbol: str) -> tuple[bytes, str]:
+    bundle = get_published_bundle(symbol)
+    if bundle:
+        _verify_published_bundle(bundle)
     ckpts = checkpoint_glob(symbol)
     if not ckpts:
         raise FileNotFoundError(f"未找到 {symbol} 的训练检查点，请先训练并保存 checkpoint")
@@ -70,6 +98,14 @@ def build_training_export_zip(symbol: str) -> tuple[bytes, str]:
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "files": [f"checkpoints/{latest.name}"],
     }
+    if bundle:
+        manifest.update({
+            "run_id": bundle["run_id"],
+            "dataset_id": bundle.get("dataset_id"),
+            "local_source": bundle.get("local_source"),
+            "data_sha256": bundle.get("data_sha256"),
+            "result_manifest_sha256": bundle.get("result_manifest_sha256"),
+        })
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:

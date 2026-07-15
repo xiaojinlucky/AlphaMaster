@@ -1,6 +1,6 @@
 # AlphaMaster
 
-基于深度神经网络强化学习的量化因子挖掘中心：从 Parquet / MT5 K 线自动搜索可解释因子公式，支持 Web 端训练、回测与实时信号分析。
+基于深度神经网络强化学习的量化因子挖掘中心：从 Parquet / MT5 / OKX K 线自动搜索可解释因子公式，支持 Web 端训练、回测与实时信号分析。
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
@@ -31,6 +31,16 @@ python run_web.py --port 8765
 
 浏览器打开 [http://127.0.0.1:8765](http://127.0.0.1:8765)。界面分三步：
 
+第一次使用建议先读 [`docs/AlphaMaster新手使用指南.md`](docs/AlphaMaster新手使用指南.md)。
+
+Windows 已可使用桌面 `AlphaMaster` 快捷方式：双击后自动启动本机 Web 并打开浏览器；若服务已经运行，只会再次打开页面，不会重复启动。快捷方式对应的命令为：
+
+```powershell
+.venv\Scripts\python.exe run_web.py --host 127.0.0.1 --port 8765 --open-browser
+```
+
+服务窗口默认最小化在任务栏；关闭该窗口即可停止本机 Web，不会取消已经提交到 Slurm 的训练任务。
+
 | 步骤 | 作用 |
 |------|------|
 | **01 模型训练** | 选 Parquet、开始 / 重新训练、看曲线与日志、导出策略与检查点 |
@@ -42,8 +52,8 @@ python run_web.py --port 8765
 ![训练页](docs/images/01_train.png)
 
 - Parquet 命名：`{品种}_{周期}.parquet`，例如 `BTCUSDT_H1.parquet`、`XAUUSD_H1.parquet`  
-- **开始训练**：有检查点则断点续训  
-- **重新训练**：清除检查点从头搜索；已有更优策略作为分数下限，不会被弱结果覆盖  
+- **本地后端**：开始训练会从项目检查点续训，重新训练会清除该品种检查点后从头搜索
+- **Slurm 第一阶段**：每个 run 独立训练；网络中断会重连同一 run/job，跨 run checkpoint 续训尚未开放；每次 `READY` 会以单一原子指针发布该 run 的 checkpoint、训练历史和策略整套产物，不跨 run 混用
 - 展示最优分数、验证分数、训练曲线与最优公式；可选 AI 分析当前训练情况  
 
 ### 策略回测
@@ -98,6 +108,42 @@ pip install -r requirements.txt
 # 可选可视化等：pip install -r requirements-optional.txt
 ```
 
+本仓库同时提供可复现锁文件：
+
+```powershell
+# Windows：Web、MT5 导出与本机控制端
+uv venv --python 3.11
+uv pip sync --python .venv\Scripts\python.exe requirements-windows.lock
+
+# 开发与测试环境
+uv pip sync --python .venv\Scripts\python.exe requirements-dev.lock
+```
+
+Linux Slurm Worker 使用独立的 `requirements-linux-worker.lock`，不安装 `MetaTrader5`、Web 服务或本机凭据。
+
+---
+
+## Windows Parquet（MT5 / OKX）→ Slurm CPU 训练
+
+第一阶段支持本机 MT5 已收盘 K 线导出或经过来源清单校验的 OKX Parquet，通过本机 Web 控制台提交到 Slurm。`login-node` 仅作为 SSH 配置中的跳板，不运行命令；每次远端操作先调用节点选择器确定健康的交互入口，真正的训练节点始终由 Slurm 调度。
+
+```powershell
+# 1. 从当前已登录的 MT5 导出准确品种/周期；默认排除未收盘 bar
+.venv\Scripts\python.exe scripts\export_mt5_parquet.py --symbol XAUUSD --timeframe H1 --bars 50000
+
+# 2. 复制并检查配置；不要把真实凭据提交到 Git
+Copy-Item .env.example .env
+
+# 3. 仅在回环地址启动本机 Web
+.venv\Scripts\python.exe run_web.py --host 127.0.0.1 --port 8765
+```
+
+Slurm 模式固定使用 `cpu` 分区、`normal` QOS 和服务器项目 Python 3.11 环境；失败会原样暴露，不会退回本机训练。上传数据、源码身份和下载产物均通过 manifest 与 SHA-256 校验。详细设计见 [`docs/slurm-deployment-design.md`](docs/slurm-deployment-design.md)。
+
+当前正式任务默认申请 12 CPU；实际训练节点仍由 Slurm 根据集群可用性分配，不固定节点。
+
+`TRAINING_BACKEND` 必须显式配置；缺失或未知值会拒绝启动。只有明确设置 `TRAINING_BACKEND=local` 才允许本机训练。
+
 ---
 
 ## 常用命令
@@ -109,6 +155,7 @@ python run_web.py --port 8765
 # CLI 训练（自动续训；加 --from-scratch 则重新训练）
 python train_file.py --data-file D:\K线数据\BTCUSDT_H1.parquet
 python train_file.py --data-file D:\K线数据\BTCUSDT_H1.parquet --from-scratch
+python train_file.py --data-file D:\K线数据\XAUUSD_H1.parquet --from-scratch --train-steps 20
 ```
 
 策略输出默认在 `strategies/best_{symbol}.json`。

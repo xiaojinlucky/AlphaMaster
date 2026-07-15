@@ -30,6 +30,11 @@ venv/
 env/
 ENV/
 .venv/
+local_runs/
+published_training/
+runs/
+local_data/
+scratch/
 
 # IDE
 .vscode/

@@ -1,4 +1,6 @@
 const API = "";
+const nativeFetch = window.fetch.bind(window);
+let controlToken = "";
 let selectedDataFile = null;
 let selectedSymbol = null;
 let selectedStrategyFile = null;
@@ -22,6 +24,29 @@ let lastErrorPopupText = "";
 let lastErrorPopupAt = 0;
 
 const $ = (id) => document.getElementById(id);
+
+async function ensureControlToken() {
+  if (controlToken) return controlToken;
+  const res = await nativeFetch(API + "/api/session", {
+    method: "GET",
+    cache: "no-store",
+    credentials: "same-origin",
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.control_token) {
+    throw new Error(formatApiError(data, res.status, "/api/session"));
+  }
+  controlToken = data.control_token;
+  return controlToken;
+}
+
+async function secureFetch(input, init = {}) {
+  const options = { ...init, credentials: init.credentials || "same-origin" };
+  const headers = new Headers(options.headers || {});
+  headers.set("X-AlphaMaster-Control", await ensureControlToken());
+  options.headers = headers;
+  return nativeFetch(input, options);
+}
 
 const CPU_TRAINING_NOTE = `暂无报错
 
@@ -64,9 +89,6 @@ function formatApiError(data, status, path) {
   } else if (d) {
     detail = JSON.stringify(d);
   }
-  if (data?.traceback) {
-    detail += `\n\n${data.traceback}`;
-  }
   return detail || `HTTP ${status} ${path}`;
 }
 
@@ -81,7 +103,7 @@ async function logClientError(message, context = {}) {
     showErrorPopup("出错了", detail);
   }
   try {
-    await fetch(API + "/api/debug/client-log", {
+    await secureFetch(API + "/api/debug/client-log", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ level: "error", message, context }),
@@ -176,7 +198,7 @@ async function setDebugMode(enabled) {
 
 async function refreshDebugLogs() {
   try {
-    const data = await fetch(API + "/api/debug/logs?lines=120").then(async (res) => {
+    const data = await secureFetch(API + "/api/debug/logs?lines=120").then(async (res) => {
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(formatApiError(json, res.status, "/api/debug/logs"));
       return json;
@@ -194,7 +216,7 @@ async function fetchJSON(path, opts = {}) {
   delete fetchOpts.silent;
   let res;
   try {
-    res = await fetch(API + path, fetchOpts);
+    res = await secureFetch(API + path, fetchOpts);
   } catch (e) {
     const msg = `网络错误 ${path}: ${e.message}`;
     await logClientError(msg, { path, silent });
@@ -666,7 +688,7 @@ async function refreshOverview() {
 }
 
 async function loadConfig() {
-  const health = await fetch(API + "/api/health").then((r) => r.json()).catch(() => ({}));
+  const health = await secureFetch(API + "/api/health").then((r) => r.json()).catch(() => ({}));
   if (!health.version) {
     await logClientError(
       "后端版本过旧或未启动新版服务。请关闭旧进程后重新运行: python run_web.py",
@@ -725,8 +747,11 @@ async function initAiPanel(cfg) {
   const keyInput = $("aiApiKeyInput");
   if (!keyInput) return;
 
-  if (cfg?.ai_api_key) keyInput.value = cfg.ai_api_key;
-  else if (cfg?.ai_provider === "openclaw" || cfg?.ai_provider === "openclaw_wb") {
+  window.__aiHasStoredKey = !!cfg?.has_ai_api_key;
+  if (cfg?.has_ai_api_key) {
+    keyInput.value = "";
+    keyInput.placeholder = "已配置（留空使用已保存 Key）";
+  } else if (cfg?.ai_provider === "openclaw" || cfg?.ai_provider === "openclaw_wb") {
     keyInput.value = cfg.ai_provider;
   }
 
@@ -793,7 +818,7 @@ async function runAiAnalyze() {
   const resolved = resolveAiFromKey(rawKey);
   if (!view) return;
 
-  if (resolved.provider === "deepseek" && !resolved.apiKey) {
+  if (resolved.provider === "deepseek" && !resolved.apiKey && !window.__aiHasStoredKey) {
     view.className = "ai-answer error";
     view.textContent = "请填写 DeepSeek API Key，或在 Key 中输入 openclaw / openclaw_wb";
     return;
@@ -809,12 +834,12 @@ async function runAiAnalyze() {
   let answer = "";
 
   try {
-    const res = await fetch(API + "/api/ai/analyze-training", {
+    const res = await secureFetch(API + "/api/ai/analyze-training", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         provider: resolved.provider,
-        api_key: resolved.apiKey,
+        api_key: resolved.apiKey || null,
         symbol: selectedSymbol || null,
       }),
     });
@@ -1007,8 +1032,8 @@ function updateTrainingBtns(progress, training) {
     exportBtn.title = exportTitle;
   }
   if (importBtn) {
-    importBtn.disabled = !sym || !!active;
-    importBtn.title = active ? "训练进行中，请停止后再导入" : "上传 .zip 或 .pt，下次训练断点续训";
+    importBtn.disabled = true;
+    importBtn.title = "第一阶段已禁用外部 ZIP/PT 训练包导入";
   }
 }
 
@@ -1020,7 +1045,7 @@ async function exportTraining() {
   }
   const path = `/api/training/${encodeURIComponent(sym)}/export`;
   try {
-    const res = await fetch(API + path);
+    const res = await secureFetch(API + path);
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       throw new Error(formatApiError(data, res.status, path));
@@ -1066,7 +1091,7 @@ async function handleImportTrainingFile(event) {
   form.append("file", file);
 
   try {
-    const res = await fetch(`${API}/api/training/import?symbol=${encodeURIComponent(sym)}`, {
+    const res = await secureFetch(`${API}/api/training/import?symbol=${encodeURIComponent(sym)}`, {
       method: "POST",
       body: form,
     });
@@ -1105,7 +1130,7 @@ async function exportStrategy() {
   }
   const path = `/api/strategies/${encodeURIComponent(sym)}/export`;
   try {
-    const res = await fetch(API + path);
+    const res = await secureFetch(API + path);
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       throw new Error(formatApiError(data, res.status, path));
@@ -1948,8 +1973,14 @@ async function loadRtFeishuSettings() {
     const wh = $("rtFeishuWebhook");
     const sec = $("rtFeishuSecret");
     if (en) en.checked = !!data.enabled;
-    if (wh) wh.value = data.webhook_url || "";
-    if (sec) sec.value = data.secret || "";
+    if (wh) {
+      wh.value = "";
+      wh.placeholder = data.webhook_configured ? "已配置（留空保持不变）" : "";
+    }
+    if (sec) {
+      sec.value = "";
+      sec.placeholder = data.secret_configured ? "已配置（留空保持不变）" : "";
+    }
   } catch (e) {
     const hint = $("rtFeishuHint");
     if (hint) {
@@ -1964,14 +1995,15 @@ async function saveRtFeishuSettings() {
   const btn = $("rtFeishuSaveBtn");
   if (btn) btn.disabled = true;
   try {
+    const payload = { enabled: !!$("rtFeishuEnabled")?.checked };
+    const webhookUrl = $("rtFeishuWebhook")?.value?.trim() || "";
+    const secret = $("rtFeishuSecret")?.value?.trim() || "";
+    if (webhookUrl) payload.webhook_url = webhookUrl;
+    if (secret) payload.secret = secret;
     await fetchJSON("/api/realtime/feishu", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        enabled: !!$("rtFeishuEnabled")?.checked,
-        webhook_url: $("rtFeishuWebhook")?.value || "",
-        secret: $("rtFeishuSecret")?.value || "",
-      }),
+      body: JSON.stringify(payload),
     });
     if (hint) {
       hint.textContent = "✓ 已保存，方向转折时会推送到飞书群。";
@@ -2465,6 +2497,7 @@ function startPolling() {
 
 async function init() {
   try {
+    await ensureControlToken();
     await loadConfig();
     await refreshOverview();
   } catch (e) {
@@ -2477,6 +2510,8 @@ async function init() {
   $("exportBtn").addEventListener("click", exportStrategy);
   $("exportTrainingBtn").addEventListener("click", exportTraining);
   $("importTrainingBtn").addEventListener("click", triggerImportTraining);
+  $("importTrainingBtn").disabled = true;
+  $("importTrainingBtn").title = "第一阶段已禁用外部 ZIP/PT 训练包导入";
   $("importTrainingFile").addEventListener("change", handleImportTrainingFile);
   $("debugModeCheck").addEventListener("change", (e) => setDebugMode(e.target.checked));
   if ($("aiApiKeyInput")) {
@@ -2523,6 +2558,10 @@ async function init() {
   });
   if ($("rtFeishuSaveBtn")) $("rtFeishuSaveBtn").addEventListener("click", saveRtFeishuSettings);
   if ($("rtFeishuTestBtn")) $("rtFeishuTestBtn").addEventListener("click", testRtFeishu);
+  if ($("rtFeishuTestBtn")) {
+    $("rtFeishuTestBtn").disabled = true;
+    $("rtFeishuTestBtn").title = "第一阶段已禁用飞书测试请求";
+  }
   if ($("rtFeishuHelpBtn")) $("rtFeishuHelpBtn").addEventListener("click", openRtFeishuHelpModal);
   document.querySelectorAll("[data-close-feishu-help]").forEach((el) => {
     el.addEventListener("click", closeRtFeishuHelpModal);

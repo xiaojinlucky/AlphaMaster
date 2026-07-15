@@ -14,6 +14,7 @@ from web.progress import (
     _load_checkpoint_meta,
     _load_strategy,
     checkpoint_glob,
+    get_published_bundle,
 )
 from web.settings import load_settings
 
@@ -194,6 +195,20 @@ def sync_best_strategy_for_symbol(
     data_file_hint: str | None = None,
 ) -> dict[str, Any] | None:
     """在策略文件与检查点中选出最高分策略，写入 strategies/best_{symbol}.json。"""
+    published = get_published_bundle(symbol)
+    if published:
+        payload = _load_strategy(symbol)
+        if not payload or not payload.get("formula"):
+            return None
+        payload = _apply_data_file_fallback(dict(payload), data_file_hint=data_file_hint)
+        payload["formula_decoded"] = payload.get("formula_decoded") or _decode_formula(
+            payload["formula"]
+        )
+        out_path = strategy_path_for_symbol(symbol)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        return inspect_strategy_file(str(out_path.resolve()), data_file_hint=data_file_hint)
+
     candidates: list[tuple[float, list[int], int]] = []
 
     strat = _load_strategy(symbol)

@@ -1,0 +1,4 @@
+-r requirements-windows.in
+pytest>=8
+hypothesis>=6
+httpx>=0.27

@@ -12,12 +12,15 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
+
 if str(Path(__file__).resolve().parents[1]) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from utils.train_logging import strip_ansi
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(PROJECT_ROOT / ".env")
 LOG_DIR = PROJECT_ROOT / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
@@ -235,4 +238,19 @@ class TrainingManager:
         self._recorded_log_paths.add(rel)
 
 
-training_manager = TrainingManager()
+def _build_training_manager():
+    backend = os.getenv("TRAINING_BACKEND", "").strip().lower()
+    if not backend:
+        raise RuntimeError(
+            "必须显式设置 TRAINING_BACKEND=slurm 或 TRAINING_BACKEND=local；拒绝隐式本机训练"
+        )
+    if backend == "local":
+        return TrainingManager()
+    if backend == "slurm":
+        from web.slurm_training_manager import SlurmTrainingManager
+
+        return SlurmTrainingManager.from_environment()
+    raise RuntimeError(f"不支持的 TRAINING_BACKEND: {backend}")
+
+
+training_manager = _build_training_manager()

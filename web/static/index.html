@@ -82,7 +82,7 @@
         </div>
         <div class="launch-actions" role="group" aria-label="训练操作">
           <button class="btn btn-primary" id="startBtn" disabled>开始训练</button>
-          <button class="btn btn-secondary" id="retrainBtn" disabled title="清除检查点，从头重新搜索（保留已有更优策略）">重新训练</button>
+          <button class="btn btn-secondary" id="retrainBtn" disabled title="从第 0 步重新搜索；Slurm 第一阶段每个 run 均隔离">重新训练</button>
           <button class="btn btn-danger" id="stopBtn" disabled>停止</button>
           <span class="action-sep" aria-hidden="true"></span>
           <button class="btn btn-secondary" id="exportBtn" disabled title="下载当前品种的最优策略 JSON">导出策略</button>
@@ -174,8 +174,8 @@
           </li>
           <li>
             <strong>重新训练有机会找出更好的量化因子</strong>
-            <p>「开始训练」会接着上次的检查点继续挖；「重新训练」会清掉检查点，从零换一条随机路径再搜一遍。因为搜索带随机性，有时能挖到比现在更高的分数。</p>
-            <p>已有的最优策略会当作分数下限留着——只有找到更好的才会覆盖，不会一开局就被弱公式冲掉。代价是要再花一整轮算力，适合本轮训完或最优分数长期不动时再用。</p>
+            <p>本地后端的「开始训练」会接着项目检查点继续挖；Slurm 第一阶段每个 run 独立，网络中断只重连同一 run/job，不跨 run 续训。每次成功运行会成套发布同一 run 的检查点、训练曲线和策略，不与旧运行混用。</p>
+            <p>本地后端会保留已有最优策略作为分数下限；Slurm 为保证策略、检查点和曲线严格同源，会用最新成功 run 的整套结果替换上一套。代价是要再花一整轮算力，适合本轮训完后再开新 run。</p>
           </li>
         </ol>
       </details>

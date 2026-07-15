@@ -1,0 +1,14 @@
+# Windows 本机：MT5 数据导出、AlphaMaster Web 与 CPU 训练/回测。
+torch>=2.0,<3
+numpy>=1.24,<3
+pandas>=2.0,<4
+pyarrow>=14
+scipy>=1.11
+matplotlib>=3.7
+MetaTrader5>=5.0.45
+python-dotenv>=1.0
+loguru>=0.7
+tqdm>=4.66
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9
