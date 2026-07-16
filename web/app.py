@@ -4,13 +4,14 @@ from __future__ import annotations
 import json
 import secrets
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -18,7 +19,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from data_pipeline.parquet_manager import inspect_parquet_file
+from data_pipeline.legacy_mt5_registry import (
+    apply_registration_plan,
+    build_single_file_registration_plan,
+    write_registration_report,
+)
+from data_pipeline.parquet_manager import ParquetDataManager, inspect_parquet_file
 from model_core.config import ModelConfig
 from web.file_dialog import pick_parquet_file, pick_strategy_file
 from web.progress import (
@@ -62,6 +68,8 @@ app = FastAPI(title="AlphaMaster Training", version="1.1.0")
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost"})
 _TOKEN_EXEMPT_API_PATHS = frozenset({"/api/health", "/api/session"})
 _CONTROL_TOKEN = secrets.token_urlsafe(32)
+_REGISTRATION_PLAN_LOCK = threading.Lock()
+_REGISTRATION_PLANS: dict[str, dict[str, Any]] = {}
 _SENSITIVE_SETTING_KEYS = frozenset(
     {
         "ai_api_key",
@@ -172,6 +180,7 @@ class ClientLogRequest(BaseModel):
 
 class SettingsRequest(BaseModel):
     last_data_file: str | None = None
+    last_backtest_data_file: str | None = None
     last_strategy_file: str | None = None
     debug_mode: bool | None = None
     ai_provider: str | None = None
@@ -188,8 +197,17 @@ class AnalyzeTrainingRequest(BaseModel):
 
 class StartBacktestRequest(BaseModel):
     strategy_file: str
+    data_file: str | None = None
+    evaluation_mode: str = "auto"
+    score_start: str | None = None
     commission_pct: float | None = None
     slippage_pct: float | None = None
+
+
+class RegisterLegacyMt5Request(BaseModel):
+    data_file: str
+    plan_sha256: str
+    source_acknowledgement: str
 
 
 class AddWatchRequest(BaseModel):
@@ -249,9 +267,52 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     )
 
 
-def _inspect_or_http(path: str) -> dict[str, Any]:
+def _decorate_data_info(
+    info: dict[str, Any],
+    *,
+    include_registration_plan: bool = False,
+) -> dict[str, Any]:
+    payload = dict(info)
+    capabilities = dict(payload.get("capabilities") or {})
+    backend = str(training_manager.status().get("backend") or "local")
+    training_compatible = bool(
+        capabilities.get("remote_training")
+        if backend == "slurm"
+        else capabilities.get("local_training")
+    )
+    capabilities["training"] = training_compatible
+    payload["capabilities"] = capabilities
+    payload["training_backend"] = backend
+    if not training_compatible and backend == "slurm":
+        payload["reason_code"] = "manifest_required_for_slurm"
+        payload["message"] = (
+            "当前是远程训练：该文件尚未注册。"
+            "确认它来自旧 MT5 后，可生成受审计 manifest。"
+        )
+    else:
+        payload["reason_code"] = ""
+    if include_registration_plan and capabilities.get("legacy_registration"):
+        plan = build_single_file_registration_plan(payload["data_file"])
+        if plan["summary"]["eligible"] == 1:
+            plan_sha = str(plan["plan_sha256"])
+            with _REGISTRATION_PLAN_LOCK:
+                _REGISTRATION_PLANS[plan_sha] = plan
+                while len(_REGISTRATION_PLANS) > 32:
+                    _REGISTRATION_PLANS.pop(next(iter(_REGISTRATION_PLANS)))
+            payload["registration_plan_sha256"] = plan_sha
+    return payload
+
+
+def _inspect_or_http(
+    path: str,
+    *,
+    include_registration_plan: bool = False,
+) -> dict[str, Any]:
     try:
-        return inspect_parquet_file(path)
+        return _decorate_data_info(
+            inspect_parquet_file(path),
+            include_registration_plan=include_registration_plan,
+        )
     except FileNotFoundError as e:
         raise HTTPException(404, str(e)) from e
     except ValueError as e:
@@ -285,8 +346,21 @@ def _browse_data_file() -> dict[str, Any]:
 
     if is_debug_mode():
         logger.info("Selected file: %s", path)
-    info = _inspect_or_http(path)
+    info = _inspect_or_http(path, include_registration_plan=True)
     save_settings({"last_data_file": info["data_file"]})
+    return {"ok": True, "cancelled": False, **info}
+
+
+def _browse_backtest_data_file() -> dict[str, Any]:
+    try:
+        path = pick_parquet_file()
+    except Exception as exc:
+        log_error("Backtest file picker failed", exc)
+        raise HTTPException(500, f"回测数据选择失败: {exc}") from exc
+    if not path:
+        return {"ok": False, "cancelled": True}
+    info = _inspect_or_http(path)
+    save_settings({"last_backtest_data_file": info["data_file"]})
     return {"ok": True, "cancelled": False, **info}
 
 
@@ -450,6 +524,8 @@ def api_put_settings(req: SettingsRequest) -> dict[str, Any]:
     payload: dict[str, Any] = {}
     if req.last_data_file is not None:
         payload["last_data_file"] = req.last_data_file
+    if req.last_backtest_data_file is not None:
+        payload["last_backtest_data_file"] = req.last_backtest_data_file
     if req.last_strategy_file is not None:
         payload["last_strategy_file"] = req.last_strategy_file
     if req.debug_mode is not None:
@@ -472,13 +548,29 @@ def api_put_settings(req: SettingsRequest) -> dict[str, Any]:
 def api_config() -> dict[str, Any]:
     settings = load_settings()
     data_file = settings.get("last_data_file") or ""
+    backtest_data_file = settings.get("last_backtest_data_file") or ""
     file_info = None
+    backtest_file_info = None
     if data_file:
         try:
-            file_info = inspect_parquet_file(data_file)
+            file_info = _decorate_data_info(
+                inspect_parquet_file(data_file),
+                include_registration_plan=True,
+            )
         except Exception as e:
             file_info = {
                 "data_file": data_file,
+                "valid": False,
+                "message": str(e),
+            }
+    if backtest_data_file:
+        try:
+            backtest_file_info = _decorate_data_info(
+                inspect_parquet_file(backtest_data_file)
+            )
+        except Exception as e:
+            backtest_file_info = {
+                "data_file": backtest_data_file,
                 "valid": False,
                 "message": str(e),
             }
@@ -491,6 +583,8 @@ def api_config() -> dict[str, Any]:
         "device": str(ModelConfig.DEVICE),
         "last_data_file": data_file,
         "data_file": file_info,
+        "last_backtest_data_file": settings.get("last_backtest_data_file") or "",
+        "backtest_data_file": backtest_file_info,
         "last_strategy_file": strat_ctx["last_strategy_file"],
         "strategy_file": strat_ctx["strategy_file"],
         "debug_mode": load_settings().get("debug_mode", False),
@@ -561,6 +655,50 @@ def api_ai_analyze_training(req: AnalyzeTrainingRequest):
 @app.get("/api/data-file/browse")
 def api_browse_data_file() -> dict[str, Any]:
     return _browse_data_file()
+
+
+@app.post("/api/backtest/data-file/browse")
+@app.get("/api/backtest/data-file/browse")
+def api_browse_backtest_data_file() -> dict[str, Any]:
+    return _browse_backtest_data_file()
+
+
+@app.post("/api/data-file/register-legacy-mt5")
+def api_register_legacy_mt5(req: RegisterLegacyMt5Request) -> dict[str, Any]:
+    with _REGISTRATION_PLAN_LOCK:
+        plan = _REGISTRATION_PLANS.get(req.plan_sha256)
+    if plan is None:
+        raise HTTPException(409, "注册计划已失效，请重新选择数据文件")
+    planned = plan.get("files") or []
+    if len(planned) != 1:
+        raise HTTPException(409, "前端注册计划必须只包含一个文件")
+    planned_path = (
+        Path(str(plan["input_root"])) / str(planned[0]["relative_path"])
+    ).resolve()
+    if planned_path != Path(req.data_file).resolve():
+        raise HTTPException(409, "注册计划与当前数据文件不匹配")
+    report = apply_registration_plan(
+        plan,
+        expected_plan_sha256=req.plan_sha256,
+        source_acknowledgement=req.source_acknowledgement,
+    )
+    report_dir = ROOT / "scratch" / "legacy_mt5_ui_reports"
+    report_path = report_dir / f"{req.plan_sha256[:16]}.json"
+    write_registration_report(report_path, report)
+    if report["summary"]["failed"]:
+        raise HTTPException(
+            409,
+            report["results"][0].get("message") or "旧 MT5 数据注册失败",
+        )
+    with _REGISTRATION_PLAN_LOCK:
+        _REGISTRATION_PLANS.pop(req.plan_sha256, None)
+    info = _inspect_or_http(req.data_file)
+    save_settings({"last_data_file": info["data_file"]})
+    return {
+        "ok": True,
+        "data_file": info,
+        "registration_report": str(report_path.relative_to(ROOT)).replace("\\", "/"),
+    }
 
 
 @app.post("/api/strategy-file/browse")
@@ -655,7 +793,7 @@ def api_overview() -> dict[str, Any]:
 
     if data_file:
         try:
-            file_info = inspect_parquet_file(data_file)
+            file_info = _decorate_data_info(inspect_parquet_file(data_file))
             sym = file_info.get("symbol")
             row = _progress_with_live_step(sym, active=False, job=job)
             progress = {
@@ -784,6 +922,12 @@ def api_training_status() -> dict[str, Any]:
 @app.post("/api/training/start")
 def api_training_start(req: StartTrainingRequest) -> dict[str, Any]:
     info = _inspect_or_http(req.data_file)
+    if not bool((info.get("capabilities") or {}).get("training")):
+        raise HTTPException(
+            400,
+            info.get("message")
+            or "当前数据不满足所选训练后端的要求",
+        )
     save_settings({"last_data_file": info["data_file"]})
     try:
         job = training_manager.start(
@@ -944,55 +1088,79 @@ def api_backtest_start(req: StartBacktestRequest) -> dict[str, Any]:
     })
 
     data_file: str | None = None
-    # 1) 优先用策略 JSON 里记录的训练数据路径
-    strat_data = (info.get("data_file") or "").strip()
-    if strat_data:
+    data_info: dict[str, Any] | None = None
+    data_resolution = ""
+    candidates = (
+        ("explicit_evaluation", str(req.data_file or "").strip(), True),
+        (
+            "backtest_selection",
+            str(settings.get("last_backtest_data_file") or "").strip(),
+            False,
+        ),
+        ("strategy_recorded", str(info.get("data_file") or "").strip(), False),
+        ("training_selection", str(settings.get("last_data_file") or "").strip(), False),
+    )
+    for resolution, candidate, strict in candidates:
+        if not candidate:
+            continue
         try:
-            pf = inspect_parquet_file(strat_data)
-            if pf.get("valid") is False:
+            inspected = _decorate_data_info(inspect_parquet_file(candidate))
+            if inspected.get("symbol") != info.get("symbol"):
+                raise ValueError(
+                    f"品种不一致: {inspected.get('symbol')} != {info.get('symbol')}"
+                )
+            data_file = inspected["data_file"]
+            data_info = inspected
+            data_resolution = resolution
+            break
+        except Exception as exc:
+            if strict:
                 raise HTTPException(
                     400,
-                    f"策略记录的数据文件无效: {pf.get('message') or strat_data}",
-                )
-            data_file = pf["data_file"]
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(
-                400,
-                f"策略记录的数据文件无法加载: {strat_data}\n{e}",
-            ) from e
-    else:
-        # 2) 回退：训练页最近选择的、同品种 Parquet
-        last_data = settings.get("last_data_file") or ""
-        if last_data:
-            try:
-                pf = inspect_parquet_file(last_data)
-                if pf.get("symbol") == info.get("symbol") and pf.get("valid") is not False:
-                    data_file = pf["data_file"]
-            except Exception:
-                pass
+                    f"所选回测数据无法加载: {candidate}\n{exc}",
+                ) from exc
 
     if not data_file:
         raise HTTPException(
             400,
-            "该策略未记录数据文件路径（data_file），且当前也没有同品种的 Parquet。"
-            "请先在「模型训练」页选择对应品种的 Parquet 再回测；"
-            "或使用本软件训练/导出、且包含 data_file 字段的策略文件。",
+            "没有可用的回测数据。请在「策略回测」页选择测试 Parquet。",
         )
 
-    save_settings({"last_data_file": data_file})
+    try:
+        manager = ParquetDataManager(data_file)
+        manager.load()
+        from run_backtest import _validate_strategy_data_contract
+
+        evaluation = _validate_strategy_data_contract(
+            info,
+            manager,
+            evaluation_mode=req.evaluation_mode,
+            score_start=req.score_start,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, f"策略与回测数据不兼容: {exc}") from exc
+
+    save_settings({"last_backtest_data_file": data_file})
 
     try:
         job = backtest_manager.start(
             strategy_file=info["strategy_file"],
             data_file=data_file,
+            evaluation_mode=req.evaluation_mode,
+            score_start=req.score_start,
             commission_pct=commission,
             slippage_pct=slippage,
         )
     except RuntimeError as e:
         raise HTTPException(409, str(e)) from e
-    return {"ok": True, "job": job.to_dict(), "strategy_file": info, "data_file": data_file}
+    return {
+        "ok": True,
+        "job": job.to_dict(),
+        "strategy_file": info,
+        "data_file": data_info,
+        "data_resolution": data_resolution,
+        "evaluation": evaluation,
+    }
 
 
 @app.post("/api/backtest/stop")
@@ -1188,6 +1356,11 @@ def api_realtime_feishu_test() -> dict[str, Any]:
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> Response:
+    return Response(status_code=204)
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

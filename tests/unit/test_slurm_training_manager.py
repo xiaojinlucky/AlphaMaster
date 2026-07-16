@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
+import tempfile
 import zipfile
 from io import BytesIO
 from pathlib import Path
@@ -13,6 +16,27 @@ import torch
 import web.slurm_training_manager as manager_module
 import web.progress as progress_module
 import web.training_package as package_module
+from model_core.alphagpt import AlphaGPT
+from scripts import slurm_control as control_module
+
+
+@pytest.fixture
+def tmp_path() -> Path:
+    """身份隔离路径较深，使用短目录避免 Windows 旧路径上限干扰测试。"""
+    with tempfile.TemporaryDirectory(prefix="alphamaster_slurm_") as directory:
+        yield Path(directory)
+
+
+_REAL_CHECKPOINT_STATES: tuple[dict, dict] | None = None
+
+
+def _real_checkpoint_states() -> tuple[dict, dict]:
+    global _REAL_CHECKPOINT_STATES
+    if _REAL_CHECKPOINT_STATES is None:
+        model = AlphaGPT()
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        _REAL_CHECKPOINT_STATES = (model.state_dict(), optimizer.state_dict())
+    return _REAL_CHECKPOINT_STATES
 
 
 class FakeClient:
@@ -80,22 +104,39 @@ class FakeClient:
         self._maybe_interrupt("download")
         run_manifest_path = local_artifact_root.parent / "run_manifest.json"
         run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
-        checkpoint = local_artifact_root / "checkpoints" / "ckpt_XAUUSD_step_10.pt"
+        checkpoint = (
+            local_artifact_root
+            / "checkpoints"
+            / run_manifest["timeframe"]
+            / run_manifest["data_sha256"]
+            / "run_00000000000000000001"
+            / "ckpt_XAUUSD_step_0010.pt"
+        )
         strategy = local_artifact_root / "strategies" / "best_XAUUSD.json"
         history = local_artifact_root / "training_history_XAUUSD.json"
         checkpoint.parent.mkdir(parents=True, exist_ok=True)
         strategy.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(
-            {
-                "vocab_version": manager_module.VOCAB_VERSION,
-                "symbol": run_manifest["symbol"],
-                "step": run_manifest["training_parameters"]["train_steps"],
-                "best_score": 0.5,
-                "best_formula": [1, 2, 3],
-                "training_history": {},
-            },
-            checkpoint,
-        )
+        model_state, optimizer_state = _real_checkpoint_states()
+        with checkpoint.open("wb") as handle:
+            torch.save(
+                {
+                    "vocab_version": manager_module.VOCAB_VERSION,
+                    "symbol": run_manifest["symbol"],
+                    "step": run_manifest["training_parameters"]["train_steps"],
+                    "best_score": 0.5,
+                    "best_formula": [1, 2, 3],
+                    "training_history": {},
+                    "model_state_dict": model_state,
+                    "optimizer_state_dict": optimizer_state,
+                    "timeframe": run_manifest["timeframe"],
+                    "dataset_id": run_manifest["dataset_id"],
+                    "data_sha256": run_manifest["data_sha256"],
+                    "local_source": run_manifest["local_source"],
+                    "periods_per_year": run_manifest["periods_per_year"],
+                    "minimum_bars": run_manifest["minimum_bars"],
+                },
+                handle,
+            )
         strategy.write_text(
             json.dumps(
                 {
@@ -106,6 +147,15 @@ class FakeClient:
                     "formula": [1, 2, 3],
                     "best_score": 0.5,
                     "train_steps": run_manifest["training_parameters"]["train_steps"],
+                    "periods_per_year": run_manifest["periods_per_year"],
+                    "minimum_bars": run_manifest["minimum_bars"],
+                    "dataset_id": run_manifest["dataset_id"],
+                    "data_sha256": run_manifest["data_sha256"],
+                    "local_source": run_manifest["local_source"],
+                    "data_rows": run_manifest["data_rows"],
+                    "data_start": run_manifest["data_start"],
+                    "data_end": run_manifest["data_end"],
+                    "columns": run_manifest["columns"],
                 }
             ),
             encoding="utf-8",
@@ -140,8 +190,13 @@ class FakeClient:
             "data_sha256",
             "data_size",
             "data_rows",
+            "data_start",
+            "data_end",
+            "columns",
             "dataset_id",
             "local_source",
+            "periods_per_year",
+            "minimum_bars",
             "source_files",
             "training_parameters",
             "requested_resources",
@@ -173,16 +228,44 @@ def _dataset(
     path = tmp_path / f"{symbol}_{timeframe}.parquet"
     path.write_bytes(b"PAR1-test")
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    formats = {
+        "MetaTrader5": "alphamaster_mt5_dataset_v1",
+        "OKX": "alphamaster_okx_dataset_v1",
+        "AShareLocal": "alphamaster_ashare_local_dataset_v1",
+    }
+    periods_per_year = 968 if source == "AShareLocal" else 6240
+    minimum_bars = (
+        1936 if source == "AShareLocal" else manager_module.Config.MIN_BARS
+    )
+    source_fields = (
+        {
+            "market": "CN_A_SHARE",
+            "bar_timestamp_semantics": "bar_close",
+            "source_timezone": "Asia/Shanghai",
+            "source_time_encoding": "floor(china_local_wall_clock_unix_seconds/1000)",
+            "session_close_times": ["10:30", "11:30", "14:00", "15:00"],
+            "source_filename": f"{symbol}_60min.parquet",
+            "source_sha256": "f" * 64,
+            "periods_per_year": periods_per_year,
+            "minimum_bars": minimum_bars,
+        }
+        if source == "AShareLocal"
+        else (
+            {
+                "source_family": "OKX",
+                "provenance_level": "downloader_verified",
+                "bar_completion": "confirmed_only",
+            }
+            if source == "OKX"
+            else {}
+        )
+    )
     path.with_suffix(".manifest.json").write_text(
         json.dumps(
             {
                 "symbol": symbol,
                 "timeframe": timeframe,
-                "format": (
-                    "alphamaster_mt5_dataset_v1"
-                    if source == "MetaTrader5"
-                    else "alphamaster_okx_dataset_v1"
-                ),
+                "format": formats.get(source, "alphamaster_unknown_dataset_v1"),
                 "data_filename": path.name,
                 "data_sha256": digest,
                 "data_rows": 3000,
@@ -192,11 +275,36 @@ def _dataset(
                 "time_unit": "unix_seconds",
                 "columns": ["time", "open", "high", "low", "close", "tick_volume"],
                 "source": source,
+                **source_fields,
             }
         ),
         encoding="utf-8",
     )
     return path
+
+
+def test_progress_reads_long_nested_checkpoint_via_file_handle(tmp_path: Path) -> None:
+    long_root = tmp_path / ("nested_" + "x" * 100)
+    checkpoint = (
+        long_root
+        / "checkpoints"
+        / "H1"
+        / ("a" * 64)
+        / "run_00000000000000000001"
+        / "ckpt_XAUUSD_step_0010.pt"
+    )
+    try:
+        filesystem_path = progress_module._filesystem_path(checkpoint)
+        filesystem_path.parent.mkdir(parents=True)
+        with filesystem_path.open("wb") as handle:
+            torch.save({"step": 10, "training_history": {}}, handle)
+        if os.name == "nt":
+            assert len(str(checkpoint.resolve())) > 260
+            assert str(filesystem_path).startswith("\\\\?\\")
+        progress_module.invalidate_checkpoint_cache()
+        assert progress_module._load_checkpoint_meta(checkpoint)["step"] == 10
+    finally:
+        shutil.rmtree(progress_module._filesystem_path(long_root), ignore_errors=False)
 
 
 @pytest.fixture()
@@ -210,7 +318,10 @@ def isolated_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(
         manager_module,
         "_source_files",
-        lambda: [{"path": "train_file.py", "sha256": "b" * 64, "size": 1}],
+        lambda: [
+            {"path": path, "sha256": "b" * 64, "size": 1}
+            for path in control_module.REQUIRED_SOURCE_FILES
+        ],
     )
     monkeypatch.setattr(
         manager_module,
@@ -233,6 +344,7 @@ def test_submit_poll_download_and_restart_recovery(
     runs = tmp_path / "local-runs"
     manager = manager_module.SlurmTrainingManager(client=client, local_runs_root=runs)
     data_file = _dataset(tmp_path)
+    data_sha256 = hashlib.sha256(data_file.read_bytes()).hexdigest()
 
     job = manager.start(str(data_file), "XAUUSD", "H1", from_scratch=True)
     assert job["remote_state"] == "PENDING"
@@ -240,7 +352,7 @@ def test_submit_poll_download_and_restart_recovery(
     assert manager.status()["job"]["remote_state"] == "RUNNING"
     ready = manager.status()
     assert ready["active"] is False
-    assert ready["job"]["remote_state"] == "READY"
+    assert ready["job"]["remote_state"] == "READY", ready["job"].get("error")
     assert ready["job"]["elapsed"] == "00:00:03"
     assert ready["job"]["allocated_cpus"] == 4
     assert ready["job"]["total_cpu"] == "00:00:10"
@@ -251,7 +363,14 @@ def test_submit_poll_download_and_restart_recovery(
     }
     assert ready["job"]["requested_resources"]["cpus_per_task"] == 1
     assert ready["job"]["artifact_count"] == 3
-    assert (isolated_project / "checkpoints" / "ckpt_XAUUSD_step_10.pt").is_file()
+    assert (
+        isolated_project
+        / "checkpoints"
+        / "H1"
+        / data_sha256
+        / "run_00000000000000000001"
+        / "ckpt_XAUUSD_step_0010.pt"
+    ).is_file()
     assert (isolated_project / "training_history_XAUUSD.json").is_file()
     assert json.loads((runs / "current.json").read_text(encoding="utf-8"))["run_id"] == job["run_id"]
 
@@ -277,7 +396,8 @@ def test_ready_publishes_one_run_bundle_and_replaces_old_higher_score_strategy(
     runs = tmp_path / "local-runs"
     manager = manager_module.SlurmTrainingManager(client=client, local_runs_root=runs)
     started = manager.start(str(_dataset(tmp_path)), "XAUUSD", "H1")
-    assert manager.status()["job"]["remote_state"] == "READY"
+    status = manager.status()["job"]
+    assert status["remote_state"] == "READY", status.get("error")
 
     canonical = json.loads(old_strategy.read_text(encoding="utf-8"))
     assert canonical["best_score"] == 0.5
@@ -291,7 +411,7 @@ def test_ready_publishes_one_run_bundle_and_replaces_old_higher_score_strategy(
     ).resolve()
     assert bundle["strategy_path"].parent.name == "strategies"
     assert bundle["history_path"].parent == bundle["artifact_root_path"]
-    assert all(path.parent.name == "checkpoints" for path in bundle["checkpoint_paths"])
+    assert all(path.parent.name == "run_00000000000000000001" for path in bundle["checkpoint_paths"])
     progress = progress_module.get_symbol_progress("XAUUSD")
     assert progress.current_step == 10
     assert progress.train_steps == 10
@@ -306,7 +426,8 @@ def test_ready_publishes_one_run_bundle_and_replaces_old_higher_score_strategy(
         assert packaged_strategy["local_source"] == "mt5"
         assert packaged_strategy["run_id"] == started["run_id"]
         assert set(package_manifest["files"]) == {
-            "checkpoints/ckpt_XAUUSD_step_10.pt",
+            f"checkpoints/H1/{bundle['data_sha256']}/"
+            "run_00000000000000000001/ckpt_XAUUSD_step_0010.pt",
             "strategies/best_XAUUSD.json",
             "training_history_XAUUSD.json",
         }
@@ -328,7 +449,8 @@ def test_published_bundle_tampering_fails_closed_for_all_slurm_readers(
     runs = tmp_path / "local-runs"
     manager = manager_module.SlurmTrainingManager(client=client, local_runs_root=runs)
     manager.start(str(_dataset(tmp_path)), "XAUUSD", "H1")
-    assert manager.status()["job"]["remote_state"] == "READY"
+    status = manager.status()["job"]
+    assert status["remote_state"] == "READY", status.get("error")
 
     pointer = json.loads(
         (isolated_project / "published_training" / "current_XAUUSD.json").read_text(
@@ -344,6 +466,40 @@ def test_published_bundle_tampering_fails_closed_for_all_slurm_readers(
     assert progress_module.get_published_bundle("XAUUSD") is None
     assert progress_module.checkpoint_glob("XAUUSD") == []
     assert progress_module._load_strategy("XAUUSD") is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("timeframe", "M15"),
+        ("data_sha256", "0" * 64),
+        ("dataset_id", "sha256:" + "0" * 64),
+        ("local_source", "unknown"),
+        ("periods_per_year", 968),
+        ("minimum_bars", 1),
+    ],
+)
+def test_published_bundle_identity_tampering_fails_closed(
+    isolated_project: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value,
+) -> None:
+    monkeypatch.setenv("TRAINING_BACKEND", "slurm")
+    monkeypatch.setattr(progress_module, "PROJECT_ROOT", isolated_project)
+    client = FakeClient(["COMPLETED"])
+    runs = tmp_path / "local-runs"
+    manager = manager_module.SlurmTrainingManager(client=client, local_runs_root=runs)
+    manager.start(str(_dataset(tmp_path)), "XAUUSD", "H1")
+    status = manager.status()["job"]
+    assert status["remote_state"] == "READY", status.get("error")
+
+    pointer_path = isolated_project / "published_training" / "current_XAUUSD.json"
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    pointer[field] = value
+    pointer_path.write_text(json.dumps(pointer), encoding="utf-8")
+    assert progress_module.get_published_bundle("XAUUSD") is None
 
 
 @pytest.mark.parametrize(
@@ -365,7 +521,7 @@ def test_restart_recovers_prepare_and_upload_response_loss(
     restored = manager_module.SlurmTrainingManager(client=client, local_runs_root=runs)
     recovered = restored.status()["job"]
     assert recovered["run_id"] == started["run_id"]
-    assert recovered["remote_state"] == "PENDING"
+    assert recovered["remote_state"] == "PENDING", recovered.get("error")
     assert recovered["slurm_job_id"] == "4321"
 
 
@@ -444,16 +600,26 @@ def test_download_integrity_failure_is_terminal(
     assert "结果校验失败" in failed["error"]
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("data_sha256", "d" * 64),
+        ("data_start", "2020-01-02T00:00:00Z"),
+        ("columns", ["time", "open"]),
+    ],
+)
 def test_result_identity_mismatch_cannot_become_ready(
     isolated_project: Path,
     tmp_path: Path,
+    field: str,
+    value: object,
 ) -> None:
     client = FakeClient(["COMPLETED"])
     original = client.download_result
 
     def wrong_identity(**kwargs):
         result = original(**kwargs)
-        result["data_sha256"] = "d" * 64
+        result[field] = value
         return result
 
     client.download_result = wrong_identity  # type: ignore[method-assign]
@@ -464,7 +630,51 @@ def test_result_identity_mismatch_cannot_become_ready(
 
     failed = manager.status()["job"]
     assert failed["remote_state"] == "FAILED"
-    assert "data_sha256" in failed["error"]
+    assert field in failed["error"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("data_start", "2020-01-02T00:00:00Z"),
+        ("data_end", "2025-12-31T00:00:00Z"),
+        ("columns", ["time", "open"]),
+    ],
+)
+def test_strategy_range_or_columns_tampering_cannot_become_ready(
+    isolated_project: Path,
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    client = FakeClient(["COMPLETED"])
+    original = client.download_result
+
+    def wrong_strategy(**kwargs):
+        result = original(**kwargs)
+        strategy_path = (
+            kwargs["local_artifact_root"] / "strategies" / "best_XAUUSD.json"
+        )
+        strategy = json.loads(strategy_path.read_text(encoding="utf-8"))
+        strategy[field] = value
+        strategy_path.write_text(json.dumps(strategy), encoding="utf-8")
+        digest = hashlib.sha256(strategy_path.read_bytes()).hexdigest()
+        for row in result["artifacts"]:
+            if row["path"] == "strategies/best_XAUUSD.json":
+                row["size"] = strategy_path.stat().st_size
+                row["sha256"] = digest
+        result["artifact_sha256"]["strategies/best_XAUUSD.json"] = digest
+        return result
+
+    client.download_result = wrong_strategy  # type: ignore[method-assign]
+    manager = manager_module.SlurmTrainingManager(
+        client=client, local_runs_root=tmp_path / "runs"
+    )
+    manager.start(str(_dataset(tmp_path)), "XAUUSD", "H1")
+
+    failed = manager.status()["job"]
+    assert failed["remote_state"] == "FAILED"
+    assert "回传策略身份" in failed["error"]
 
 
 def test_okx_source_is_preserved_and_tampering_cannot_become_ready(
@@ -494,6 +704,58 @@ def test_okx_source_is_preserved_and_tampering_cannot_become_ready(
     assert "local_source" in failed["error"]
 
 
+def test_legacy_okx_archive_enters_run_with_distinct_source_identity(
+    isolated_project: Path,
+    tmp_path: Path,
+) -> None:
+    path = _dataset(tmp_path, symbol="BTCUSDT", timeframe="H1", source="OKX")
+    manifest_path = path.with_suffix(".manifest.json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for field in ("source_family", "provenance_level", "bar_completion"):
+        manifest.pop(field)
+    manifest.update(
+        {
+            "provenance_status": "legacy_archive_attestation",
+            "source_instrument": "BTC-USDT-SWAP",
+            "source_endpoint": "/api/v5/market/history-candles",
+            "source_bar": "1H",
+            "volume_semantics": "OKX contract volume mapped to tick_volume",
+            "provenance": "user_provided_archive:OKX_K线数据.zip",
+            "closed_bars_only": True,
+            "derived_from": {
+                "archive_member": "OKX_K线数据/BTCUSDT_H1.parquet",
+                "data_sha256": "f" * 64,
+            },
+            "transform": {
+                "dropped_trailing_unclosed_bars": 1,
+                "cutoff_reference": "source_file_mtime",
+            },
+        }
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    manager = manager_module.SlurmTrainingManager(
+        client=FakeClient(),
+        local_runs_root=tmp_path / "runs",
+    )
+
+    started = manager.start(str(path), "BTCUSDT", "H1")
+    run_manifest = json.loads(
+        (
+            tmp_path
+            / "runs"
+            / started["run_id"]
+            / "run_manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert run_manifest["local_source"] == "okx_legacy_attested"
+    assert control_module._validate_manifest(
+        run_manifest,
+        started["run_id"],
+        path.name,
+    )["local_source"] == "okx_legacy_attested"
+
+
 def test_unknown_data_source_is_rejected(
     isolated_project: Path,
     tmp_path: Path,
@@ -517,6 +779,8 @@ def test_unknown_data_source_is_rejected(
         ("data_rows", 2999, "data_rows"),
         ("data_start", "2020-01-02T00:00:00Z", "data_start"),
         ("columns", ["time", "open"], "columns"),
+        ("periods_per_year", 999, "periods_per_year"),
+        ("bar_completion", "unconfirmed_allowed", "已完成 K 线"),
     ],
 )
 def test_data_manifest_identity_tampering_is_rejected(
@@ -536,6 +800,30 @@ def test_data_manifest_identity_tampering_is_rejected(
     )
     with pytest.raises(RuntimeError, match=message):
         manager.start(str(path), "XAUUSD", "H1")
+
+
+def test_ashare_periods_and_minimum_bars_enter_run_identity(
+    isolated_project: Path,
+    tmp_path: Path,
+) -> None:
+    path = _dataset(
+        tmp_path,
+        symbol="000001",
+        timeframe="H1",
+        source="AShareLocal",
+    )
+    manager = manager_module.SlurmTrainingManager(
+        client=FakeClient(), local_runs_root=tmp_path / "runs"
+    )
+    started = manager.start(str(path), "000001", "H1")
+    run_manifest = json.loads(
+        (tmp_path / "runs" / started["run_id"] / "run_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert run_manifest["local_source"] == "ashare_local"
+    assert run_manifest["periods_per_year"] == 968
+    assert run_manifest["minimum_bars"] == 1936
 
 
 def test_missing_strategy_cannot_become_ready(

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,51 @@ _STRATEGY_EXPORT_RE = re.compile(
     r"^strategy_(.+)_step(\d+)(?:_score([\d.]+))?\.json$",
     re.IGNORECASE,
 )
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def _has_complete_data_identity(data: dict[str, Any]) -> bool:
+    digest = data.get("data_sha256")
+    columns = data.get("columns")
+    if (
+        not isinstance(data.get("symbol"), str)
+        or not data["symbol"]
+        or not isinstance(data.get("timeframe"), str)
+        or not data["timeframe"]
+        or not isinstance(data.get("local_source"), str)
+        or not data["local_source"]
+        or not isinstance(digest, str)
+        or _SHA256_RE.fullmatch(digest) is None
+        or data.get("dataset_id") != f"sha256:{digest}"
+    ):
+        return False
+    for field in ("periods_per_year", "minimum_bars", "data_rows"):
+        value = data.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            return False
+    if data["data_rows"] < data["minimum_bars"]:
+        return False
+    if (
+        not isinstance(columns, list)
+        or not columns
+        or any(not isinstance(column, str) or not column for column in columns)
+        or len(set(columns)) != len(columns)
+    ):
+        return False
+    try:
+        start = datetime.fromisoformat(
+            str(data.get("data_start") or "").replace("Z", "+00:00")
+        )
+        end = datetime.fromisoformat(
+            str(data.get("data_end") or "").replace("Z", "+00:00")
+        )
+    except ValueError:
+        return False
+    return (
+        start.tzinfo is not None
+        and end.tzinfo is not None
+        and start.astimezone(timezone.utc) < end.astimezone(timezone.utc)
+    )
 
 
 def strategy_path_for_symbol(symbol: str) -> Path:
@@ -145,7 +191,7 @@ def inspect_strategy_file(
 
     data_file_exists = bool(data_file) and Path(str(data_file)).exists()
 
-    return {
+    payload = {
         "strategy_file": str(p.resolve()),
         "filename": p.name,
         "symbol": symbol or "",
@@ -159,6 +205,27 @@ def inspect_strategy_file(
         "valid": True,
         "message": "",
     }
+    identity_fields = (
+        "local_source",
+        "periods_per_year",
+        "minimum_bars",
+        "dataset_id",
+        "data_sha256",
+        "data_rows",
+        "data_start",
+        "data_end",
+        "columns",
+    )
+    if isinstance(data, dict):
+        for field in identity_fields:
+            if field in data:
+                payload[field] = data[field]
+    payload["identity_registration"] = (
+        "registered"
+        if isinstance(data, dict) and _has_complete_data_identity(data)
+        else "legacy_unknown"
+    )
+    return payload
 
 
 def resolve_strategy_file(
@@ -254,7 +321,21 @@ def sync_best_strategy_for_symbol(
         "train_step": best_step,
     }
     if strat:
-        for key in ("timeframe", "data_file", "mode", "train_steps"):
+        for key in (
+            "timeframe",
+            "data_file",
+            "mode",
+            "train_steps",
+            "periods_per_year",
+            "minimum_bars",
+            "local_source",
+            "dataset_id",
+            "data_sha256",
+            "data_rows",
+            "data_start",
+            "data_end",
+            "columns",
+        ):
             if strat.get(key) is not None:
                 payload[key] = strat[key]
     payload = _apply_data_file_fallback(payload, data_file_hint=data_file_hint)

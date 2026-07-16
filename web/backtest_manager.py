@@ -49,7 +49,10 @@ class JobState(str, Enum):
 @dataclass
 class BacktestJob:
     strategy_file: str
+    data_file: str
     symbol: str
+    evaluation_mode: str = "auto"
+    score_start: str | None = None
     commission_pct: float = 0.02
     slippage_pct: float = 0.01
     state: JobState = JobState.RUNNING
@@ -63,7 +66,10 @@ class BacktestJob:
     def to_dict(self) -> dict[str, Any]:
         return {
             "strategy_file": self.strategy_file,
+            "data_file": self.data_file,
             "symbol": self.symbol,
+            "evaluation_mode": self.evaluation_mode,
+            "score_start": self.score_start,
             "commission_pct": self.commission_pct,
             "slippage_pct": self.slippage_pct,
             "state": self.state.value,
@@ -102,6 +108,8 @@ class BacktestManager:
         self,
         strategy_file: str,
         data_file: str | None = None,
+        evaluation_mode: str = "auto",
+        score_start: str | None = None,
         commission_pct: float = 0.02,
         slippage_pct: float = 0.01,
     ) -> BacktestJob:
@@ -134,6 +142,9 @@ class BacktestManager:
                     "回测必须使用本地 Parquet（策略未记录 data_file，且未传入数据文件）"
                 )
             cmd.extend(["--data-file", data_file])
+            cmd.extend(["--evaluation-mode", evaluation_mode])
+            if score_start:
+                cmd.extend(["--score-start", score_start])
 
             self._log_fp = open(log_path, "w", encoding="utf-8", buffering=1)
             env = os.environ.copy()
@@ -157,7 +168,10 @@ class BacktestManager:
             )
             self._job = BacktestJob(
                 strategy_file=strategy_file,
+                data_file=data_file,
                 symbol=symbol,
+                evaluation_mode=evaluation_mode,
+                score_start=score_start,
                 commission_pct=float(commission_pct),
                 slippage_pct=float(slippage_pct),
                 pid=self._proc.pid,

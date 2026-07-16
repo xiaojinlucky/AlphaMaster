@@ -10,6 +10,7 @@ STRATEGIES_DIR = PROJECT_ROOT / "strategies"
 
 _DEFAULT = {
     "last_data_file": "",
+    "last_backtest_data_file": "",
     "last_strategy_file": "",
     "debug_mode": False,
     "ai_provider": "deepseek",
@@ -110,6 +111,9 @@ def load_settings() -> dict:
     out = dict(_DEFAULT)
     out.update({k: v for k, v in data.items() if k in _DEFAULT})
     out["debug_mode"] = bool(out.get("debug_mode", False))
+    out["last_backtest_data_file"] = str(
+        out.get("last_backtest_data_file") or ""
+    ).strip()
     out["last_strategy_file"] = str(out.get("last_strategy_file") or "").strip()
     out["ai_provider"] = str(out.get("ai_provider") or "deepseek").strip().lower()
     if out["ai_provider"] not in ("deepseek", "openclaw", "openclaw_wb"):
@@ -167,6 +171,10 @@ def save_settings(data: dict) -> dict:
             current["last_data_file"] = path
     if "last_strategy_file" in data:
         current["last_strategy_file"] = str(data["last_strategy_file"] or "").strip()
+    if "last_backtest_data_file" in data:
+        current["last_backtest_data_file"] = str(
+            data["last_backtest_data_file"] or ""
+        ).strip()
     if "debug_mode" in data:
         current["debug_mode"] = bool(data["debug_mode"])
     if "ai_provider" in data:

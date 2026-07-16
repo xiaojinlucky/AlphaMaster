@@ -33,6 +33,9 @@ def _manifest(data: bytes) -> dict:
         "data_size": len(data),
         "data_sha256": hashlib.sha256(data).hexdigest(),
         "data_rows": 3000,
+        "data_start": "2020-01-01T00:00:00Z",
+        "data_end": "2026-01-01T00:00:00Z",
+        "columns": ["time", "open", "high", "low", "close", "tick_volume"],
         "local_source": "mt5",
         "git_commit": "a" * 40,
         "training_parameters": {"train_steps": 10, "from_scratch": True},
@@ -108,7 +111,16 @@ def test_manifest_rejects_unknown_local_source() -> None:
         sc._validate_manifest(manifest, RUN_ID, FILENAME)
 
 
-@pytest.mark.parametrize("source", ["mt5", "okx"])
+@pytest.mark.parametrize(
+    "source",
+    [
+        "mt5",
+        "mt5_legacy_attested",
+        "okx",
+        "okx_legacy_attested",
+        "ashare_local",
+    ],
+)
 def test_manifest_accepts_known_local_sources(source: str) -> None:
     data = b"PAR1-test-data"
     manifest = _manifest(data)

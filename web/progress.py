@@ -12,6 +12,9 @@ from typing import Any
 
 import torch
 
+from config import Config
+from data_pipeline.a_share_data import ASHARE_SPECS_BY_TIMEFRAME
+from data_pipeline.dataset_contracts import TRAINING_SOURCE_IDS
 from model_core.config import ModelConfig
 from model_core.vocab import FORMULA_VOCAB
 
@@ -43,9 +46,26 @@ def _published_artifact_path(artifact_root: Path, relative: str) -> Path:
     return resolved
 
 
+def _filesystem_path(path: Path) -> Path:
+    """Windows 下用扩展路径执行文件 I/O，避免嵌套 checkpoint 撞 MAX_PATH。"""
+    if os.name != "nt":
+        return path
+    raw = os.path.normpath(str(path if path.is_absolute() else Path.cwd() / path))
+    if raw.startswith("\\\\?\\"):
+        return Path(raw)
+    if raw.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + raw[2:])
+    return Path("\\\\?\\" + raw)
+
+
+def _read_text(path: Path) -> str:
+    with _filesystem_path(path).open("r", encoding="utf-8") as handle:
+        return handle.read()
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
+    with _filesystem_path(path).open("rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
@@ -70,6 +90,12 @@ def get_published_bundle(symbol: str) -> dict[str, Any] | None:
         strategy_rel = payload.get("strategy_file")
         history_rel = payload.get("history_file")
         hashes = payload.get("artifact_sha256")
+        timeframe = payload.get("timeframe")
+        data_sha256 = payload.get("data_sha256")
+        dataset_id = payload.get("dataset_id")
+        local_source = payload.get("local_source")
+        periods_per_year = payload.get("periods_per_year")
+        minimum_bars = payload.get("minimum_bars")
         if (
             not isinstance(checkpoint_rel, list)
             or not checkpoint_rel
@@ -77,9 +103,36 @@ def get_published_bundle(symbol: str) -> dict[str, Any] | None:
             or not isinstance(strategy_rel, str)
             or not isinstance(history_rel, str)
             or not isinstance(hashes, dict)
+            or not isinstance(timeframe, str)
+            or re.fullmatch(r"[A-Z0-9]+", timeframe) is None
+            or not isinstance(data_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", data_sha256) is None
+            or dataset_id != f"sha256:{data_sha256}"
+            or local_source not in TRAINING_SOURCE_IDS
+            or isinstance(periods_per_year, bool)
+            or not isinstance(periods_per_year, int)
+            or periods_per_year <= 0
+            or isinstance(minimum_bars, bool)
+            or not isinstance(minimum_bars, int)
+            or minimum_bars <= 0
+            or (
+                local_source in TRAINING_SOURCE_IDS - {"ashare_local"}
+                and minimum_bars != Config.MIN_BARS
+            )
+            or (
+                local_source == "ashare_local"
+                and (
+                    timeframe not in ASHARE_SPECS_BY_TIMEFRAME
+                    or periods_per_year
+                    != ASHARE_SPECS_BY_TIMEFRAME[timeframe].periods_per_year
+                    or minimum_bars
+                    != ASHARE_SPECS_BY_TIMEFRAME[timeframe].minimum_bars
+                )
+            )
             or any(
                 not re.fullmatch(
-                    rf"checkpoints/ckpt_{re.escape(symbol)}_step_\d+\.pt",
+                    rf"checkpoints/{re.escape(timeframe)}/{re.escape(data_sha256)}/"
+                    rf"run_[0-9]{{20}}/ckpt_{re.escape(symbol)}_step_[0-9]{{4,}}\.pt",
                     item,
                 )
                 for item in checkpoint_rel
@@ -94,11 +147,25 @@ def get_published_bundle(symbol: str) -> dict[str, Any] | None:
         required = [*checkpoint_rel, strategy_rel, history_rel]
         artifact_paths = [*checkpoints, strategy, history]
         if (
-            any(not path.is_file() for path in artifact_paths)
+            any(not _filesystem_path(path).is_file() for path in artifact_paths)
             or any(not re.fullmatch(r"[0-9a-f]{64}", str(hashes.get(item) or "")) for item in required)
             or any(
                 _sha256_file(path) != hashes[relative]
                 for relative, path in zip(required, artifact_paths)
+            )
+        ):
+            return None
+        strategy_payload = json.loads(_read_text(strategy))
+        if not isinstance(strategy_payload, dict) or any(
+            strategy_payload.get(field) != payload.get(field)
+            for field in (
+                "symbol",
+                "timeframe",
+                "dataset_id",
+                "data_sha256",
+                "local_source",
+                "periods_per_year",
+                "minimum_bars",
             )
         ):
             return None
@@ -125,7 +192,8 @@ def checkpoint_glob(symbol: str) -> list[Path]:
     found: list[Path] = []
     for pattern in patterns:
         found.extend(CHECKPOINT_DIR.glob(pattern))
-    return sorted(set(found), key=lambda p: p.stat().st_mtime)
+        found.extend(CHECKPOINT_DIR.glob(f"*/*/run_*/{pattern}"))
+    return sorted(set(found), key=lambda p: _filesystem_path(p).stat().st_mtime)
 
 
 def _step_from_name(path: Path) -> int:
@@ -172,13 +240,15 @@ def invalidate_checkpoint_cache() -> None:
 
 
 def _load_checkpoint_meta(path: Path) -> dict[str, Any]:
-    mtime = path.stat().st_mtime
+    filesystem_path = _filesystem_path(path)
+    mtime = filesystem_path.stat().st_mtime
     key = str(path)
     cached = _ckpt_cache.get(key)
     if cached and cached[0] == mtime:
         return cached[1]
 
-    ckpt = torch.load(path, map_location="cpu", weights_only=True)
+    with filesystem_path.open("rb") as handle:
+        ckpt = torch.load(handle, map_location="cpu", weights_only=True)
     meta = {
         "step": int(ckpt.get("step", _step_from_name(path))),
         "best_score": ckpt.get("best_score"),
@@ -207,7 +277,7 @@ def _load_strategy(symbol: str) -> dict[str, Any] | None:
     if not path.exists():
         return None
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(_read_text(path))
     except (json.JSONDecodeError, OSError):
         return None
     if not isinstance(payload, dict):
@@ -217,6 +287,8 @@ def _load_strategy(symbol: str) -> dict[str, Any] | None:
         payload["run_id"] = bundle["run_id"]
         payload["dataset_id"] = bundle.get("dataset_id")
         payload["local_source"] = bundle.get("local_source")
+        payload["periods_per_year"] = bundle.get("periods_per_year")
+        payload["minimum_bars"] = bundle.get("minimum_bars")
         payload["data_sha256"] = bundle.get("data_sha256")
         payload["data_filename"] = bundle.get("data_filename")
         payload["data_file"] = bundle.get("data_file")
@@ -271,7 +343,7 @@ def get_symbol_progress(symbol: str) -> SymbolProgress:
     file_history: dict[str, Any] | None = None
     if hist_file.exists():
         try:
-            file_history = json.loads(hist_file.read_text(encoding="utf-8"))
+            file_history = json.loads(_read_text(hist_file))
             steps = file_history.get("step") or []
             if steps:
                 # history 存的是 0 起算的训练步索引，展示与日志 [N/5000] 对齐用 N
@@ -289,7 +361,7 @@ def get_symbol_progress(symbol: str) -> SymbolProgress:
             ckpt_path = str(latest.relative_to(PROJECT_ROOT)).replace("\\", "/")
         except ValueError:
             ckpt_path = str(latest)
-        ckpt_mtime = latest.stat().st_mtime
+        ckpt_mtime = _filesystem_path(latest).stat().st_mtime
         try:
             meta = _load_checkpoint_meta(latest)
             current_step = max(current_step, int(meta["step"]))

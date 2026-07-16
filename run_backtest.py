@@ -11,7 +11,8 @@ run_backtest.py — 多因子组合回测（含手续费/滑点、夏普、资�
         # 单边手续费/滑点（单位 %），默认 0.02 / 0.01
 """
 
-import json, sys, math
+import json, sys, math, re
+from datetime import datetime, timezone
 from pathlib import Path
 import numpy as np
 import torch
@@ -23,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import Config
 from data_pipeline.parquet_manager import ParquetDataManager
+from data_pipeline.dataset_contracts import source_family
 from backtest_viz import BacktestEngine
 from model_core.vocab import FORMULA_VOCAB, VOCAB_VERSION
 from model_core.vm import StackVM
@@ -47,6 +49,195 @@ def load_strategy(path: Path) -> dict | None:
     if isinstance(data, list):
         return {"formula": data, "vocab_version": "legacy", "symbol": None}
     return data
+
+
+def _utc_seconds(value: str, field: str) -> int:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"策略缺少训练数据范围字段: {field}")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"策略训练数据范围字段 {field} 不是合法 ISO-8601") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"策略训练数据范围字段 {field} 必须包含时区")
+    return int(parsed.astimezone(timezone.utc).timestamp())
+
+
+def _identity_payload_from_strategy(strategy: dict) -> dict:
+    return {
+        "symbol": strategy["symbol"],
+        "timeframe": strategy["timeframe"],
+        "local_source": strategy["local_source"],
+        "source_family": source_family(strategy["local_source"]),
+        "periods_per_year": strategy["periods_per_year"],
+        "minimum_bars": strategy["minimum_bars"],
+        "dataset_id": strategy["dataset_id"],
+        "data_sha256": strategy["data_sha256"],
+        "data_rows": strategy.get("data_rows"),
+        "data_start": strategy.get("data_start"),
+        "data_end": strategy.get("data_end"),
+        "columns": strategy.get("columns"),
+    }
+
+
+def _identity_payload_from_manager(manager: ParquetDataManager) -> dict:
+    return {
+        "symbol": manager.symbol,
+        "timeframe": manager.timeframe,
+        "local_source": manager.source,
+        "source_family": source_family(manager.source),
+        "periods_per_year": manager.periods_per_year,
+        "minimum_bars": manager.minimum_bars,
+        "dataset_id": manager.dataset_id,
+        "data_sha256": manager.data_sha256,
+        "data_rows": manager.data_rows,
+        "data_start": manager.data_start,
+        "data_end": manager.data_end,
+        "columns": list(manager.columns),
+    }
+
+
+def _validate_strategy_data_contract(
+    strategy: dict,
+    manager: ParquetDataManager,
+    *,
+    evaluation_mode: str = "auto",
+    score_start: str | None = None,
+) -> dict:
+    """验证训练身份与评估身份，并返回可审计评分区间。"""
+    if evaluation_mode not in {"auto", "replay", "out_of_sample", "diagnostic_overlap"}:
+        raise ValueError("evaluation_mode 不受支持")
+    required = {
+        "symbol": str,
+        "timeframe": str,
+        "local_source": str,
+        "periods_per_year": int,
+        "minimum_bars": int,
+        "data_sha256": str,
+        "dataset_id": str,
+        "data_rows": int,
+        "data_start": str,
+        "data_end": str,
+    }
+    for field, expected_type in required.items():
+        if field not in strategy:
+            raise ValueError(f"策略缺少训练数据身份字段: {field}")
+        actual = strategy[field]
+        if expected_type is int:
+            if isinstance(actual, bool) or not isinstance(actual, int):
+                raise ValueError(f"策略训练数据身份字段 {field} 必须是整数")
+        elif not isinstance(actual, str) or not actual:
+            raise ValueError(f"策略训练数据身份字段 {field} 必须是非空字符串")
+    columns = strategy.get("columns")
+    if (
+        not isinstance(columns, list)
+        or not columns
+        or any(not isinstance(column, str) or not column for column in columns)
+        or len(set(columns)) != len(columns)
+    ):
+        raise ValueError("策略训练数据身份字段 columns 必须是无重复字符串列表")
+    if strategy["data_rows"] < strategy["minimum_bars"]:
+        raise ValueError("策略 data_rows 小于 minimum_bars")
+    training_start = _utc_seconds(strategy["data_start"], "data_start")
+    training_end = _utc_seconds(strategy["data_end"], "data_end")
+    if training_start >= training_end:
+        raise ValueError("策略训练数据范围必须满足 data_start < data_end")
+
+    digest = strategy["data_sha256"]
+    if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise ValueError("策略 data_sha256 必须是 64 位小写十六进制")
+    if strategy["dataset_id"] != f"sha256:{digest}":
+        raise ValueError("策略 dataset_id 与 data_sha256 不一致")
+    if manager.dataset_id != f"sha256:{manager.data_sha256}":
+        raise ValueError("评估数据 dataset_id 与 data_sha256 不一致")
+
+    for field, value in (
+        ("symbol", manager.symbol),
+        ("timeframe", manager.timeframe),
+    ):
+        if strategy[field] != value:
+            raise ValueError(
+                f"策略与评估数据的 {field} 不兼容: "
+                f"{strategy[field]!r} != {value!r}"
+            )
+    if source_family(strategy["local_source"]) != source_family(manager.source):
+        raise ValueError(
+            "策略与评估数据的来源族不兼容: "
+            f"{strategy['local_source']!r} != {manager.source!r}"
+        )
+
+    if columns != list(manager.columns):
+        raise ValueError("策略与评估数据的 columns 不兼容")
+
+    same_dataset = digest == manager.data_sha256
+    times = manager.raw_dict["time"][0].detach().cpu().numpy()
+    if same_dataset:
+        for field, value in (
+            ("local_source", manager.source),
+            ("periods_per_year", manager.periods_per_year),
+            ("minimum_bars", manager.minimum_bars),
+            ("data_rows", manager.data_rows),
+            ("data_start", manager.data_start),
+            ("data_end", manager.data_end),
+        ):
+            if strategy[field] != value:
+                raise ValueError(
+                    f"同一数据 hash 的 {field} 与评估 loader 不一致: "
+                    f"{strategy[field]!r} != {value!r}"
+                )
+        if evaluation_mode == "out_of_sample":
+            raise ValueError("样本外回测要求评估数据 hash 与训练数据不同")
+        if score_start:
+            raise ValueError("训练集重放不接受 score_start")
+        resolved_mode = "replay"
+        score_start_index = 0
+    else:
+        if evaluation_mode == "replay":
+            raise ValueError("训练集重放要求评估数据 hash 与训练数据完全相同")
+        if evaluation_mode == "diagnostic_overlap":
+            resolved_mode = "diagnostic_overlap"
+            if score_start:
+                score_start_seconds = _utc_seconds(score_start, "score_start")
+                score_start_index = int(times.searchsorted(score_start_seconds, side="left"))
+            else:
+                score_start_index = 0
+        else:
+            score_start_seconds = (
+                _utc_seconds(score_start, "score_start")
+                if score_start
+                else training_end + 1
+            )
+            if score_start_seconds <= training_end:
+                raise ValueError("样本外评分起点必须晚于训练数据结束时间")
+            score_start_index = int(times.searchsorted(score_start_seconds, side="left"))
+            resolved_mode = "out_of_sample"
+        if score_start_index > len(times) - 3:
+            raise ValueError("评估数据没有足够的可评分样本")
+
+    training_identity = _identity_payload_from_strategy(strategy)
+    evaluation_identity = _identity_payload_from_manager(manager)
+    return {
+        "evaluation_mode": resolved_mode,
+        "same_dataset": same_dataset,
+        "score_start_index": score_start_index,
+        "score_start": datetime.fromtimestamp(
+            int(times[score_start_index]), tz=timezone.utc
+        ).isoformat().replace("+00:00", "Z"),
+        "score_end": datetime.fromtimestamp(
+            int(times[-1]), tz=timezone.utc
+        ).isoformat().replace("+00:00", "Z"),
+        "warmup_bars": score_start_index,
+        "training_data": training_identity,
+        "evaluation_data": evaluation_identity,
+        "annualization": {
+            "basis": "evaluation_data",
+            "training_periods_per_year": strategy["periods_per_year"],
+            "evaluation_periods_per_year": manager.periods_per_year,
+            "same_periods_per_year": (
+                strategy["periods_per_year"] == manager.periods_per_year
+            ),
+        },
+    }
 
 
 # ── 统计指标 ──────────────────────────────────────────────────────────────────
@@ -129,7 +320,12 @@ def _setup_chinese_font() -> None:
     plt.rcParams["axes.unicode_minus"] = False
 
 
-def plot_equity_curves(results_map: dict, output_dir: str, times_arr: np.ndarray | None = None):
+def plot_equity_curves(
+    results_map: dict,
+    output_dir: str,
+    times_arr: np.ndarray | None = None,
+    periods_per_year: int = _H1_PER_YEAR,
+):
     """绘制各品种 + 等权组合的资金曲线（中文标注）。
 
     Args:
@@ -174,7 +370,7 @@ def plot_equity_curves(results_map: dict, output_dir: str, times_arr: np.ndarray
             )
         ax_eq.plot(
             x, port_cum, linewidth=2.2, color="black",
-            label=f"等权组合（索提诺 {calc_sortino(port_pnl):+.2f}）",
+            label=f"等权组合（索提诺 {calc_sortino(port_pnl, periods_per_year):+.2f}）",
         )
         ax_eq.fill_between(x, port_cum, 0, where=port_cum >= 0, alpha=0.06, color="#1565c0")
         ax_eq.fill_between(x, port_cum, 0, where=port_cum < 0,  alpha=0.06, color="#b71c1c")
@@ -188,8 +384,8 @@ def plot_equity_curves(results_map: dict, output_dir: str, times_arr: np.ndarray
     ax_eq.set_title(
         f"{title_head}  |  "
         f"总收益={show_cum[-1]:+.3f}  "
-        f"夏普={calc_sharpe(show_pnl):+.2f}  "
-        f"索提诺={calc_sortino(show_pnl):+.2f}  "
+        f"夏普={calc_sharpe(show_pnl, periods_per_year):+.2f}  "
+        f"索提诺={calc_sortino(show_pnl, periods_per_year):+.2f}  "
         f"盈亏比={_fmt_pl_ratio(results_map)}",
         fontsize=11, pad=8,
     )
@@ -220,6 +416,7 @@ def export_equity_json(
     times_arr: np.ndarray | None = None,
     max_points: int = 1500,
     rolling_window: int = 500,
+    periods_per_year: int = _H1_PER_YEAR,
 ):
     """导出资金曲线原始数据为 JSON，供前端渲染交互式 HTML 图表。
 
@@ -277,7 +474,11 @@ def export_equity_json(
     }
     for s in syms:
         cum = results_map[s]["cum_pnl"]
-        roll = calc_rolling_sharpe(results_map[s]["pnl"], window=rolling_window)
+        roll = calc_rolling_sharpe(
+            results_map[s]["pnl"],
+            window=rolling_window,
+            periods_per_year=periods_per_year,
+        )
         pl = results_map[s].get("profit_loss_ratio")
         out["symbols"][s] = {
             "equity": _sample(cum),
@@ -297,9 +498,15 @@ def export_equity_json(
         port_pl = float(sum(pl_vals) / len(pl_vals)) if pl_vals else None
         out["portfolio"] = {
             "equity": _sample(port_cum),
-            "rolling_sharpe": _sample(calc_rolling_sharpe(port_pnl, window=rolling_window)),
-            "sharpe": round(float(calc_sharpe(port_pnl)), 4),
-            "sortino": round(float(calc_sortino(port_pnl)), 4),
+            "rolling_sharpe": _sample(
+                calc_rolling_sharpe(
+                    port_pnl,
+                    window=rolling_window,
+                    periods_per_year=periods_per_year,
+                )
+            ),
+            "sharpe": round(float(calc_sharpe(port_pnl, periods_per_year)), 4),
+            "sortino": round(float(calc_sortino(port_pnl, periods_per_year)), 4),
             "total_return": round(float(port_cum[-1]), 6),
             "profit_loss_ratio": round(port_pl, 4) if port_pl is not None else None,
         }
@@ -323,6 +530,8 @@ def main():
 
     strategy_file = None
     data_file_arg = None
+    evaluation_mode = "auto"
+    score_start = None
     commission_pct = DEFAULT_COMMISSION_PCT
     slippage_pct = DEFAULT_SLIPPAGE_PCT
     for i, arg in enumerate(sys.argv):
@@ -334,6 +543,10 @@ def main():
             commission_pct = float(sys.argv[i + 1])
         elif arg == "--slippage" and i + 1 < len(sys.argv):
             slippage_pct = float(sys.argv[i + 1])
+        elif arg == "--evaluation-mode" and i + 1 < len(sys.argv):
+            evaluation_mode = sys.argv[i + 1]
+        elif arg == "--score-start" and i + 1 < len(sys.argv):
+            score_start = sys.argv[i + 1]
 
     if commission_pct < 0 or slippage_pct < 0:
         print("[ERROR] 手续费/滑点不能为负"); sys.exit(1)
@@ -347,6 +560,7 @@ def main():
 
     # ── 2. 加载策略 ─────────────────────────────────────────────────
     strategy_data_file = None
+    strategy_contracts: list[dict] = []
     print(f"\n{'='*62}")
     if strategy_file:
         data = load_strategy(Path(strategy_file))
@@ -365,6 +579,7 @@ def main():
         if not sym:
             print("[ERROR] 策略文件未包含 symbol，且无法从文件名识别"); sys.exit(1)
         symbol_formulas = {sym: data["formula"]}
+        strategy_contracts.append(data)
         sc = data.get("best_score", "N/A")
         score_txt = f"{sc:.3f}" if isinstance(sc, (int, float)) else str(sc)
         print(f"  模式: 单策略文件 ({Path(strategy_file).name})")
@@ -377,6 +592,7 @@ def main():
             print(f"[ERROR] 找不到: {Config.STRATEGY_FILE}"); sys.exit(1)
         strategy_data_file = data.get("data_file")
         symbol_formulas = {sym: data["formula"] for sym in Config.SYMBOLS}
+        strategy_contracts.append(data)
         print("  模式: 单公式（所有品种共用）")
     else:
         symbol_formulas = {}
@@ -391,6 +607,7 @@ def main():
                 print(f"  [跳过] {sym}: vocab_version 不符 ({ver} vs {VOCAB_VERSION})")
                 continue
             symbol_formulas[sym] = data["formula"]
+            strategy_contracts.append(data)
             if not strategy_data_file and data.get("data_file"):
                 strategy_data_file = data.get("data_file")
             sc = data.get("best_score", "N/A")
@@ -423,21 +640,53 @@ def main():
     print(f"正在加载数据（离线 Parquet: {parquet_path}）...")
     pm = ParquetDataManager(str(parquet_path))
     pm.load()
+    applicable_contracts = strategy_contracts
+    if not strategy_file and not single_mode:
+        applicable_contracts = [
+            contract
+            for contract in strategy_contracts
+            if contract.get("symbol") == pm.symbol
+        ]
+        if not applicable_contracts:
+            print(f"[ERROR] 当前数据品种 {pm.symbol} 没有对应策略")
+            sys.exit(1)
+    evaluation_contracts: list[dict] = []
+    try:
+        for contract in applicable_contracts:
+            evaluation_contracts.append(
+                _validate_strategy_data_contract(
+                    contract,
+                    pm,
+                    evaluation_mode=evaluation_mode,
+                    score_start=score_start,
+                )
+            )
+    except ValueError as exc:
+        print(f"[ERROR] 拒绝回测: {exc}")
+        sys.exit(1)
+    score_start_indices = {
+        contract["score_start_index"] for contract in evaluation_contracts
+    }
+    resolved_modes = {
+        contract["evaluation_mode"] for contract in evaluation_contracts
+    }
+    if len(score_start_indices) != 1 or len(resolved_modes) != 1:
+        print("[ERROR] 多策略的评估区间或评估模式不一致")
+        sys.exit(1)
+    score_start_index = next(iter(score_start_indices))
+    resolved_evaluation_mode = next(iter(resolved_modes))
+    evaluation_contract = evaluation_contracts[0]
+    periods_per_year = pm.periods_per_year
     raw_dict = pm.raw_dict
     syms = pm.symbols
-    # 策略品种名与 Parquet 品种不一致时（单策略 + 单品种文件），映射公式到数据品种
-    if strategy_file and len(symbol_formulas) == 1 and len(syms) == 1:
-        strat_sym = next(iter(symbol_formulas))
-        data_sym = syms[0]
-        if strat_sym != data_sym:
-            formula = symbol_formulas[strat_sym]
-            print(f"  [映射] 策略品种 {strat_sym} → 数据品种 {data_sym}")
-            symbol_formulas = {data_sym: formula}
-            cost_rates = {data_sym: cost_rate_all}
-
     T = raw_dict["open"].shape[1]
     times_all = raw_dict.get("time", None)
-    print(f"  品种: {syms}  T={T} bars\n")
+    print(
+        f"  品种: {syms}  T={T} bars  年化周期={periods_per_year}\n"
+        f"  评估模式: {resolved_evaluation_mode}  "
+        f"评分起点={evaluation_contract['score_start']}  "
+        f"预热={score_start_index} bars\n"
+    )
 
     # ── 4. 为每品种计算因子 + 回测 ───────────────────────────────
     vm   = StackVM()
@@ -458,15 +707,24 @@ def main():
         feat_i    = feat[i:i+1]
         raw_i     = {k: v[i:i+1] for k, v in raw_dict.items()}
 
-        engine    = BacktestEngine(formula=formula, cost_rate=cost_rate)
-        sym_res   = engine.run(raw_i, feat_i, [sym])
+        engine    = BacktestEngine(
+            formula=formula,
+            cost_rate=cost_rate,
+            periods_per_year=periods_per_year,
+        )
+        sym_res   = engine.run(
+            raw_i,
+            feat_i,
+            [sym],
+            score_start_index=score_start_index,
+        )
         backtest_results.extend(sym_res)
 
         r = sym_res[0]
         pnl_arr = r.pnl
         cum_arr = r.cum_pnl
-        sharpe  = calc_sharpe(pnl_arr)
-        sortino = calc_sortino(pnl_arr)
+        sharpe  = calc_sharpe(pnl_arr, periods_per_year)
+        sortino = calc_sortino(pnl_arr, periods_per_year)
         pl_ratio = r.profit_loss_ratio
 
         results_map[sym] = {
@@ -507,8 +765,8 @@ def main():
         all_pnls = np.stack([d["pnl"] for d in results_map.values()], axis=0)
         port_pnl = all_pnls.mean(axis=0)
         port_cum = np.cumsum(port_pnl)
-        p_sharpe  = calc_sharpe(port_pnl)
-        p_sortino = calc_sortino(port_pnl)
+        p_sharpe  = calc_sharpe(port_pnl, periods_per_year)
+        p_sortino = calc_sortino(port_pnl, periods_per_year)
         pl_vals = [d["profit_loss_ratio"] for d in results_map.values()
                    if d["profit_loss_ratio"] is not None]
         p_pl_ratio = float(sum(pl_vals) / len(pl_vals)) if pl_vals else None
@@ -526,15 +784,47 @@ def main():
     # ── 6. 资金曲线图 ─────────────────────────────────────────────────
     Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
     if results_map:
-        times_np = times_all[0].numpy() if times_all is not None else None
-        plot_equity_curves(results_map, OUTPUT_DIR, times_np)
-        export_equity_json(results_map, OUTPUT_DIR, times_np)
+        times_np = (
+            times_all[0, score_start_index:].numpy()
+            if times_all is not None
+            else None
+        )
+        plot_equity_curves(
+            results_map,
+            OUTPUT_DIR,
+            times_np,
+            periods_per_year=periods_per_year,
+        )
+        export_equity_json(
+            results_map,
+            OUTPUT_DIR,
+            times_np,
+            periods_per_year=periods_per_year,
+        )
 
     # ── 7. 资金曲线图已在步骤 6 生成；跳过 K 线/逐笔交易图以加快回测 ─────
 
     # ── 8. 保存 JSON 报告 ─────────────────────────────────────────────
     report = {
         "mode": "single" if single_mode else "multi_factor",
+        "symbol": pm.symbol,
+        "timeframe": pm.timeframe,
+        "local_source": pm.source,
+        "dataset_id": pm.dataset_id,
+        "data_sha256": pm.data_sha256,
+        "periods_per_year": periods_per_year,
+        "minimum_bars": pm.minimum_bars,
+        "evaluation_mode": resolved_evaluation_mode,
+        "score_start": evaluation_contract["score_start"],
+        "score_end": evaluation_contract["score_end"],
+        "warmup_bars": evaluation_contract["warmup_bars"],
+        "annualization": evaluation_contract["annualization"],
+        "training_data": (
+            evaluation_contracts[0]["training_data"]
+            if len(evaluation_contracts) == 1
+            else [row["training_data"] for row in evaluation_contracts]
+        ),
+        "evaluation_data": evaluation_contract["evaluation_data"],
         "cost_rates": cost_rates,
         "symbols": {},
         "portfolio": {},

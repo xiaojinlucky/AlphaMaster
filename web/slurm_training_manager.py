@@ -16,6 +16,22 @@ from typing import Any
 
 import pyarrow.parquet as pq
 
+from config import Config
+from data_pipeline.a_share_data import (
+    ASHARE_DATASET_FORMAT,
+    ASHARE_SOURCE,
+    ASHARE_SOURCE_ID,
+    ASHARE_SPECS_BY_TIMEFRAME,
+)
+from data_pipeline.dataset_contracts import (
+    MT5_LEGACY_SOURCE,
+    MT5_LEGACY_SOURCE_ID,
+    OKX_LEGACY_SOURCE_ID,
+    OKX_SOURCE_ID,
+    REMOTE_SOURCE_CONTRACTS,
+    infer_periods_per_year,
+    resolve_okx_source_id,
+)
 from model_core.config import ModelConfig
 from model_core.vocab import FORMULA_VOCAB, VOCAB_VERSION
 from utils.train_logging import strip_ansi
@@ -29,8 +45,8 @@ from web.slurm_training_client import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_SOURCE_CONTRACTS = {
-    "MetaTrader5": ("mt5", "alphamaster_mt5_dataset_v1"),
-    "OKX": ("okx", "alphamaster_okx_dataset_v1"),
+    **REMOTE_SOURCE_CONTRACTS,
+    ASHARE_SOURCE: (ASHARE_SOURCE_ID, ASHARE_DATASET_FORMAT),
 }
 REQUIRED_DATA_COLUMNS = ("time", "open", "high", "low", "close", "tick_volume")
 LOCAL_RUNS_ROOT = PROJECT_ROOT / "local_runs"
@@ -162,7 +178,17 @@ def _inspect_parquet_contract(data_file: Path) -> dict[str, Any]:
         raise RuntimeError(f"Parquet 缺少训练列: {missing}")
     start = datetime.fromtimestamp(first_time, tz=timezone.utc).isoformat().replace("+00:00", "Z")
     end = datetime.fromtimestamp(last_time, tz=timezone.utc).isoformat().replace("+00:00", "Z")
-    return {"data_rows": rows, "data_start": start, "data_end": end, "columns": columns}
+    return {
+        "data_rows": rows,
+        "data_start": start,
+        "data_end": end,
+        "columns": columns,
+        "periods_per_year": infer_periods_per_year(
+            rows=rows,
+            start_unix=first_time,
+            end_unix=last_time,
+        ),
+    }
 
 
 class SlurmTrainingManager:
@@ -286,6 +312,31 @@ class SlurmTrainingManager:
             raise RuntimeError("数据 manifest 的 format 与 source 不匹配")
         if payload.get("time_unit") != "unix_seconds":
             raise RuntimeError("数据 manifest 的 time_unit 必须是 unix_seconds")
+        if source == MT5_LEGACY_SOURCE:
+            if payload.get("source_family") != "MetaTrader5":
+                raise RuntimeError("旧 MT5 manifest 的 source_family 不匹配")
+            if payload.get("provenance_level") != "legacy_user_attested":
+                raise RuntimeError("旧 MT5 manifest 的 provenance_level 不匹配")
+            if payload.get("attestation_scope") != "exact_file_bytes":
+                raise RuntimeError("旧 MT5 manifest 的 attestation_scope 不匹配")
+            if payload.get("registration_method") != "legacy_sidecar_registration_v1":
+                raise RuntimeError("旧 MT5 manifest 的 registration_method 不受支持")
+            if payload.get("bar_timestamp_semantics") != "source_bar_open":
+                raise RuntimeError("旧 MT5 manifest 的时间语义不匹配")
+            plan_sha = payload.get("registration_plan_sha256")
+            if not isinstance(plan_sha, str) or re.fullmatch(
+                r"[0-9a-f]{64}", plan_sha
+            ) is None:
+                raise RuntimeError("旧 MT5 manifest 的注册计划哈希非法")
+        if source_id == OKX_SOURCE_ID:
+            try:
+                source_id = resolve_okx_source_id(
+                    payload,
+                    symbol=str(payload.get("symbol") or ""),
+                    timeframe=str(payload.get("timeframe") or "").upper(),
+                )
+            except ValueError as exc:
+                raise RuntimeError(str(exc)) from exc
         actual = _inspect_parquet_contract(data_file)
         for field in ("data_rows", "data_start", "data_end", "columns"):
             if payload.get(field) != actual[field]:
@@ -293,7 +344,90 @@ class SlurmTrainingManager:
         expected_dataset_id = f"sha256:{digest}"
         if payload.get("dataset_id", expected_dataset_id) != expected_dataset_id:
             raise RuntimeError("数据 manifest 的 dataset_id 与文件哈希不匹配")
-        return {**payload, "_source_id": source_id}
+        if source == ASHARE_SOURCE:
+            timeframe = str(payload.get("timeframe") or "").upper()
+            spec = ASHARE_SPECS_BY_TIMEFRAME.get(timeframe)
+            if spec is None:
+                raise RuntimeError("AShareLocal manifest 的 timeframe 不受支持")
+            if payload.get("market") != "CN_A_SHARE":
+                raise RuntimeError("AShareLocal manifest 的 market 必须是 CN_A_SHARE")
+            if payload.get("bar_timestamp_semantics") != "bar_close":
+                raise RuntimeError("AShareLocal manifest 必须声明 bar_close 时间语义")
+            if payload.get("source_timezone") != "Asia/Shanghai":
+                raise RuntimeError("AShareLocal manifest 的源时区必须是 Asia/Shanghai")
+            if payload.get("source_time_encoding") != (
+                "floor(china_local_wall_clock_unix_seconds/1000)"
+            ):
+                raise RuntimeError("AShareLocal manifest 的旧 time 编码声明不匹配")
+            expected_close_times = [
+                value.strftime("%H:%M") for value in spec.close_times
+            ]
+            if payload.get("session_close_times") != expected_close_times:
+                raise RuntimeError("AShareLocal manifest 的收盘时刻表不匹配")
+            expected_source_filename = (
+                f"{payload.get('symbol')}_{spec.legacy_period}.parquet"
+            )
+            if payload.get("source_filename") != expected_source_filename:
+                raise RuntimeError("AShareLocal manifest 的 source_filename 不匹配")
+            if not isinstance(payload.get("source_sha256"), str) or re.fullmatch(
+                r"[0-9a-f]{64}", payload["source_sha256"]
+            ) is None:
+                raise RuntimeError("AShareLocal manifest 的 source_sha256 非法")
+            if payload.get("periods_per_year") != spec.periods_per_year:
+                raise RuntimeError("AShareLocal manifest 的 periods_per_year 不匹配")
+            if payload.get("minimum_bars") != spec.minimum_bars:
+                raise RuntimeError("AShareLocal manifest 的 minimum_bars 不匹配")
+            if int(payload["data_rows"]) < spec.minimum_bars:
+                raise RuntimeError("AShareLocal 数据不足两个交易年")
+            periods_per_year = spec.periods_per_year
+            minimum_bars: int | None = spec.minimum_bars
+        else:
+            inferred_periods_value = actual.get("periods_per_year")
+            if inferred_periods_value is None:
+                try:
+                    start_unix = int(
+                        datetime.fromisoformat(
+                            str(actual["data_start"]).replace("Z", "+00:00")
+                        ).timestamp()
+                    )
+                    end_unix = int(
+                        datetime.fromisoformat(
+                            str(actual["data_end"]).replace("Z", "+00:00")
+                        ).timestamp()
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise RuntimeError("无法从数据范围推导 periods_per_year") from exc
+                inferred_periods_value = infer_periods_per_year(
+                    rows=int(actual["data_rows"]),
+                    start_unix=start_unix,
+                    end_unix=end_unix,
+                )
+            inferred_periods = int(inferred_periods_value)
+            if payload.get("periods_per_year", inferred_periods) != inferred_periods:
+                raise RuntimeError(
+                    "MT5/OKX manifest 的 periods_per_year 与数据范围不匹配"
+                )
+            if payload.get("minimum_bars", Config.MIN_BARS) != Config.MIN_BARS:
+                raise RuntimeError(
+                    f"MT5/OKX manifest 的 minimum_bars 必须是 {Config.MIN_BARS}"
+                )
+            if int(payload["data_rows"]) < Config.MIN_BARS:
+                raise RuntimeError(f"MT5/OKX 数据不足 {Config.MIN_BARS} bars")
+            periods_per_year = inferred_periods
+            minimum_bars = Config.MIN_BARS
+            if source == MT5_LEGACY_SOURCE and source_id != MT5_LEGACY_SOURCE_ID:
+                raise RuntimeError("旧 MT5 manifest 的来源身份映射错误")
+            if (
+                source == "OKX"
+                and source_id not in {OKX_SOURCE_ID, OKX_LEGACY_SOURCE_ID}
+            ):
+                raise RuntimeError("OKX manifest 的来源身份映射错误")
+        return {
+            **payload,
+            "periods_per_year": periods_per_year,
+            "minimum_bars": minimum_bars,
+            "_source_id": source_id,
+        }
 
     def _build_run_manifest(
         self,
@@ -341,8 +475,11 @@ class SlurmTrainingManager:
             "data_rows": int(data["data_rows"]),
             "data_start": data["data_start"],
             "data_end": data["data_end"],
+            "columns": list(data["columns"]),
             "data_timezone": "UTC",
             "dataset_id": data.get("dataset_id") or f"sha256:{data['data_sha256']}",
+            "periods_per_year": int(data["periods_per_year"]),
+            "minimum_bars": data.get("minimum_bars"),
             "git_commit": _git_commit(),
             "source_files": _source_files(),
             "training_parameters": {
@@ -556,8 +693,13 @@ class SlurmTrainingManager:
             "data_sha256",
             "data_size",
             "data_rows",
+            "data_start",
+            "data_end",
+            "columns",
             "dataset_id",
             "local_source",
+            "periods_per_year",
+            "minimum_bars",
             "git_commit",
             "source_files",
             "training_parameters",
@@ -581,7 +723,17 @@ class SlurmTrainingManager:
                 raise RuntimeError("结果 manifest 含重复产物路径")
             rows[path] = row
         symbol = re.escape(str(expected["symbol"]))
-        checkpoints = sorted(path for path in rows if re.fullmatch(rf"checkpoints/ckpt_{symbol}_step_\d+\.pt", path))
+        timeframe = re.escape(str(expected["timeframe"]))
+        data_sha256 = re.escape(str(expected["data_sha256"]))
+        checkpoints = sorted(
+            path
+            for path in rows
+            if re.fullmatch(
+                rf"checkpoints/{timeframe}/{data_sha256}/run_[0-9]{{20}}/"
+                rf"ckpt_{symbol}_step_[0-9]{{4,}}\.pt",
+                path,
+            )
+        )
         strategies = sorted(path for path in rows if path == f"strategies/best_{expected['symbol']}.json")
         histories = sorted(path for path in rows if path == f"training_history_{expected['symbol']}.json")
         if not checkpoints or len(strategies) != 1 or len(histories) != 1:
@@ -610,6 +762,15 @@ class SlurmTrainingManager:
             or strategy.get("timeframe") != expected["timeframe"]
             or strategy.get("vocab_version") != VOCAB_VERSION
             or strategy.get("train_steps") != expected["training_parameters"]["train_steps"]
+            or strategy.get("periods_per_year") != expected["periods_per_year"]
+            or strategy.get("minimum_bars") != expected.get("minimum_bars")
+            or strategy.get("dataset_id") != expected["dataset_id"]
+            or strategy.get("data_sha256") != expected["data_sha256"]
+            or strategy.get("local_source") != expected["local_source"]
+            or strategy.get("data_rows") != expected["data_rows"]
+            or strategy.get("data_start") != expected["data_start"]
+            or strategy.get("data_end") != expected["data_end"]
+            or strategy.get("columns") != expected["columns"]
             or not isinstance(formula, list)
             or not formula
             or any(
@@ -657,8 +818,14 @@ class SlurmTrainingManager:
             "timeframe": manifest["timeframe"],
             "dataset_id": manifest["dataset_id"],
             "local_source": manifest["local_source"],
+            "periods_per_year": manifest["periods_per_year"],
+            "minimum_bars": manifest.get("minimum_bars"),
             "data_filename": manifest["data_filename"],
             "data_sha256": manifest["data_sha256"],
+            "data_rows": manifest["data_rows"],
+            "data_start": manifest["data_start"],
+            "data_end": manifest["data_end"],
+            "columns": list(manifest["columns"]),
             "data_file": self._job["data_file"],
             "artifact_root": str(artifact_root.resolve()),
             "checkpoint_files": checkpoint_files,
@@ -695,8 +862,14 @@ class SlurmTrainingManager:
                 raise RuntimeError("已验证策略在发布前无法读取") from exc
             payload["dataset_id"] = manifest.get("dataset_id")
             payload["local_source"] = manifest.get("local_source")
+            payload["periods_per_year"] = manifest.get("periods_per_year")
+            payload["minimum_bars"] = manifest.get("minimum_bars")
             payload["data_filename"] = Path(self._job["data_file"]).name
             payload["data_sha256"] = manifest.get("data_sha256")
+            payload["data_rows"] = manifest.get("data_rows")
+            payload["data_start"] = manifest.get("data_start")
+            payload["data_end"] = manifest.get("data_end")
+            payload["columns"] = list(manifest.get("columns") or [])
             payload["data_file"] = self._job["data_file"]
             payload["run_id"] = self._job["run_id"]
             dest = PROJECT_ROOT / rel

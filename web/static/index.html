@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AlphaMaster · 量化因子挖掘中心</title>
+  <link rel="icon" href="data:," />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500;600&family=Orbitron:wght@500;600;700;800&display=swap" rel="stylesheet" />
@@ -281,12 +282,18 @@
         <div class="launch-form launch-form-file">
           <div class="launch-row launch-row-main">
             <button type="button" class="btn btn-secondary btn-browse file-action-button" id="btBrowseStrategyBtn">选择策略 JSON</button>
-            <div class="data-file-card" id="btStrategyCard">
+            <div class="data-file-card" id="btStrategyCard" aria-live="polite">
               <div class="data-file-empty">尚未选择策略文件</div>
             </div>
             <div class="launch-actions">
               <button class="btn btn-primary" id="btStartBtn" disabled>开始回测</button>
               <button class="btn btn-danger" id="btStopBtn" disabled>停止</button>
+            </div>
+          </div>
+          <div class="launch-row launch-row-main">
+            <button type="button" class="btn btn-secondary btn-browse file-action-button" id="btBrowseDataBtn">选择测试数据</button>
+            <div class="data-file-card" id="btDataCard" aria-live="polite">
+              <div class="data-file-empty">尚未选择回测 Parquet</div>
             </div>
           </div>
           <div class="launch-row bt-cost-row">
@@ -300,7 +307,7 @@
             </label>
             <span class="bt-cost-sum" id="btCostSumHint">合计单边成本 0.03%</span>
           </div>
-          <small class="field-hint">训练/回测均强制使用本地 Parquet，不连接 MT5。回测优先读策略内 <code>data_file</code>；没有则回退训练页同品种文件。单边手续费/滑点开平仓各扣一次。</small>
+          <small class="field-hint">训练和回测均使用本地 Parquet。测试数据与训练数据相同时执行重放；选择同品种、同周期的新数据时，系统自动从训练结束后的第一根 K 线开始进行样本外评分。单边手续费/滑点开平仓各扣一次。</small>
         </div>
       </section>
 
@@ -602,6 +609,6 @@
   </div>
 
   <script src="/static/bg.js?v=1"></script>
-  <script src="/static/app.js?v=62"></script>
+  <script src="/static/app.js?v=63"></script>
 </body>
 </html>

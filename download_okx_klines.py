@@ -23,7 +23,9 @@ download_okx_klines.py — 从 OKX 下载主流 USDT 永续合约 K 线
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -31,6 +33,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+import uuid
 
 import pandas as pd
 from loguru import logger
@@ -38,6 +41,11 @@ from loguru import logger
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import Config
+from data_pipeline.dataset_contracts import (
+    OKX_FORMAT,
+    OKX_SOURCE,
+    infer_periods_per_year,
+)
 
 OKX_BASE = "https://www.okx.com"
 DEFAULT_OUT = Path(r"D:\OKX_K线数据")
@@ -127,6 +135,7 @@ def download_history(inst_id: str, bar: str, max_bars: int | None = None) -> pd.
     after: str | None = None
     stagnant = 0
     page = 0
+    received_any = False
 
     while max_bars is None or len(rows) < max_bars:
         params: dict[str, str] = {"instId": inst_id, "bar": bar, "limit": "100"}
@@ -135,15 +144,24 @@ def download_history(inst_id: str, bar: str, max_bars: int | None = None) -> pd.
         batch = okx_get("/api/v5/market/history-candles", params)
         if not batch:
             break
+        received_any = True
 
-        prev_len = len(rows)
-        rows.extend(batch)
+        completed_batch: list[list[str]] = []
+        for item in batch:
+            if not isinstance(item, list) or len(item) != 9:
+                raise RuntimeError(
+                    "OKX history-candles 返回项必须严格为 9 个字段"
+                )
+            confirm = str(item[8])
+            if confirm not in {"0", "1"}:
+                raise RuntimeError(f"OKX K 线 confirm 非法: {confirm!r}")
+            if confirm == "1":
+                completed_batch.append(item)
+
+        rows.extend(completed_batch)
         page += 1
         if page % LOG_EVERY_PAGES == 0:
-            logger.info(f"    {inst_id} {bar}: 已拉取 {len(rows):,} 根…")
-
-        if len(rows) == prev_len:
-            break
+            logger.info(f"    {inst_id} {bar}: 已拉取 {len(rows):,} 根已完成 K 线…")
 
         oldest_ts = batch[-1][0]
         if after is not None and oldest_ts == after:
@@ -158,6 +176,8 @@ def download_history(inst_id: str, bar: str, max_bars: int | None = None) -> pd.
             break
         time.sleep(REQUEST_SLEEP)
 
+    if received_any and not rows:
+        raise RuntimeError("OKX 返回的数据中没有已完成 K 线（confirm=1）")
     if not rows:
         return pd.DataFrame(columns=_COLUMNS)
 
@@ -191,9 +211,93 @@ def download_history(inst_id: str, bar: str, max_bars: int | None = None) -> pd.
     )
 
 
-def save_parquet(df: pd.DataFrame, path: Path) -> None:
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _utc_iso(unix_seconds: int) -> str:
+    return (
+        datetime.fromtimestamp(unix_seconds, tz=timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def save_parquet(df: pd.DataFrame, path: Path) -> dict:
+    """原子写入 OKX Parquet 与远程训练所需的同名 sidecar。"""
     path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path, index=False)
+    if list(df.columns) != _COLUMNS:
+        raise ValueError(f"OKX 输出列必须严格为 {_COLUMNS}")
+    try:
+        symbol, timeframe = path.stem.rsplit("_", 1)
+    except ValueError as exc:
+        raise ValueError("OKX 文件名必须是 {symbol}_{timeframe}.parquet") from exc
+    token = uuid.uuid4().hex
+    parquet_staging = path.parent / f".{path.name}.{token}.partial"
+    manifest_path = path.with_suffix(".manifest.json")
+    manifest_staging = path.parent / f".{manifest_path.name}.{token}.partial"
+    try:
+        df.to_parquet(parquet_staging, index=False)
+        digest = _sha256(parquet_staging)
+        periods_per_year = infer_periods_per_year(
+            rows=len(df),
+            start_unix=int(df["time"].iloc[0]),
+            end_unix=int(df["time"].iloc[-1]),
+        )
+        manifest = {
+            "format": OKX_FORMAT,
+            "source": OKX_SOURCE,
+            "source_family": "OKX",
+            "provenance_level": "downloader_verified",
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "data_filename": path.name,
+            "data_sha256": digest,
+            "dataset_id": f"sha256:{digest}",
+            "data_rows": int(len(df)),
+            "data_start": _utc_iso(int(df["time"].iloc[0])),
+            "data_end": _utc_iso(int(df["time"].iloc[-1])),
+            "data_timezone": "UTC",
+            "time_unit": "unix_seconds",
+            "bar_timestamp_semantics": "source_bar_open",
+            "bar_completion": "confirmed_only",
+            "periods_per_year": periods_per_year,
+            "minimum_bars": Config.MIN_BARS,
+            "columns": list(_COLUMNS),
+            "exported_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+        manifest_staging.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(parquet_staging, path)
+        os.replace(manifest_staging, manifest_path)
+        return manifest
+    finally:
+        parquet_staging.unlink(missing_ok=True)
+        manifest_staging.unlink(missing_ok=True)
+
+
+def _verified_okx_pair_exists(path: Path) -> bool:
+    manifest_path = path.with_suffix(".manifest.json")
+    if not path.is_file() or not manifest_path.is_file():
+        return False
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(payload, dict)
+        and payload.get("source") == OKX_SOURCE
+        and payload.get("format") == OKX_FORMAT
+        and payload.get("bar_completion") == "confirmed_only"
+        and payload.get("data_filename") == path.name
+        and payload.get("data_sha256") == _sha256(path)
+    )
 
 
 def load_manifest(path: Path) -> dict:
@@ -246,10 +350,14 @@ def run(
             key = manifest_key(symbol, tf_tag)
             out_path = out_dir / f"{symbol}_{tf_tag}.parquet"
 
-            if resume and key in done and out_path.exists():
+            if resume and key in done and _verified_okx_pair_exists(out_path):
                 skipped += 1
                 logger.info(f"[{finished}/{total_tasks}] 跳过已完成 {out_path.name}")
                 continue
+            if resume and key in done and out_path.exists():
+                logger.warning(
+                    f"[{finished}/{total_tasks}] {out_path.name} 缺少有效 sidecar，重新下载"
+                )
 
             logger.info(f"[{finished}/{total_tasks}] 下载 {inst_id} {bar} -> {out_path.name}")
             t0 = time.time()

@@ -76,3 +76,53 @@ def test_sync_best_writes_data_file(project: Path) -> None:
 
     saved = json.loads(strat_path.read_text(encoding="utf-8"))
     assert saved["data_file"] == str(parquet.resolve())
+
+
+def _complete_strategy() -> dict:
+    digest = "a" * 64
+    return {
+        "symbol": "XAUUSD",
+        "timeframe": "H1",
+        "formula": [1, 2, 3],
+        "best_score": 1.5,
+        "local_source": "mt5",
+        "periods_per_year": 6240,
+        "minimum_bars": 3000,
+        "dataset_id": f"sha256:{digest}",
+        "data_sha256": digest,
+        "data_rows": 3000,
+        "data_start": "2023-01-01T00:00:00Z",
+        "data_end": "2024-01-01T00:00:00Z",
+        "columns": [
+            "time",
+            "open",
+            "high",
+            "low",
+            "close",
+            "tick_volume",
+        ],
+    }
+
+
+def test_complete_strategy_identity_is_registered_for_backtest(project: Path) -> None:
+    path = project / "strategies" / "best_XAUUSD.json"
+    path.write_text(json.dumps(_complete_strategy()), encoding="utf-8")
+
+    info = sf.inspect_strategy_file(str(path))
+
+    assert info["identity_registration"] == "registered"
+
+
+@pytest.mark.parametrize("field", ["columns", "data_start", "data_end", "data_rows"])
+def test_incomplete_oos_identity_stays_legacy_unknown(
+    project: Path,
+    field: str,
+) -> None:
+    strategy = _complete_strategy()
+    strategy.pop(field)
+    path = project / "strategies" / "best_XAUUSD.json"
+    path.write_text(json.dumps(strategy), encoding="utf-8")
+
+    info = sf.inspect_strategy_file(str(path))
+
+    assert info["identity_registration"] == "legacy_unknown"

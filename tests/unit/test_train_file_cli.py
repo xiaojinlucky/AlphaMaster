@@ -63,6 +63,9 @@ def train_file_module(monkeypatch: pytest.MonkeyPatch):
 def test_train_steps_default_remains_project_default(train_file_module) -> None:
     args = train_file_module.build_arg_parser().parse_args(["--data-file", "XAUUSD_H1.parquet"])
     assert args.train_steps == train_file_module.DEFAULT_TRAIN_STEPS
+    assert args.periods_per_year is None
+    assert args.minimum_bars is None
+    assert args.data_source is None
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "+1", "1.5", "１２", "abc", ""])
@@ -77,9 +80,19 @@ def test_main_applies_train_steps_before_training(
 ) -> None:
     observed: dict[str, object] = {}
 
-    def fake_train(data_file: str, *, from_scratch: bool):
+    def fake_train(
+        data_file: str,
+        *,
+        from_scratch: bool,
+        data_source: str | None,
+        periods_per_year: int | None,
+        minimum_bars: int | None,
+    ):
         observed["data_file"] = data_file
         observed["from_scratch"] = from_scratch
+        observed["periods_per_year"] = periods_per_year
+        observed["minimum_bars"] = minimum_bars
+        observed["data_source"] = data_source
         observed["train_steps"] = train_file_module.ModelConfig.TRAIN_STEPS
         return SimpleNamespace(
             target_symbol="XAUUSD",
@@ -96,6 +109,12 @@ def test_main_applies_train_steps_before_training(
             "--from-scratch",
             "--train-steps",
             "20",
+            "--periods-per-year",
+            "968",
+            "--minimum-bars",
+            "1936",
+            "--data-source",
+            "ashare_local",
         ]
     )
 
@@ -103,6 +122,9 @@ def test_main_applies_train_steps_before_training(
     assert observed == {
         "data_file": "XAUUSD_H1.parquet",
         "from_scratch": True,
+        "periods_per_year": 968,
+        "minimum_bars": 1936,
+        "data_source": "ashare_local",
         "train_steps": 20,
     }
 

@@ -15,12 +15,17 @@ import secrets
 import stat
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
 
 ROOT = Path("/hwdata/home/jinqc/Quant/AlphaMaster")
 SLURM_BIN = Path("/opt/gridview/slurm/bin")
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from data_pipeline.dataset_contracts import TRAINING_SOURCE_IDS
 
 RUN_ID_RE = re.compile(r"^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{8}$")
 JOB_ID_RE = re.compile(r"^[1-9][0-9]{0,18}$")
@@ -33,7 +38,8 @@ SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 GIT_COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 TIME_RE = re.compile(r"^(?:(?P<days>[0-7])-)?(?P<hours>[0-9]{1,2}):(?P<minutes>[0-5][0-9]):(?P<seconds>[0-5][0-9])$")
 MEMORY_RE = re.compile(r"^(?P<amount>[1-9][0-9]{0,5})(?P<unit>[MG])$")
-ALLOWED_LOCAL_SOURCES = frozenset({"mt5", "okx"})
+ALLOWED_LOCAL_SOURCES = TRAINING_SOURCE_IDS
+REQUIRED_DATA_COLUMNS = {"time", "open", "high", "low", "close", "tick_volume"}
 
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_DATA_BYTES = 64 * 1024**3
@@ -44,6 +50,7 @@ MAX_TAIL_BYTES = 2 * 1024 * 1024
 
 REQUIRED_SOURCE_FILES = (
     "train_file.py",
+    "data_pipeline/dataset_contracts.py",
     "model_core/config.py",
     "scripts/train_slurm_worker.py",
     "scripts/train_alphamaster.sbatch",
@@ -279,6 +286,29 @@ def _validate_manifest(manifest: Mapping[str, Any], run_id: str, filename: str) 
     rows = manifest.get("data_rows")
     if isinstance(rows, bool) or not isinstance(rows, int) or rows <= 0:
         raise ControlError("manifest data_rows 必须是正整数")
+    timestamps: list[datetime] = []
+    for field in ("data_start", "data_end"):
+        value = manifest.get(field)
+        if not isinstance(value, str):
+            raise ControlError(f"manifest {field} 必须是 UTC 时间")
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ControlError(f"manifest {field} 必须是 UTC 时间") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+            raise ControlError(f"manifest {field} 必须是 UTC 时间")
+        timestamps.append(parsed)
+    if timestamps[0] >= timestamps[1]:
+        raise ControlError("manifest data_start 必须早于 data_end")
+    columns = manifest.get("columns")
+    if (
+        not isinstance(columns, list)
+        or not columns
+        or any(not isinstance(name, str) or not name for name in columns)
+        or len(columns) != len(set(columns))
+        or not REQUIRED_DATA_COLUMNS.issubset(columns)
+    ):
+        raise ControlError("manifest columns 缺少训练列或包含重复项")
     if manifest.get("local_source") not in ALLOWED_LOCAL_SOURCES:
         raise ControlError("manifest local_source 不受支持")
 

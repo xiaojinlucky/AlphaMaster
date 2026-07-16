@@ -2,8 +2,10 @@ import copy
 import heapq
 import json
 import math
+import os
 import pathlib
 import random
+import re
 import sys
 
 import torch
@@ -33,6 +35,101 @@ try:
 except ImportError:
     _STRATEGY_FILE  = "best_mt5_strategy.json"
     _CHECKPOINT_DIR = pathlib.Path("checkpoints")
+
+
+CHECKPOINT_IDENTITY_FIELDS = (
+    "symbol",
+    "timeframe",
+    "dataset_id",
+    "data_sha256",
+    "local_source",
+    "periods_per_year",
+    "minimum_bars",
+)
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+
+
+class CheckpointIdentityError(ValueError):
+    """检查点与当前训练数据身份不一致。"""
+
+
+def _validated_checkpoint_identity(identity: dict, *, label: str) -> dict:
+    """严格校验 checkpoint 身份字段，避免 bool/int 等宽松相等。"""
+    missing = [field for field in CHECKPOINT_IDENTITY_FIELDS if field not in identity]
+    if missing:
+        raise CheckpointIdentityError(
+            f"{label} 缺少完整数据身份字段: {', '.join(missing)}；拒绝续训"
+        )
+
+    for field in ("symbol", "timeframe", "local_source"):
+        value = identity[field]
+        if type(value) is not str or not value.strip():
+            raise CheckpointIdentityError(f"{label} 的 {field} 必须是非空字符串")
+
+    digest = identity["data_sha256"]
+    dataset_id = identity["dataset_id"]
+    if type(digest) is not str or _SHA256_RE.fullmatch(digest) is None:
+        raise CheckpointIdentityError(
+            f"{label} 的 data_sha256 必须是 64 位小写十六进制"
+        )
+    if type(dataset_id) is not str or dataset_id != f"sha256:{digest}":
+        raise CheckpointIdentityError(
+            f"{label} 的 dataset_id 必须严格等于 sha256:data_sha256"
+        )
+    if re.fullmatch(r"[A-Z0-9]+", identity["timeframe"]) is None:
+        raise CheckpointIdentityError(
+            f"{label} 的 timeframe 只能包含大写字母和数字"
+        )
+    for field in ("periods_per_year", "minimum_bars"):
+        value = identity[field]
+        if type(value) is not int or value <= 0:
+            raise CheckpointIdentityError(f"{label} 的 {field} 必须是严格正整数")
+    return {field: identity[field] for field in CHECKPOINT_IDENTITY_FIELDS}
+
+
+def checkpoint_identity_directory(timeframe: str, dataset_id: str) -> pathlib.Path:
+    """返回按周期和数据哈希隔离的 checkpoint 根目录。"""
+    if type(timeframe) is not str or re.fullmatch(r"[A-Z0-9]+", timeframe) is None:
+        raise CheckpointIdentityError(
+            "checkpoint 路径身份的 timeframe 只能包含大写字母和数字"
+        )
+    if type(dataset_id) is not str or not dataset_id.startswith("sha256:"):
+        raise CheckpointIdentityError(
+            "checkpoint 路径身份的 dataset_id 必须使用 sha256:<hash>"
+        )
+    digest = dataset_id.removeprefix("sha256:")
+    if _SHA256_RE.fullmatch(digest) is None:
+        raise CheckpointIdentityError(
+            "checkpoint 路径身份的 hash 必须是 64 位小写十六进制"
+        )
+    return _CHECKPOINT_DIR / timeframe / digest
+
+
+def checkpoint_symbol_tag(symbol: str) -> str:
+    """生成不会逃逸 checkpoint 目录的稳定文件名片段。"""
+    if type(symbol) is not str or not symbol.strip():
+        raise CheckpointIdentityError("checkpoint 身份的 symbol 必须是非空字符串")
+    tag = re.sub(r"[^A-Za-z0-9._-]", "_", symbol)
+    if tag != symbol:
+        import hashlib
+
+        tag = f"{tag}_{hashlib.sha256(symbol.encode('utf-8')).hexdigest()[:12]}"
+    return tag
+
+
+def _checkpoint_filesystem_path(path: str | pathlib.Path) -> pathlib.Path:
+    """Windows 下使用扩展路径，绕过未启用 LongPathsEnabled 时的 MAX_PATH。"""
+    value = pathlib.Path(path)
+    if sys.platform != "win32":
+        return value
+    raw = os.path.normpath(
+        str(value if value.is_absolute() else pathlib.Path.cwd() / value)
+    )
+    if raw.startswith("\\\\?\\"):
+        return pathlib.Path(raw)
+    if raw.startswith("\\\\"):
+        return pathlib.Path("\\\\?\\UNC\\" + raw[2:])
+    return pathlib.Path("\\\\?\\" + raw)
 
 
 def _strategy_file_for_symbol(symbol: str | None) -> str:
@@ -230,7 +327,15 @@ class AlphaEngine:
             self.rank_monitor = None
 
         self.vm = StackVM()
-        self.bt = MT5Backtest()
+        periods_per_year = getattr(data_manager, "periods_per_year", 6240)
+        if (
+            isinstance(periods_per_year, bool)
+            or not isinstance(periods_per_year, int)
+            or periods_per_year <= 0
+        ):
+            raise ValueError("data_manager.periods_per_year 必须是严格正整数")
+        self.periods_per_year = periods_per_year
+        self.bt = MT5Backtest(periods_per_year=periods_per_year)
 
         from .vocab import FORMULA_VOCAB as _v
         self.sampler = ConstrainedSampler(
@@ -829,17 +934,7 @@ class AlphaEngine:
             self.training_history.setdefault('batch_fml_div', []).append(fml_div)
 
             if self.best_formula is not None:
-                from .vocab import VOCAB_VERSION
-                strategy_data = {
-                    "vocab_version": VOCAB_VERSION,
-                    "symbol": self.target_symbol,
-                    "formula": self.best_formula,
-                    "best_score": self.best_score,
-                }
-                save_path = _strategy_file_for_symbol(self.target_symbol)
-                pathlib.Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-                with open(save_path, "w") as fp:
-                    json.dump(strategy_data, fp, indent=2)
+                self._save_strategy_live()
 
             self._save_training_history_live()
 
@@ -949,17 +1044,7 @@ class AlphaEngine:
         # 仅当跑满最终步时才保存最终 strategy 和历史
         if end_step == ModelConfig.TRAIN_STEPS:
             if self.best_formula is not None:
-                from .vocab import VOCAB_VERSION
-                strategy_data = {
-                    "vocab_version": VOCAB_VERSION,
-                    "symbol": self.target_symbol,
-                    "formula": self.best_formula,
-                    "best_score": self.best_score,
-                }
-                save_path = _strategy_file_for_symbol(self.target_symbol)
-                pathlib.Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-                with open(save_path, "w") as fp:
-                    json.dump(strategy_data, fp, indent=2)
+                self._save_strategy_live()
 
             sym_tag = f"[{self.target_symbol}] " if self.target_symbol else ""
             self.training_history.pop('_low_entropy_streak', None)
@@ -1027,12 +1112,27 @@ class AlphaEngine:
                 "formula_decoded": self._decode_formula(self.best_formula),
             }
             # 保留训练数据路径等元数据，避免 live 保存把 data_file 冲掉
-            for key in ("timeframe", "data_file", "mode", "train_steps"):
+            for key in (
+                "timeframe",
+                "data_file",
+                "mode",
+                "train_steps",
+                "periods_per_year",
+                "minimum_bars",
+                "local_source",
+                "dataset_id",
+                "data_sha256",
+                "data_rows",
+                "data_start",
+                "data_end",
+                "data_columns",
+            ):
+                output_key = "columns" if key == "data_columns" else key
                 val = getattr(self, key, None)
                 if val is None:
-                    val = existing.get(key)
+                    val = existing.get(output_key)
                 if val is not None:
-                    strategy_data[key] = val
+                    strategy_data[output_key] = val
             if not strategy_data.get("data_file") and self.target_symbol:
                 data_file, tf = _fallback_data_file_for_symbol(self.target_symbol)
                 if data_file:
@@ -1042,18 +1142,56 @@ class AlphaEngine:
                 if data_file and not strategy_data.get("mode"):
                     strategy_data["mode"] = "parquet_file"
 
-            with open(save_path, "w", encoding="utf-8") as fp:
-                json.dump(strategy_data, fp, indent=2, ensure_ascii=False)
+            staging = p.with_name(
+                f".{p.name}.{os.getpid()}.{os.urandom(8).hex()}.partial"
+            )
+            try:
+                with staging.open("x", encoding="utf-8") as fp:
+                    json.dump(strategy_data, fp, indent=2, ensure_ascii=False)
+                    fp.write("\n")
+                    fp.flush()
+                    os.fsync(fp.fileno())
+                os.replace(staging, p)
+            finally:
+                staging.unlink(missing_ok=True)
         except Exception:
             pass
 
     # ── Checkpoint save / load ────────────────────────────────────────────────
 
+    def _checkpoint_identity(self) -> dict:
+        identity = {
+            "symbol": self.target_symbol,
+            "timeframe": getattr(self, "timeframe", None),
+            "dataset_id": getattr(self, "dataset_id", None),
+            "data_sha256": getattr(self, "data_sha256", None),
+            "local_source": getattr(self, "local_source", None),
+            "periods_per_year": getattr(self, "periods_per_year", None),
+            "minimum_bars": getattr(self, "minimum_bars", None),
+        }
+        return _validated_checkpoint_identity(identity, label="当前训练")
+
     def save_checkpoint(self, step: int, path: str | None = None) -> str:
-        _CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+        identity = self._checkpoint_identity()
         if path is None:
-            sym_tag = f"_{self.target_symbol}" if self.target_symbol else ""
-            path = str(_CHECKPOINT_DIR / f"ckpt{sym_tag}_step_{step:04d}.pt")
+            checkpoint_dir = pathlib.Path(
+                getattr(
+                    self,
+                    "checkpoint_dir",
+                    checkpoint_identity_directory(
+                        identity["timeframe"], identity["dataset_id"]
+                    ),
+                )
+            )
+            _checkpoint_filesystem_path(checkpoint_dir).mkdir(
+                parents=True, exist_ok=True
+            )
+            symbol_tag = checkpoint_symbol_tag(identity["symbol"])
+            path = str(checkpoint_dir / f"ckpt_{symbol_tag}_step_{step:04d}.pt")
+        else:
+            _checkpoint_filesystem_path(pathlib.Path(path).parent).mkdir(
+                parents=True, exist_ok=True
+            )
         ckpt = {
             "step":                 step,
             "vocab_version":        VOCAB_VERSION,   # task 12.2: 版本校验所需
@@ -1072,11 +1210,39 @@ class AlphaEngine:
                 if k != '_low_entropy_streak'
             },
         }
-        torch.save(ckpt, path)
+        ckpt.update(identity)
+        with _checkpoint_filesystem_path(path).open("wb") as handle:
+            torch.save(ckpt, handle)
         return path
 
     def load_checkpoint(self, path: str) -> int:
-        ckpt = torch.load(path, map_location=ModelConfig.DEVICE, weights_only=True)
+        with _checkpoint_filesystem_path(path).open("rb") as handle:
+            ckpt = torch.load(
+                handle, map_location=ModelConfig.DEVICE, weights_only=True
+            )
+        if not isinstance(ckpt, dict):
+            raise CheckpointIdentityError(
+                f"checkpoint '{path}' 顶层不是对象；拒绝续训"
+            )
+
+        expected_identity = self._checkpoint_identity()
+        missing = [field for field in CHECKPOINT_IDENTITY_FIELDS if field not in ckpt]
+        if missing:
+            raise CheckpointIdentityError(
+                f"checkpoint '{path}' 是旧版产物，缺少完整数据身份字段: "
+                f"{', '.join(missing)}；拒绝续训"
+            )
+        artifact_identity = _validated_checkpoint_identity(
+            ckpt, label=f"checkpoint '{path}'"
+        )
+        for field in CHECKPOINT_IDENTITY_FIELDS:
+            expected = expected_identity[field]
+            actual = artifact_identity[field]
+            if type(actual) is not type(expected) or actual != expected:
+                raise CheckpointIdentityError(
+                    f"checkpoint '{path}' 数据身份不匹配: {field} "
+                    f"期望 {expected!r}，实际 {actual!r}；拒绝续训"
+                )
 
         # ── Task 12.2：版本校验（R3.7）──────────────────────────────────────
         # 从 checkpoint 读取 vocab_version；若字段缺失（旧版 checkpoint），视为

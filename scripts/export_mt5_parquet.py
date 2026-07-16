@@ -11,9 +11,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-import pandas as pd
-
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 TIMEFRAME_ATTRIBUTES = {
     "M1": "TIMEFRAME_M1",
@@ -75,6 +75,9 @@ def _timeframe_constant(mt5: Any, timeframe: str) -> int:
 
 
 def _build_dataframe(rates: Any) -> pd.DataFrame:
+    import numpy as np
+    import pandas as pd
+
     df = pd.DataFrame(rates)
     missing = [column for column in REQUIRED_COLUMNS if column not in df.columns]
     if missing:
@@ -158,6 +161,13 @@ def export_mt5_parquet(
     mt5_module: Any | None = None,
 ) -> tuple[Path, Path, dict[str, Any]]:
     """导出一个准确 MT5 品种/周期；不读取或保存账户凭据。"""
+    from config import Config
+    from data_pipeline.dataset_contracts import (
+        MT5_FORMAT,
+        MT5_SOURCE,
+        infer_periods_per_year,
+    )
+
     symbol = _validate_symbol(symbol)
     if not isinstance(bars, int) or isinstance(bars, bool) or bars <= 0:
         raise ExportError("bars 必须是严格正整数")
@@ -205,10 +215,17 @@ def export_mt5_parquet(
     try:
         df.to_parquet(parquet_staging, index=False)
         data_sha256 = _sha256(parquet_staging)
+        periods_per_year = infer_periods_per_year(
+            rows=len(df),
+            start_unix=int(df["time"].iloc[0]),
+            end_unix=int(df["time"].iloc[-1]),
+        )
         exported_at = _utc_now().astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
         manifest: dict[str, Any] = {
-            "format": "alphamaster_mt5_dataset_v1",
-            "source": "MetaTrader5",
+            "format": MT5_FORMAT,
+            "source": MT5_SOURCE,
+            "source_family": "MetaTrader5",
+            "provenance_level": "exporter_verified",
             "symbol": symbol,
             "timeframe": timeframe,
             "data_filename": parquet_path.name,
@@ -218,6 +235,10 @@ def export_mt5_parquet(
             "data_end": _utc_iso_from_unix(int(df["time"].iloc[-1])),
             "data_timezone": "UTC",
             "time_unit": "unix_seconds",
+            "bar_timestamp_semantics": "source_bar_open",
+            "periods_per_year": periods_per_year,
+            "minimum_bars": Config.MIN_BARS,
+            "dataset_id": f"sha256:{data_sha256}",
             "exported_at": exported_at,
             "columns": list(REQUIRED_COLUMNS),
         }

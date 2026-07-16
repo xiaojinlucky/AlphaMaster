@@ -8,7 +8,7 @@
 
 当前私有工作仓库：[github.com/Jinqingchang/AlphaMaster](https://github.com/Jinqingchang/AlphaMaster)；原作者仓库保留为只读 `upstream`：[rosemarycox5334-debug/AlphaMaster](https://github.com/rosemarycox5334-debug/AlphaMaster)。
 
-当前数据身份、checkpoint、A 股转换和训练包候选实现仍在深度审查，接手前先读 [`CONTEXT.md`](CONTEXT.md) 与 [`docs/GPT56_PRO_EXTENDED_HANDOFF.md`](docs/GPT56_PRO_EXTENDED_HANDOFF.md)，不要把未提交候选当成稳定功能。
+当前数据身份、checkpoint、旧 MT5 注册、样本外回测和训练包候选实现仍在最终审查，接手前先读 [`CONTEXT.md`](CONTEXT.md)，不要把未提交候选当成稳定功能。
 
 ---
 
@@ -54,7 +54,8 @@ Windows 已可使用桌面 `AlphaMaster` 快捷方式：双击后自动启动本
 ![训练页](docs/images/01_train.png)
 
 - Parquet 命名：`{品种}_{周期}.parquet`，例如 `BTCUSDT_H1.parquet`、`XAUUSD_H1.parquet`  
-- **本地后端**：开始训练会从项目检查点续训，重新训练会清除该品种检查点后从头搜索
+- **本地后端**：普通续训只在当前数据身份的最新 run 中寻找最高 step；重新训练会新建隔离 run 并从头训练，旧 run 保留
+- **manifest 边界**：AlphaMaster 核心读取本地 Parquet 不依赖 manifest；Slurm 远程训练必须用 sidecar 绑定文件哈希、来源和数据范围。旧 MT5 文件可在页面一次确认后自动注册，新版 MT5 / OKX 导出器会自动生成
 - **Slurm 第一阶段**：每个 run 独立训练；网络中断会重连同一 run/job，跨 run checkpoint 续训尚未开放；每次 `READY` 会以单一原子指针发布该 run 的 checkpoint、训练历史和策略整套产物，不跨 run 混用
 - 展示最优分数、验证分数、训练曲线与最优公式；可选 AI 分析当前训练情况  
 
@@ -64,6 +65,8 @@ Windows 已可使用桌面 `AlphaMaster` 快捷方式：双击后自动启动本
 
 - 仓位：`position = tanh(factor)`，信号越强仓位越大  
 - 成本：手续费 + 滑点（默认约 0.02% / 0.01%）  
+- 数据：策略 JSON 与测试 Parquet 分开选择；同一数据执行训练集重放，不同哈希但同品种 / 周期 / 来源族的数据自动按训练结束时间切出样本外评分区间
+- 年化：回测指标使用测试数据实际覆盖范围推导的年化周期，同时在报告中保留训练与测试两套数据身份
 - 输出：总收益、夏普、索提诺、盈亏比、滚动夏普与资金曲线  
 
 ![资金曲线示例](docs/images/04_equity.png)
@@ -133,6 +136,12 @@ Linux Slurm Worker 使用独立的 `requirements-linux-worker.lock`，不安装 
 # 1. 从当前已登录的 MT5 导出准确品种/周期；默认排除未收盘 bar
 .venv\Scripts\python.exe scripts\export_mt5_parquet.py --symbol XAUUSD --timeframe H1 --bars 50000
 
+# 也可下载 OKX 主流永续合约；仅保存 confirm=1 的已完成 K 线
+.venv\Scripts\python.exe download_okx_klines.py --out "D:\OKX_K线数据"
+
+# 中断后续跑：只跳过已有且 Parquet + sidecar 哈希与已完成 K 线合同均有效的文件
+.venv\Scripts\python.exe download_okx_klines.py --out "D:\OKX_K线数据" --resume
+
 # 2. 复制并检查配置；不要把真实凭据提交到 Git
 Copy-Item .env.example .env
 
@@ -146,11 +155,34 @@ Slurm 模式固定使用 `cpu` 分区、`normal` QOS 和服务器项目 Python 3
 
 `TRAINING_BACKEND` 必须显式配置；缺失或未知值会拒绝启动。只有明确设置 `TRAINING_BACKEND=local` 才允许本机训练。
 
+### 旧 MT5 数据如何接入
+
+旧 Parquet 没有 sidecar 不代表数据格式错误。远程训练前可用两阶段注册把“用户确认来源的精确文件字节”记录为旧数据身份；注册不会修改 Parquet，也不会冒充新版导出器验证的数据。
+
+```powershell
+# 第一步只读扫描；--source-report 可重复传入
+.venv\Scripts\python.exe scripts\register_legacy_mt5_parquet.py plan `
+  --input-dir "D:\K线数据" `
+  --source-report "D:\K线数据\_bulk_sync_report.json" `
+  --source-report "D:\K线数据\_bulk_sync_retry_report.json" `
+  --feed-id "legacy_mt5_bulk_20260709" `
+  --output-plan "scratch\legacy_mt5_plan.json"
+
+# 第二步必须使用计划输出的精确 plan_sha256，并明确确认来源
+.venv\Scripts\python.exe scripts\register_legacy_mt5_parquet.py apply `
+  --plan "scratch\legacy_mt5_plan.json" `
+  --plan-sha256 "<plan_sha256>" `
+  --acknowledge-source MetaTrader5 `
+  --output-report "scratch\legacy_mt5_report.json"
+```
+
+批量计划允许部分文件被拒绝：不足 `3000` bars、字段 / 时间 / 数值合同不合格的文件不会生成 manifest。Web 页面对当前选中的单个旧 MT5 文件提供同一套显式确认入口。
+
 ---
 
 ## 常用命令
 
-```bash
+```powershell
 # Web 控制台
 python run_web.py --port 8765
 
@@ -158,6 +190,10 @@ python run_web.py --port 8765
 python train_file.py --data-file D:\K线数据\BTCUSDT_H1.parquet
 python train_file.py --data-file D:\K线数据\BTCUSDT_H1.parquet --from-scratch
 python train_file.py --data-file D:\K线数据\XAUUSD_H1.parquet --from-scratch --train-steps 20
+
+# 回测可显式选择独立测试数据；auto 会自动判断重放或样本外
+python run_backtest.py --single --strategy-file strategies\best_BTCUSDT.json `
+  --data-file D:\K线数据\BTCUSDT_H1_future.parquet --evaluation-mode auto
 ```
 
 策略输出默认在 `strategies/best_{symbol}.json`。

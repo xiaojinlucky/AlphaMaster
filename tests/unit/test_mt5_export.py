@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +13,25 @@ import pandas as pd
 import pytest
 
 from scripts import export_mt5_parquet as exporter
+
+
+def test_export_cli_runs_directly_from_project_root() -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(project_root / "scripts" / "export_mt5_parquet.py"),
+            "--help",
+        ],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "MT5" in completed.stdout
 
 
 class FakeMT5:

@@ -19,6 +19,11 @@ from typing import Any, Callable, Mapping, Sequence
 
 ROOT = Path("/hwdata/home/jinqc/Quant/AlphaMaster")
 BASE_PYTHON = Path("/hwdata/home/jinqc/.local/bin/python3.11")
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from data_pipeline.dataset_contracts import TRAINING_SOURCE_IDS
+
 RUN_ID_RE = re.compile(r"^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{8}$")
 JOB_ID_RE = re.compile(r"^[1-9][0-9]{0,18}$")
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
@@ -30,7 +35,15 @@ FILENAME_RE = re.compile(
 )
 TIME_RE = re.compile(r"^(?:(?P<days>[0-7])-)?(?P<hours>[0-9]{1,2}):[0-5][0-9]:[0-5][0-9]$")
 MEMORY_RE = re.compile(r"^[1-9][0-9]{0,5}[MG]$")
-ALLOWED_LOCAL_SOURCES = frozenset({"mt5", "okx"})
+ALLOWED_LOCAL_SOURCES = TRAINING_SOURCE_IDS
+REQUIRED_DATA_COLUMNS = {"time", "open", "high", "low", "close", "tick_volume"}
+ASHARE_PERIOD_CONTRACTS = {
+    "M5": (11_616, 23_232),
+    "M15": (3_872, 7_744),
+    "H1": (968, 1_936),
+    "D1": (242, 484),
+}
+GENERIC_MINIMUM_BARS = 3_000  # 必须与根 config.Config.MIN_BARS 保持一致
 
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_DATA_BYTES = 64 * 1024**3
@@ -38,12 +51,13 @@ MAX_ARTIFACT_BYTES = 8 * 1024**3
 MAX_ARTIFACT_TOTAL_BYTES = 32 * 1024**3
 REQUIRED_SOURCE_FILES = (
     "train_file.py",
+    "data_pipeline/dataset_contracts.py",
     "model_core/config.py",
     "scripts/train_slurm_worker.py",
     "scripts/train_alphamaster.sbatch",
 )
 ARTIFACT_WHITELIST = (
-    "checkpoints/ckpt_{symbol}_step_*.pt",
+    "checkpoints/{timeframe}/{data_sha256}/run_*/ckpt_{symbol}_step_*.pt",
     "strategies/best_{symbol}.json",
     "training_history_{symbol}.json",
 )
@@ -204,8 +218,62 @@ def _verify_inputs(run_dir: Path) -> tuple[dict[str, Any], Path, str]:
         raise WorkerError("manifest symbol 与文件名不匹配")
     if str(manifest.get("timeframe", "")).upper() != name_match.group("timeframe").upper():
         raise WorkerError("manifest timeframe 与文件名不匹配")
-    if manifest.get("local_source") not in ALLOWED_LOCAL_SOURCES:
+    local_source = manifest.get("local_source")
+    if local_source not in ALLOWED_LOCAL_SOURCES:
         raise WorkerError("manifest local_source 不受支持")
+    periods_per_year = manifest.get("periods_per_year")
+    if (
+        isinstance(periods_per_year, bool)
+        or not isinstance(periods_per_year, int)
+        or periods_per_year <= 0
+    ):
+        raise WorkerError("manifest periods_per_year 非法")
+    timestamps: list[datetime] = []
+    for field in ("data_start", "data_end"):
+        value = manifest.get(field)
+        if not isinstance(value, str):
+            raise WorkerError(f"manifest {field} 必须是 UTC 时间")
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise WorkerError(f"manifest {field} 必须是 UTC 时间") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+            raise WorkerError(f"manifest {field} 必须是 UTC 时间")
+        timestamps.append(parsed)
+    if timestamps[0] >= timestamps[1]:
+        raise WorkerError("manifest data_start 必须早于 data_end")
+    columns = manifest.get("columns")
+    if (
+        not isinstance(columns, list)
+        or not columns
+        or any(not isinstance(name, str) or not name for name in columns)
+        or len(columns) != len(set(columns))
+        or not REQUIRED_DATA_COLUMNS.issubset(columns)
+    ):
+        raise WorkerError("manifest columns 缺少训练列或包含重复项")
+    timeframe = name_match.group("timeframe").upper()
+    if local_source == "ashare_local":
+        contract = ASHARE_PERIOD_CONTRACTS.get(timeframe)
+        if contract is None:
+            raise WorkerError("ashare_local timeframe 不受支持")
+        expected_periods, expected_minimum = contract
+        if periods_per_year != expected_periods:
+            raise WorkerError("ashare_local periods_per_year 不匹配")
+        if manifest.get("minimum_bars") != expected_minimum:
+            raise WorkerError("ashare_local minimum_bars 不匹配")
+        data_rows = manifest.get("data_rows")
+        if isinstance(data_rows, bool) or not isinstance(data_rows, int) or data_rows < expected_minimum:
+            raise WorkerError("ashare_local 数据不足两个交易年")
+    else:
+        if manifest.get("minimum_bars") != GENERIC_MINIMUM_BARS:
+            raise WorkerError(f"MT5/OKX minimum_bars 必须是 {GENERIC_MINIMUM_BARS}")
+        data_rows = manifest.get("data_rows")
+        if (
+            isinstance(data_rows, bool)
+            or not isinstance(data_rows, int)
+            or data_rows < GENERIC_MINIMUM_BARS
+        ):
+            raise WorkerError(f"MT5/OKX 数据不足 {GENERIC_MINIMUM_BARS} bars")
 
     hash_path = run_dir / "input" / "run_manifest.sha256"
     _require_file(hash_path, "manifest 哈希", 128)
@@ -314,10 +382,23 @@ def _clean_training_env(run_dir: Path, cpus: int, source: Mapping[str, str]) -> 
     return env
 
 
-def _collect_artifacts(run_dir: Path, symbol: str) -> list[dict[str, Any]]:
+def _collect_artifacts(
+    run_dir: Path,
+    symbol: str,
+    timeframe: str,
+    data_sha256: str,
+) -> list[dict[str, Any]]:
     paths: set[Path] = set()
     for template in ARTIFACT_WHITELIST:
-        paths.update(run_dir.glob(template.format(symbol=symbol)))
+        paths.update(
+            run_dir.glob(
+                template.format(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    data_sha256=data_sha256,
+                )
+            )
+        )
     artifacts: list[dict[str, Any]] = []
     total = 0
     for path in sorted(paths):
@@ -326,6 +407,12 @@ def _collect_artifacts(run_dir: Path, symbol: str) -> list[dict[str, Any]]:
         if total > MAX_ARTIFACT_TOTAL_BYTES:
             raise WorkerError("训练产物总大小超过 32 GiB")
         relative = path.relative_to(run_dir).as_posix()
+        if relative.startswith("checkpoints/") and re.fullmatch(
+            rf"checkpoints/{re.escape(timeframe)}/{re.escape(data_sha256)}/"
+            rf"run_[0-9]{{20}}/ckpt_{re.escape(symbol)}_step_[0-9]{{4,}}\.pt",
+            relative,
+        ) is None:
+            raise WorkerError("checkpoint 路径不符合数据身份隔离合同")
         artifacts.append({"path": relative, "size": size, "size_bytes": size, "sha256": _sha256_file(path)})
     return artifacts
 
@@ -384,7 +471,13 @@ def run_worker(
             str(data_path),
             "--train-steps",
             str(training["train_steps"]),
+            "--periods-per-year",
+            str(manifest["periods_per_year"]),
+            "--data-source",
+            str(manifest["local_source"]),
         ]
+        if manifest.get("minimum_bars") is not None:
+            command.extend(["--minimum-bars", str(manifest["minimum_bars"])])
         if training.get("from_scratch", False):
             command.append("--from-scratch")
         execute = runner or subprocess.run
@@ -398,7 +491,12 @@ def run_worker(
         exit_code = int(completed.returncode)
         if exit_code != 0:
             raise WorkerError(f"train_file.py 退出码为 {exit_code}")
-        artifacts = _collect_artifacts(run_dir, str(manifest["symbol"]))
+        artifacts = _collect_artifacts(
+            run_dir,
+            str(manifest["symbol"]),
+            str(manifest["timeframe"]),
+            str(manifest["data_sha256"]),
+        )
         required_artifact_kinds = {
             "checkpoint": any(item["path"].startswith("checkpoints/") for item in artifacts),
             "strategy": any(item["path"].startswith("strategies/") for item in artifacts),
@@ -413,7 +511,12 @@ def run_worker(
         error_message = str(exc)[:2000]
         if manifest is not None:
             try:
-                artifacts = _collect_artifacts(run_dir, str(manifest.get("symbol", "")))
+                artifacts = _collect_artifacts(
+                    run_dir,
+                    str(manifest.get("symbol", "")),
+                    str(manifest.get("timeframe", "")),
+                    str(manifest.get("data_sha256", "")),
+                )
             except Exception as artifact_exc:
                 error_message = f"{error_message}; 产物审计失败: {artifact_exc}"[:2000]
         if exit_code == 0:
@@ -439,13 +542,25 @@ def run_worker(
         "data_sha256": manifest.get("data_sha256") if manifest else None,
         "data_size": manifest.get("data_size") if manifest else None,
         "data_rows": manifest.get("data_rows") if manifest else None,
+        "data_start": manifest.get("data_start") if manifest else None,
+        "data_end": manifest.get("data_end") if manifest else None,
+        "columns": manifest.get("columns") if manifest else None,
         "dataset_id": manifest.get("dataset_id") if manifest else None,
         "local_source": manifest.get("local_source") if manifest else None,
+        "periods_per_year": manifest.get("periods_per_year") if manifest else None,
+        "minimum_bars": manifest.get("minimum_bars") if manifest else None,
         "requested_resources": manifest.get("requested_resources") if manifest else None,
         "training_parameters": manifest.get("training_parameters") if manifest else None,
         "compute_node": node,
         "environment_versions": _environment_versions(executable),
-        "artifact_whitelist": [pattern.format(symbol=str(manifest.get("symbol", ""))) for pattern in ARTIFACT_WHITELIST] if manifest else [],
+        "artifact_whitelist": [
+            pattern.format(
+                symbol=str(manifest.get("symbol", "")),
+                timeframe=str(manifest.get("timeframe", "")),
+                data_sha256=str(manifest.get("data_sha256", "")),
+            )
+            for pattern in ARTIFACT_WHITELIST
+        ] if manifest else [],
         "artifacts": artifacts,
         "checkpoint_files": checkpoint_files,
         "strategy_files": strategy_files,

@@ -2,9 +2,13 @@ const API = "";
 const nativeFetch = window.fetch.bind(window);
 let controlToken = "";
 let selectedDataFile = null;
+let selectedDataInfo = null;
 let selectedSymbol = null;
 let selectedStrategyFile = null;
+let selectedStrategyInfo = null;
 let selectedStrategySymbol = null;
+let selectedBacktestDataFile = null;
+let selectedBacktestDataInfo = null;
 let chart = null;
 let chartSymbol = null;
 let pollTimer = null;
@@ -197,6 +201,10 @@ async function setDebugMode(enabled) {
 }
 
 async function refreshDebugLogs() {
+  if (!debugMode) {
+    renderDebugView([], []);
+    return;
+  }
   try {
     const data = await secureFetch(API + "/api/debug/logs?lines=120").then(async (res) => {
       const json = await res.json().catch(() => ({}));
@@ -226,7 +234,7 @@ async function fetchJSON(path, opts = {}) {
   if (!res.ok) {
     const msg = formatApiError(data, res.status, path);
     await logClientError(`${path} -> ${msg}`, { path, status: res.status, silent });
-    if (!silent) await refreshDebugLogs();
+    if (!silent && debugMode) await refreshDebugLogs();
     throw new Error(msg);
   }
   return data;
@@ -237,6 +245,18 @@ function formatScore(v) {
   return Number(v).toFixed(4);
 }
 
+function dataIdentityLabel(info) {
+  const labels = {
+    mt5: "新版 MT5 导出器验证",
+    mt5_legacy_attested: "旧 MT5 用户登记",
+    okx: "新版 OKX 下载器验证",
+    okx_legacy_attested: "旧 OKX 归档登记",
+    ashare_local: "A 股转换器验证",
+    local_file: "本地未登记",
+  };
+  return labels[info?.source] || (info?.registration === "registered" ? "已登记" : "本地未登记");
+}
+
 function renderDataFileCard(info) {
   const card = $("dataFileCard");
   const startBtn = $("startBtn");
@@ -245,6 +265,7 @@ function renderDataFileCard(info) {
     card.className = "data-file-card";
     card.innerHTML = '<div class="data-file-empty">尚未选择数据文件</div>';
     selectedDataFile = null;
+    selectedDataInfo = null;
     selectedSymbol = null;
     startBtn.disabled = true;
     if ($("retrainBtn")) $("retrainBtn").disabled = true;
@@ -254,7 +275,17 @@ function renderDataFileCard(info) {
     return;
   }
 
+  const retainedPlanSha =
+    selectedDataInfo?.data_file === info.data_file &&
+    selectedDataInfo?.registration_plan_sha256 &&
+    info.registration !== "registered"
+      ? selectedDataInfo.registration_plan_sha256
+      : null;
+  if (!info.registration_plan_sha256 && retainedPlanSha) {
+    info = { ...info, registration_plan_sha256: retainedPlanSha };
+  }
   selectedDataFile = info.data_file;
+  selectedDataInfo = info;
   selectedSymbol = info.symbol || null;
 
   if (info.valid === false) {
@@ -270,14 +301,27 @@ function renderDataFileCard(info) {
     return;
   }
 
-  card.className = "data-file-card valid";
+  const trainingCompatible = !!info.capabilities?.training;
+  card.className = `data-file-card ${trainingCompatible ? "valid" : "warning"}`;
   const yearsText = info.years_h1 != null ? `${info.years_h1} 年` : "—";
+  const identityText = dataIdentityLabel(info);
+  const trainingText = trainingCompatible
+    ? `可用于${info.training_backend === "slurm" ? "远程" : "本地"}训练`
+    : "需要先注册";
+  const registrationAction = info.registration_plan_sha256
+    ? `<div class="data-file-inline-actions">
+         <button type="button" class="btn btn-secondary" id="registerLegacyMt5Btn">注册旧 MT5 数据</button>
+         <span class="hint">${info.message || "注册不会修改原始 Parquet"}</span>
+       </div>`
+    : "";
   card.innerHTML = `
     <div class="data-file-row">
       <div class="item"><span class="label">品种</span><span class="value sym">${info.symbol}</span></div>
       <div class="item"><span class="label">周期</span><span class="value">${info.timeframe}</span></div>
       <div class="item"><span class="label">K线</span><span class="value">${info.bars?.toLocaleString()}</span></div>
       <div class="item"><span class="label">数据年限</span><span class="value">${yearsText}</span></div>
+      <div class="item"><span class="label">身份</span><span class="value">${identityText}</span></div>
+      <div class="item"><span class="label">状态</span><span class="value">${trainingText}</span></div>
       <div class="item"><span class="label">进度</span><span class="value" id="fileProgressPct">—</span></div>
       <div class="item"><span class="label">本次训练时长</span><span class="value" id="fileElapsedTime">—</span></div>
       <div class="item"><span class="label">历史训练总时长</span><span class="value" id="fileHistoryElapsedTime">—</span></div>
@@ -285,15 +329,23 @@ function renderDataFileCard(info) {
       <div class="item"><span class="label">验证分数</span><span class="value score-val" id="fileValScore">—</span></div>
     </div>
     <div class="path" title="${info.data_file}">${info.filename || info.data_file}</div>
+    ${registrationAction}
   `;
-  startBtn.disabled = false;
-  if ($("retrainBtn")) $("retrainBtn").disabled = false;
+  startBtn.disabled = !trainingCompatible;
+  if ($("retrainBtn")) $("retrainBtn").disabled = !trainingCompatible;
+  if ($("registerLegacyMt5Btn")) {
+    $("registerLegacyMt5Btn").addEventListener("click", registerLegacyMt5);
+  }
 }
 
 function updateBtStartBtn() {
   const startBtn = $("btStartBtn");
   if (!startBtn) return;
-  startBtn.disabled = btActive || !selectedStrategyFile;
+  const strategyReady =
+    !!selectedStrategyFile &&
+    selectedStrategyInfo?.identity_registration === "registered";
+  startBtn.disabled =
+    btActive || !strategyReady || !selectedBacktestDataFile;
   ["btCommissionInput", "btSlippageInput"].forEach((id) => {
     const el = $(id);
     if (el) el.disabled = btActive;
@@ -308,6 +360,7 @@ function renderStrategyFileCard(info) {
     card.className = "data-file-card";
     card.innerHTML = '<div class="data-file-empty">尚未选择策略文件</div>';
     selectedStrategyFile = null;
+    selectedStrategyInfo = null;
     selectedStrategySymbol = null;
     updateBtStartBtn();
     return;
@@ -320,14 +373,18 @@ function renderStrategyFileCard(info) {
       <div class="data-file-path">${info.strategy_file}</div>
     `;
     selectedStrategyFile = null;
+    selectedStrategyInfo = null;
     selectedStrategySymbol = null;
     updateBtStartBtn();
     return;
   }
 
   selectedStrategyFile = info.strategy_file;
+  selectedStrategyInfo = info;
   selectedStrategySymbol = info.symbol || null;
-  card.className = "data-file-card valid";
+  card.className = `data-file-card ${
+    info.identity_registration === "registered" ? "valid" : "warning"
+  }`;
   const timeframeItem = info.timeframe
     ? `<div class="item"><span class="label">周期</span><span class="value">${info.timeframe}</span></div>`
     : "";
@@ -343,9 +400,48 @@ function renderStrategyFileCard(info) {
       <div class="item"><span class="label">最优分数</span><span class="value score-best">${formatScore(info.best_score)}</span></div>
       <div class="item"><span class="label">词表版本</span><span class="value">${info.vocab_version || "—"}</span></div>
       <div class="item"><span class="label">公式长度</span><span class="value">${info.formula_decoded ? info.formula_decoded.split("→").length : "—"}</span></div>
+      <div class="item"><span class="label">训练身份</span><span class="value">${info.identity_registration === "registered" ? "完整" : "历史未知"}</span></div>
     </div>
     <div class="path" title="${info.strategy_file}">策略: ${info.filename || info.strategy_file}</div>
     <div class="path ${dataPath && dataOk ? "" : "data-file-missing"}" title="${dataPath || ""}">数据: ${dataHint}</div>
+  `;
+  updateBtStartBtn();
+}
+
+function renderBacktestDataFileCard(info) {
+  const card = $("btDataCard");
+  if (!card) return;
+  if (!info || !info.data_file) {
+    card.className = "data-file-card";
+    card.innerHTML = '<div class="data-file-empty">尚未选择回测 Parquet</div>';
+    selectedBacktestDataFile = null;
+    selectedBacktestDataInfo = null;
+    updateBtStartBtn();
+    return;
+  }
+  if (info.valid === false) {
+    card.className = "data-file-card invalid";
+    card.innerHTML = `
+      <div class="data-file-error">${info.message || "文件无效"}</div>
+      <div class="data-file-path">${info.data_file}</div>
+    `;
+    selectedBacktestDataFile = null;
+    selectedBacktestDataInfo = info;
+    updateBtStartBtn();
+    return;
+  }
+  selectedBacktestDataFile = info.data_file;
+  selectedBacktestDataInfo = info;
+  card.className = "data-file-card valid";
+  card.innerHTML = `
+    <div class="data-file-row">
+      <div class="item"><span class="label">品种</span><span class="value sym">${info.symbol || "—"}</span></div>
+      <div class="item"><span class="label">周期</span><span class="value">${info.timeframe || "—"}</span></div>
+      <div class="item"><span class="label">K线</span><span class="value">${info.bars?.toLocaleString() || "—"}</span></div>
+      <div class="item"><span class="label">来源</span><span class="value">${info.source || "local_file"}</span></div>
+      <div class="item"><span class="label">用途</span><span class="value">回测评分</span></div>
+    </div>
+    <div class="path" title="${info.data_file}">${info.filename || info.data_file}</div>
   `;
   updateBtStartBtn();
 }
@@ -617,8 +713,9 @@ function updateTrainingUI(training, progress) {
   if (!job || job.state === "idle") {
     pill.innerHTML = '<i class="pill-dot"></i>空闲';
     pill.className = "pill";
-    startBtn.disabled = !selectedDataFile;
-    if (retrainBtn) retrainBtn.disabled = !selectedDataFile;
+    const trainingCompatible = !!selectedDataInfo?.capabilities?.training;
+    startBtn.disabled = !selectedDataFile || !trainingCompatible;
+    if (retrainBtn) retrainBtn.disabled = !selectedDataFile || !trainingCompatible;
     stopBtn.disabled = true;
     $("logHint").textContent = "—";
     updateTrainingTimeFields(progress, training);
@@ -636,8 +733,11 @@ function updateTrainingUI(training, progress) {
   pill.innerHTML = `<i class="pill-dot"></i>${stateText} · ${label}`;
   pill.className = "pill " + (job.state === "running" ? "running" : job.state);
 
-  startBtn.disabled = active;
-  if (retrainBtn) retrainBtn.disabled = active;
+  const trainingCompatible = !!selectedDataInfo?.capabilities?.training;
+  startBtn.disabled = active || !selectedDataFile || !trainingCompatible;
+  if (retrainBtn) {
+    retrainBtn.disabled = active || !selectedDataFile || !trainingCompatible;
+  }
   stopBtn.disabled = !active;
   $("logHint").textContent = job.log_path || "—";
   updateTrainingTimeFields(progress, training);
@@ -683,7 +783,8 @@ async function refreshOverview() {
     await loadSymbolChart(sym, overview.progress);
   }
 
-  await refreshDebugLogs();
+  if (debugMode) await refreshDebugLogs();
+  else renderDebugView([], []);
   refreshAiProviderStatus();
 }
 
@@ -705,6 +806,7 @@ async function loadConfig() {
   }
   if (cfg.data_file) renderDataFileCard(cfg.data_file);
   if (cfg.strategy_file) renderStrategyFileCard(cfg.strategy_file);
+  if (cfg.backtest_data_file) renderBacktestDataFileCard(cfg.backtest_data_file);
   applyBacktestCostDefaults(cfg);
   await initAiPanel(cfg);
 }
@@ -957,6 +1059,46 @@ async function browseDataFile() {
     await loadSymbolChart(res.symbol);
   } catch (e) {
     $("debugView").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+}
+
+async function registerLegacyMt5() {
+  const planSha = selectedDataInfo?.registration_plan_sha256;
+  if (!selectedDataFile || !planSha) {
+    await logClientError("当前文件没有可用的旧 MT5 注册计划");
+    return;
+  }
+  const ok = window.confirm(
+    "请确认：当前选择的精确 Parquet 文件确实来自旧版 MetaTrader 5 数据。\n\n" +
+      "注册只会在同目录新增 manifest，不会修改原始 Parquet；" +
+      "它记录的是你的来源声明，不会冒充 AlphaMaster 官方同步导出。"
+  );
+  if (!ok) return;
+  try {
+    const res = await fetchJSON("/api/data-file/register-legacy-mt5", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        data_file: selectedDataFile,
+        plan_sha256: planSha,
+        source_acknowledgement: "MetaTrader5",
+      }),
+    });
+    renderDataFileCard(res.data_file);
+  } catch (e) {
+    $("debugView")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+}
+
+async function browseBacktestDataFile() {
+  try {
+    const res = await fetchJSON("/api/backtest/data-file/browse", {
+      method: "POST",
+    });
+    if (res.cancelled) return;
+    renderBacktestDataFileCard(res);
+  } catch (e) {
+    $("debugView")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 }
 
@@ -1411,6 +1553,18 @@ function mainEquitySeries() {
   return names.length ? syms[names[0]] : null;
 }
 
+function backtestEvaluationHint(report, focus = "") {
+  const labels = {
+    replay: "训练数据重放",
+    out_of_sample: "样本外测试",
+    diagnostic_overlap: "重叠诊断",
+  };
+  const mode = labels[report?.evaluation_mode] || "回测绩效";
+  const prefix = focus ? `${focus} · ` : "";
+  const scoreStart = report?.score_start ? ` · 评分起点 ${report.score_start}` : "";
+  return `${prefix}${mode}${scoreStart}`;
+}
+
 function renderPortfolio(report) {
   const grid = $("btPortfolioGrid");
   if (!grid) return;
@@ -1445,9 +1599,17 @@ function renderPortfolio(report) {
   ];
 
   // 签名守卫：数值/焦点/资金曲线未变则不重建，避免每次轮询重播动画
-  const sig = [focus, btEquitySig, ...cards.map((c) => c.raw)].join("|");
+  const sig = [
+    focus,
+    report.evaluation_mode,
+    report.score_start,
+    btEquitySig,
+    ...cards.map((c) => c.raw),
+  ].join("|");
   if (sig === btPortfolioSig) {
-    if ($("btPortfolioHint")) $("btPortfolioHint").textContent = focus ? `${focus} 回测绩效` : "回测绩效";
+    if ($("btPortfolioHint")) {
+      $("btPortfolioHint").textContent = backtestEvaluationHint(report, focus);
+    }
     return;
   }
   btPortfolioSig = sig;
@@ -1471,7 +1633,7 @@ function renderPortfolio(report) {
   runCountUp(grid);
 
   if ($("btPortfolioHint")) {
-    $("btPortfolioHint").textContent = focus ? `${focus} 回测绩效` : "回测绩效";
+    $("btPortfolioHint").textContent = backtestEvaluationHint(report, focus);
   }
 }
 
@@ -1801,6 +1963,10 @@ async function startBacktest() {
     await logClientError("请先选择策略文件");
     return;
   }
+  if (!selectedBacktestDataFile) {
+    await logClientError("请先选择测试数据");
+    return;
+  }
   const startBtn = $("btStartBtn");
   if (startBtn) startBtn.disabled = true;
   try {
@@ -1810,11 +1976,17 @@ async function startBacktest() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         strategy_file: selectedStrategyFile,
+        data_file: selectedBacktestDataFile,
+        evaluation_mode: "auto",
         commission_pct: costs.commission_pct,
         slippage_pct: costs.slippage_pct,
       }),
     });
     if (res.strategy_file) renderStrategyFileCard(res.strategy_file);
+    if (res.data_file) renderBacktestDataFileCard(res.data_file);
+    if ($("btPortfolioHint") && res.evaluation) {
+      $("btPortfolioHint").textContent = backtestEvaluationHint(res.evaluation);
+    }
     await refreshBacktest();
   } catch (e) {
     if ($("btLogHint")) $("btLogHint").textContent = e.message;
@@ -2627,6 +2799,7 @@ async function init() {
 
   // 回测控制
   if ($("btBrowseStrategyBtn")) $("btBrowseStrategyBtn").addEventListener("click", browseStrategyFile);
+  if ($("btBrowseDataBtn")) $("btBrowseDataBtn").addEventListener("click", browseBacktestDataFile);
   if ($("btStartBtn")) $("btStartBtn").addEventListener("click", startBacktest);
   if ($("btStopBtn")) $("btStopBtn").addEventListener("click", stopBacktest);
   ["btCommissionInput", "btSlippageInput"].forEach((id) => {

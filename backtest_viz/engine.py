@@ -87,6 +87,8 @@ class BacktestEngine:
         raw_dict: dict,          # {open/high/low/close/volume/time: Tensor[N,T]}
         feat_tensor: torch.Tensor,  # [N, F, T]
         symbols: list[str],
+        *,
+        score_start_index: int = 0,
     ) -> list[SymbolResult]:
         """执行所有品种的回测，返回每个品种的 SymbolResult。"""
 
@@ -96,6 +98,16 @@ class BacktestEngine:
                 f"StackVM 无法执行公式 {self.formula}。"
                 "请检查公式 token 是否合法。"
             )
+        total_bars = int(factors_all.shape[-1])
+        if (
+            isinstance(score_start_index, bool)
+            or not isinstance(score_start_index, int)
+            or score_start_index < 0
+            or score_start_index > total_bars - 3
+        ):
+            raise ValueError(
+                "score_start_index 必须保留至少 3 根可评分 K 线"
+            )
 
         results = []
         N = len(symbols)
@@ -103,8 +115,10 @@ class BacktestEngine:
             sym = symbols[n]
             sym_result = self._backtest_symbol(
                 symbol     = sym,
-                raw_dict   = {k: v[n] for k, v in raw_dict.items()},   # [T] 各字段
-                factor_1d  = factors_all[n],                            # [T]
+                raw_dict   = {
+                    k: v[n, score_start_index:] for k, v in raw_dict.items()
+                },
+                factor_1d  = factors_all[n, score_start_index:],
             )
             results.append(sym_result)
 
