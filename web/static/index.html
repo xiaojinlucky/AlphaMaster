@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500;600&family=Orbitron:wght@500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/style.css?v=27" />
+  <link rel="stylesheet" href="/static/style.css?v=31" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -40,8 +40,9 @@
       </div>
     </header>
 
-    <!-- 步骤导航 -->
+    <!-- 工作流与资源导航 -->
     <nav class="stepper" id="stepper">
+      <span class="sidebar-section-label">工作流</span>
       <button type="button" class="step active" data-page="train">
         <span class="step-index">01</span>
         <span class="step-body">
@@ -49,7 +50,6 @@
           <span class="step-sub">因子挖掘 · 强化学习</span>
         </span>
       </button>
-      <span class="step-link"></span>
       <button type="button" class="step" data-page="backtest">
         <span class="step-index">02</span>
         <span class="step-body">
@@ -57,7 +57,6 @@
           <span class="step-sub">资金曲线 · 绩效评估</span>
         </span>
       </button>
-      <span class="step-link"></span>
       <button type="button" class="step" data-page="realtime">
         <span class="step-index">03</span>
         <span class="step-body">
@@ -65,17 +64,34 @@
           <span class="step-sub">信号雷达 · 多品种并发</span>
         </span>
       </button>
+      <span class="sidebar-section-label sidebar-resource-label">资源</span>
+      <button type="button" class="sidebar-resource" data-resource-page="train" data-resource-target="trainingLogPanel">
+        <span class="sidebar-resource-icon" aria-hidden="true">▤</span><span>运行日志</span>
+      </button>
+      <button type="button" class="sidebar-resource" data-resource-page="train" data-resource-target="strategiesPanel">
+        <span class="sidebar-resource-icon" aria-hidden="true">▣</span><span>已保存策略</span>
+      </button>
+      <button type="button" class="sidebar-resource" data-resource-page="train" data-resource-target="howtoPanel">
+        <span class="sidebar-resource-icon" aria-hidden="true">▧</span><span>训练说明</span>
+      </button>
+      <button type="button" class="sidebar-resource" data-resource-page="train" data-resource-target="aiPanelSection">
+        <span class="sidebar-resource-icon" aria-hidden="true">◇</span><span>诊断与 AI</span>
+      </button>
     </nav>
 
     <!-- ══════════════ 步骤一：训练页 ══════════════ -->
     <div class="page active" id="page-train">
+    <header class="page-header">
+      <h1>01 模型训练</h1>
+      <p>选择本地 Parquet 数据文件，检查数据摘要后开始训练。</p>
+    </header>
     <section class="panel launch-panel">
       <span class="hud-corner tl"></span><span class="hud-corner tr"></span>
       <span class="hud-corner bl"></span><span class="hud-corner br"></span>
       <h2>启动训练</h2>
       <div class="launch-form launch-form-file">
         <div class="launch-row launch-row-main">
-          <button type="button" class="btn btn-secondary btn-browse" id="browseBtn">选择数据文件</button>
+          <button type="button" class="btn btn-secondary btn-browse file-action-button" id="browseBtn">选择数据文件</button>
           <div class="data-file-card" id="dataFileCard">
             <div class="data-file-empty">尚未选择数据文件</div>
           </div>
@@ -90,7 +106,7 @@
           <button class="btn btn-secondary" id="importTrainingBtn" disabled title="上传 .zip 或 .pt，下次训练断点续训">导入训练</button>
           <input type="file" id="importTrainingFile" accept=".zip,.pt" hidden />
         </div>
-        <small class="field-hint">强制离线：只用本地 Parquet，不连接 MT5。命名：<code>{品种}_{周期}.parquet</code>，如 <code>XAUUSD_H1.parquet</code></small>
+        <small class="field-hint notice-bar notice-warning">强制离线：只用本地 Parquet，不连接 MT5。命名：<code>{品种}_{周期}.parquet</code>，如 <code>XAUUSD_H1.parquet</code></small>
       </div>
     </section>
 
@@ -130,7 +146,7 @@
         </div>
       </section>
 
-      <section class="panel log-panel">
+      <section class="panel log-panel" id="trainingLogPanel">
         <span class="hud-corner tl"></span><span class="hud-corner tr"></span>
         <span class="hud-corner bl"></span><span class="hud-corner br"></span>
         <div class="panel-head">
@@ -141,7 +157,7 @@
       </section>
     </div>
 
-    <section class="panel howto-panel">
+    <section class="panel howto-panel" id="howtoPanel">
       <span class="hud-corner tl"></span><span class="hud-corner tr"></span>
       <span class="hud-corner bl"></span><span class="hud-corner br"></span>
       <details class="chart-metrics-help bt-howto" open>
@@ -181,7 +197,7 @@
       </details>
     </section>
 
-    <section class="panel strategies-panel">
+    <section class="panel strategies-panel" id="strategiesPanel">
       <span class="hud-corner tl"></span><span class="hud-corner tr"></span>
       <span class="hud-corner bl"></span><span class="hud-corner br"></span>
       <h2>已保存策略</h2>
@@ -254,13 +270,17 @@
 
     <!-- ══════════════ 步骤二：回测页 ══════════════ -->
     <div class="page" id="page-backtest">
+      <header class="page-header">
+        <h1>02 策略回测</h1>
+        <p>导入策略 JSON，设置交易成本后运行历史回测。</p>
+      </header>
       <section class="panel launch-panel">
         <span class="hud-corner tl"></span><span class="hud-corner tr"></span>
         <span class="hud-corner bl"></span><span class="hud-corner br"></span>
         <h2>启动回测</h2>
         <div class="launch-form launch-form-file">
           <div class="launch-row launch-row-main">
-            <button type="button" class="btn btn-secondary btn-browse" id="btBrowseStrategyBtn">选择策略</button>
+            <button type="button" class="btn btn-secondary btn-browse file-action-button" id="btBrowseStrategyBtn">选择策略 JSON</button>
             <div class="data-file-card" id="btStrategyCard">
               <div class="data-file-empty">尚未选择策略文件</div>
             </div>
@@ -297,51 +317,6 @@
         </div>
       </section>
 
-      <div class="split">
-        <!-- 品种绩效表 -->
-        <section class="panel bt-table-panel">
-          <span class="hud-corner tl"></span><span class="hud-corner tr"></span>
-          <span class="hud-corner bl"></span><span class="hud-corner br"></span>
-          <div class="panel-head">
-            <h2>绩效明细</h2>
-            <span class="hint" id="btTableHint">—</span>
-          </div>
-          <div class="table-wrap">
-            <table class="bt-table">
-              <thead>
-                <tr>
-                  <th>品种</th>
-                  <th>收益</th>
-                  <th>Sharpe</th>
-                  <th>Sortino</th>
-                  <th>盈亏比</th>
-                  <th>交易数</th>
-                  <th>胜率</th>
-                </tr>
-              </thead>
-              <tbody id="btTableBody">
-                <tr class="empty-row"><td colspan="7">暂无回测结果</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <!-- 回测日志 -->
-        <section class="panel log-panel">
-          <span class="hud-corner tl"></span><span class="hud-corner tr"></span>
-          <span class="hud-corner bl"></span><span class="hud-corner br"></span>
-          <div class="panel-head">
-            <h2>回测日志</h2>
-            <span class="hint" id="btLogHint">—</span>
-          </div>
-          <div class="bt-phase" id="btPhaseBar">
-            <div class="bt-phase-track"><div class="bt-phase-fill" id="btPhaseFill"></div></div>
-            <span class="bt-phase-label" id="btPhaseLabel">待机</span>
-          </div>
-          <pre class="log-view" id="btLogView">等待任务…</pre>
-        </section>
-      </div>
-
       <!-- 资金曲线（交互式 HTML 图表） -->
       <section class="panel bt-charts-panel">
         <span class="hud-corner tl"></span><span class="hud-corner tr"></span>
@@ -359,56 +334,117 @@
               <canvas id="btEquityChart"></canvas>
             </div>
           </div>
-          <div class="equity-chart-block roll">
-            <div class="equity-axis-label" id="btRollingLabel">滚动夏普 · Rolling Sharpe</div>
-            <div class="equity-chart-wrap roll">
-              <canvas id="btRollingChart"></canvas>
-            </div>
-          </div>
         </div>
 
         <div class="metric-empty" id="btEquityEmpty">回测完成后展示资金曲线</div>
+      </section>
 
-        <details class="chart-metrics-help bt-howto" open>
-          <summary>回测是怎么算的？（一看就懂）</summary>
-          <ol class="bt-howto-list">
-            <li>
-              <strong>先拿历史行情“假装交易”</strong>
-              <p>回测不会真的下单。它把过去很多天的价格拿出来，按策略规则一步步走一遍，看看如果当时真做了，钱会变多还是变少。</p>
-            </li>
-            <li>
-              <strong>因子先打一个“信号分”</strong>
-              <p>策略公式会给每一根 K 线打分：正分偏向看涨，负分偏向看跌，靠近 0 就先别乱动。</p>
-              <p>分数的绝对值越大，信号就越明确。比如 +3 比 +0.2 更坚决地看涨，-3 比 -0.2 更坚决地看跌。</p>
-            </li>
-            <li>
-              <strong>信号分越大，仓位就越大</strong>
-              <p>仓位不是只有“全仓 / 空仓”两档，而是用 <code>tanh(信号分)</code> 压到大约 -1 到 +1 之间。</p>
-              <ul>
-                <li>正分越大 → 做多越多（最多接近满仓 +1）</li>
-                <li>负分越小 → 做空越多（最多接近满仓 -1）</li>
-                <li>分数很弱 → 仓位接近 0（几乎不持仓）</li>
-              </ul>
-              <p>可以把它想成：信心越大，下注越多；但再大也不会超过“一整份仓位”。</p>
-            </li>
-            <li>
-              <strong>赚亏怎么算</strong>
-              <p>这一步大概赚多少 ≈ 仓位 × 价格涨跌。仓位大，涨了赚得多，跌了也亏得多。换仓时还会扣掉你设的手续费和滑点。</p>
-            </li>
-            <li>
-              <strong>上面那些图在说什么</strong>
-              <ul>
-                <li>资金曲线：把每一步赚亏累加起来，看账户是往上爬还是往下掉。</li>
-                <li>滚动夏普：看最近一段时间“赚得稳不稳”，越高通常越好。</li>
-              </ul>
-            </li>
-          </ol>
-        </details>
+      <!-- 回测结果：四个标签共用同一内容区，避免伪标签跳转造成布局错位 -->
+      <section class="panel bt-tabs-panel">
+        <span class="hud-corner tl"></span><span class="hud-corner tr"></span>
+        <span class="hud-corner bl"></span><span class="hud-corner br"></span>
+        <div class="bt-result-tabs" role="tablist" aria-label="回测结果视图">
+          <button type="button" class="bt-result-tab active" id="btRollingTab" role="tab" aria-controls="btRollingPanel" aria-selected="true" tabindex="0">滚动夏普</button>
+          <button type="button" class="bt-result-tab" id="btTradesTab" role="tab" aria-controls="btTablePanel" aria-selected="false" tabindex="-1">交易明细</button>
+          <button type="button" class="bt-result-tab" id="btLogsTab" role="tab" aria-controls="btLogPanel" aria-selected="false" tabindex="-1">日志</button>
+          <button type="button" class="bt-result-tab" id="btExplainTab" role="tab" aria-controls="btHowtoPanel" aria-selected="false" tabindex="-1">通俗解释</button>
+        </div>
+
+        <div class="bt-tab-stage">
+          <section class="bt-tab-panel" id="btRollingPanel" role="tabpanel" aria-labelledby="btRollingTab" data-bt-tab-panel>
+            <div class="equity-chart-block roll" id="btRollingLive" hidden>
+              <div class="equity-axis-label" id="btRollingLabel">滚动夏普 · Rolling Sharpe</div>
+              <div class="equity-chart-wrap roll">
+                <canvas id="btRollingChart"></canvas>
+              </div>
+            </div>
+            <div class="metric-empty" id="btRollingEmpty">回测完成后展示滚动夏普</div>
+          </section>
+
+          <section class="bt-tab-panel" id="btTablePanel" role="tabpanel" aria-labelledby="btTradesTab" data-bt-tab-panel hidden>
+            <div class="bt-tab-panel-head">
+              <h2>绩效明细</h2>
+              <span class="hint" id="btTableHint">—</span>
+            </div>
+            <div class="table-wrap">
+              <table class="bt-table">
+                <thead>
+                  <tr>
+                    <th>品种</th>
+                    <th>收益</th>
+                    <th>Sharpe</th>
+                    <th>Sortino</th>
+                    <th>盈亏比</th>
+                    <th>交易数</th>
+                    <th>胜率</th>
+                  </tr>
+                </thead>
+                <tbody id="btTableBody">
+                  <tr class="empty-row"><td colspan="7">暂无回测结果</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="bt-tab-panel" id="btLogPanel" role="tabpanel" aria-labelledby="btLogsTab" data-bt-tab-panel hidden>
+            <div class="bt-tab-panel-head">
+              <h2>回测日志</h2>
+              <span class="hint" id="btLogHint">—</span>
+            </div>
+            <div class="bt-phase" id="btPhaseBar">
+              <div class="bt-phase-track"><div class="bt-phase-fill" id="btPhaseFill"></div></div>
+              <span class="bt-phase-label" id="btPhaseLabel">待机</span>
+            </div>
+            <pre class="log-view" id="btLogView">等待任务…</pre>
+          </section>
+
+          <section class="bt-tab-panel" id="btHowtoPanel" role="tabpanel" aria-labelledby="btExplainTab" data-bt-tab-panel hidden>
+            <details class="chart-metrics-help bt-howto" id="btHowto" open>
+              <summary>回测是怎么算的？（一看就懂）</summary>
+              <ol class="bt-howto-list">
+                <li>
+                  <strong>先拿历史行情“假装交易”</strong>
+                  <p>回测不会真的下单。它把过去很多天的价格拿出来，按策略规则一步步走一遍，看看如果当时真做了，钱会变多还是变少。</p>
+                </li>
+                <li>
+                  <strong>因子先打一个“信号分”</strong>
+                  <p>策略公式会给每一根 K 线打分：正分偏向看涨，负分偏向看跌，靠近 0 就先别乱动。</p>
+                  <p>分数的绝对值越大，信号就越明确。比如 +3 比 +0.2 更坚决地看涨，-3 比 -0.2 更坚决地看跌。</p>
+                </li>
+                <li>
+                  <strong>信号分越大，仓位就越大</strong>
+                  <p>仓位不是只有“全仓 / 空仓”两档，而是用 <code>tanh(信号分)</code> 压到大约 -1 到 +1 之间。</p>
+                  <ul>
+                    <li>正分越大 → 做多越多（最多接近满仓 +1）</li>
+                    <li>负分越小 → 做空越多（最多接近满仓 -1）</li>
+                    <li>分数很弱 → 仓位接近 0（几乎不持仓）</li>
+                  </ul>
+                  <p>可以把它想成：信心越大，下注越多；但再大也不会超过“一整份仓位”。</p>
+                </li>
+                <li>
+                  <strong>赚亏怎么算</strong>
+                  <p>这一步大概赚多少 ≈ 仓位 × 价格涨跌。仓位大，涨了赚得多，跌了也亏得多。换仓时还会扣掉你设的手续费和滑点。</p>
+                </li>
+                <li>
+                  <strong>上面那些图在说什么</strong>
+                  <ul>
+                    <li>资金曲线：把每一步赚亏累加起来，看账户是往上爬还是往下掉。</li>
+                    <li>滚动夏普：看最近一段时间“赚得稳不稳”，越高通常越好。</li>
+                  </ul>
+                </li>
+              </ol>
+            </details>
+          </section>
+        </div>
       </section>
     </div><!-- /page-backtest -->
 
     <!-- ══════════════ 步骤三：实时分析页 ══════════════ -->
     <div class="page" id="page-realtime">
+      <header class="page-header">
+        <h1>03 实时分析</h1>
+        <p>配置数据源与策略，监控收盘 K 线后的实时信号。</p>
+      </header>
       <section class="panel launch-panel">
         <span class="hud-corner tl"></span><span class="hud-corner tr"></span>
         <span class="hud-corner bl"></span><span class="hud-corner br"></span>
@@ -432,7 +468,7 @@
             <select id="rtStrategySelect"></select>
           </label>
           <div class="rt-actions">
-            <button type="button" class="btn btn-secondary" id="rtBrowseStrategyBtn" title="导入本地策略 JSON">导入策略</button>
+            <button type="button" class="btn btn-secondary file-action-button" id="rtBrowseStrategyBtn" title="导入本地策略 JSON">导入策略 JSON</button>
             <button type="button" class="btn btn-primary" id="rtAddBtn">加入监控</button>
           </div>
         </div>
@@ -440,7 +476,7 @@
           <span class="rt-source-hint" id="rtSourceHint">—</span>
           <span class="rt-thr-hint" id="rtThresholdHint">无信号阈值 |tanh(因子)| &lt; 0.05</span>
         </div>
-        <small class="field-hint" id="rtStrategyPicked">因子来源：从已保存策略下拉选择，或「导入策略」选本地 JSON。信号取最后已收盘 bar。</small>
+        <small class="field-hint notice-bar notice-info" id="rtStrategyPicked">因子来源：从已保存策略下拉选择，或「导入策略」选本地 JSON。信号取最后已收盘 bar。</small>
       </section>
 
       <section class="panel rt-radar-panel">
@@ -566,6 +602,6 @@
   </div>
 
   <script src="/static/bg.js?v=1"></script>
-  <script src="/static/app.js?v=59"></script>
+  <script src="/static/app.js?v=62"></script>
 </body>
 </html>

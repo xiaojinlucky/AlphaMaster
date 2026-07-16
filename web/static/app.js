@@ -1750,6 +1750,8 @@ function buildRollingChart(labels, series, windowBars) {
 function renderEquity(resp) {
   const live = $("btEquityLive");
   const empty = $("btEquityEmpty");
+  const rollingLive = $("btRollingLive");
+  const rollingEmpty = $("btRollingEmpty");
   const data = resp?.data;
   const symbols = data?.symbols || {};
   const symNames = Object.keys(symbols);
@@ -1757,6 +1759,8 @@ function renderEquity(resp) {
   if (!resp?.available || !symNames.length) {
     if (live) live.hidden = true;
     if (empty) empty.hidden = false;
+    if (rollingLive) rollingLive.hidden = true;
+    if (rollingEmpty) rollingEmpty.hidden = false;
     destroyEquityCharts();
     btEquitySig = "";
     return;
@@ -1769,6 +1773,8 @@ function renderEquity(resp) {
 
   if (live) live.hidden = false;
   if (empty) empty.hidden = true;
+  if (rollingLive) rollingLive.hidden = false;
+  if (rollingEmpty) rollingEmpty.hidden = true;
 
   const portfolio = data.portfolio || null;
   let mainName, mainSeries;
@@ -1951,9 +1957,11 @@ async function initRealtimeOnce() {
     rtSources.forEach((s) => (rtSourceById[s.id] = s));
     const sel = $("rtSourceSelect");
     if (sel) {
-      sel.innerHTML = rtSources
+      sel.innerHTML = '<option value="">请选择数据源</option>' + rtSources
         .map((s) => `<option value="${s.id}">${escHtml(s.label)}${s.available ? "" : " · 未就绪"}</option>`)
         .join("");
+      sel.value = "";
+      syncSelectPlaceholder(sel);
     }
     if (data.min_exposure != null && $("rtThresholdHint")) {
       $("rtThresholdHint").textContent = `无信号阈值 |tanh(因子)| < ${data.min_exposure}`;
@@ -2075,7 +2083,7 @@ async function loadRtStrategies() {
     const data = await fetchJSON("/api/realtime/strategies");
     rows = data.strategies || [];
   } catch (_) {}
-  const opts = ['<option value="">— 选择已保存策略 —</option>'];
+  const opts = ['<option value="">请选择策略</option>'];
   if (rtImportedStrategy) {
     const isym = escHtml(rtImportedStrategy.symbol || "");
     opts.push(
@@ -2093,20 +2101,52 @@ async function loadRtStrategies() {
   sel.innerHTML = opts.join("");
   if (rtImportedStrategy) sel.value = rtImportedStrategy.path;
   else if (prev) sel.value = prev;
+  syncSelectPlaceholder(sel);
   onRtStrategyChange();
 }
 
+function syncSelectPlaceholder(select) {
+  if (!select) return;
+  select.classList.toggle("placeholder", !select.value);
+}
+
+const RT_STRATEGY_DEFAULT_HINT = "因子来源：从已保存策略下拉选择，或「导入策略」选本地 JSON。信号取最后已收盘 bar。";
+
+function setRtStrategyHint(message = RT_STRATEGY_DEFAULT_HINT, isError = false) {
+  const picked = $("rtStrategyPicked");
+  if (!picked) return;
+  picked.textContent = message;
+  picked.classList.toggle("bad", isError);
+}
+
 function onRtSourceChange() {
-  const src = rtSourceById[$("rtSourceSelect")?.value];
+  const sourceSelect = $("rtSourceSelect");
+  const src = rtSourceById[sourceSelect?.value];
   const tfSel = $("rtTimeframeSelect");
   const presets = $("rtSymbolPresets");
   const hint = $("rtSourceHint");
-  if (!src) return;
+  syncSelectPlaceholder(sourceSelect);
+  if (!src) {
+    if (tfSel) {
+      tfSel.innerHTML = '<option value="">请选择周期</option>';
+      tfSel.value = "";
+      syncSelectPlaceholder(tfSel);
+    }
+    if (presets) presets.innerHTML = "";
+    if (hint) {
+      hint.textContent = "请选择数据源";
+      hint.classList.remove("bad");
+    }
+    onRtStrategyChange();
+    return;
+  }
   if (tfSel) {
     const cur = tfSel.value;
-    tfSel.innerHTML = (src.timeframes || []).map((t) => `<option value="${t}">${t}</option>`).join("");
+    tfSel.innerHTML = '<option value="">请选择周期</option>' +
+      (src.timeframes || []).map((t) => `<option value="${t}">${t}</option>`).join("");
     if (src.timeframes && src.timeframes.includes(cur)) tfSel.value = cur;
-    else if (src.timeframes && src.timeframes.includes("1h")) tfSel.value = "1h";
+    else tfSel.value = "";
+    syncSelectPlaceholder(tfSel);
   }
   if (presets) {
     presets.innerHTML = (src.presets || []).map((s) => `<option value="${escHtml(s)}"></option>`).join("");
@@ -2115,6 +2155,7 @@ function onRtSourceChange() {
     hint.textContent = `${src.label}：${src.hint || ""}`;
     hint.classList.toggle("bad", !src.available);
   }
+  onRtStrategyChange();
 }
 
 function rtParseSymbolFromFilename(pathOrName) {
@@ -2135,12 +2176,12 @@ function rtApplySymbolFromStrategy(sym) {
 
 function onRtStrategyChange() {
   const sel = $("rtStrategySelect");
-  const picked = $("rtStrategyPicked");
-  if (!sel || !picked) return;
+  if (!sel) return;
+  syncSelectPlaceholder(sel);
   const opt = sel.options[sel.selectedIndex];
-  picked.textContent = sel.value
+  setRtStrategyHint(sel.value
     ? `因子来源：${opt ? opt.textContent : sel.value}。信号取最后已收盘 bar。`
-    : "因子来源：从已保存策略下拉选择，或「导入策略」选本地 JSON。信号取最后已收盘 bar。";
+    : RT_STRATEGY_DEFAULT_HINT);
   if (!sel.value) return;
   const fromOpt = (opt && opt.dataset.symbol) || "";
   const fromImport =
@@ -2173,13 +2214,20 @@ async function rtAddWatch() {
   const symbol = ($("rtSymbolInput")?.value || "").trim();
   const timeframe = $("rtTimeframeSelect")?.value;
   const strategy_file = $("rtStrategySelect")?.value;
-  const picked = $("rtStrategyPicked");
+  if (!source) {
+    setRtStrategyHint("请选择数据源", true);
+    return;
+  }
+  if (!timeframe) {
+    setRtStrategyHint("请选择周期", true);
+    return;
+  }
   if (!symbol) {
-    if (picked) { picked.textContent = "请填写品种"; picked.classList.add("bad"); }
+    setRtStrategyHint("请填写品种", true);
     return;
   }
   if (!strategy_file) {
-    if (picked) { picked.textContent = "请选择或导入策略因子"; picked.classList.add("bad"); }
+    setRtStrategyHint("请选择或导入策略因子", true);
     return;
   }
   const btn = $("rtAddBtn");
@@ -2194,12 +2242,12 @@ async function rtAddWatch() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ source, symbol, timeframe, strategy_file }),
     });
-    if (picked) picked.classList.remove("bad");
+    onRtStrategyChange();
     rtEngineRunning = true;
     rtGridSig = "";
     await refreshRealtime();
   } catch (e) {
-    if (picked) { picked.textContent = "添加失败: " + e.message; picked.classList.add("bad"); }
+    setRtStrategyHint("添加失败: " + e.message, true);
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -2495,7 +2543,54 @@ function startPolling() {
   }, 4000);
 }
 
+function bindWorkspaceNavigation() {
+  document.querySelectorAll(".stepper .step").forEach((btn) => {
+    btn.addEventListener("click", () => switchPage(btn.dataset.page));
+  });
+  document.querySelectorAll(".sidebar-resource").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      switchPage(btn.dataset.resourcePage || "train");
+      window.requestAnimationFrame(() => {
+        const target = $(btn.dataset.resourceTarget);
+        if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    });
+  });
+
+  const backtestTabs = [...document.querySelectorAll(".bt-result-tab")];
+  const activateBacktestTab = (btn, focus = false) => {
+    if (!btn) return;
+    const panelId = btn.getAttribute("aria-controls");
+    backtestTabs.forEach((tab) => {
+      const active = tab === btn;
+      tab.classList.toggle("active", active);
+      tab.setAttribute("aria-selected", active ? "true" : "false");
+      tab.tabIndex = active ? 0 : -1;
+    });
+    document.querySelectorAll("[data-bt-tab-panel]").forEach((panel) => {
+      panel.hidden = panel.id !== panelId;
+    });
+    if (panelId === "btRollingPanel" && rollingChart) rollingChart.resize();
+    if (focus) btn.focus();
+  };
+  backtestTabs.forEach((btn, index) => {
+    btn.addEventListener("click", () => activateBacktestTab(btn));
+    btn.addEventListener("keydown", (event) => {
+      let nextIndex = null;
+      if (event.key === "ArrowRight") nextIndex = (index + 1) % backtestTabs.length;
+      if (event.key === "ArrowLeft") nextIndex = (index - 1 + backtestTabs.length) % backtestTabs.length;
+      if (event.key === "Home") nextIndex = 0;
+      if (event.key === "End") nextIndex = backtestTabs.length - 1;
+      if (nextIndex == null) return;
+      event.preventDefault();
+      activateBacktestTab(backtestTabs[nextIndex], true);
+    });
+  });
+}
+
 async function init() {
+  // 导航属于首屏交互，必须在耗时的数据与图表初始化之前可用。
+  bindWorkspaceNavigation();
   try {
     await ensureControlToken();
     await loadConfig();
@@ -2530,11 +2625,6 @@ async function init() {
     $("errorModalCopyBtn").addEventListener("click", copyErrorPopupDetail);
   }
 
-  // 步骤导航
-  document.querySelectorAll(".stepper .step").forEach((btn) => {
-    btn.addEventListener("click", () => switchPage(btn.dataset.page));
-  });
-
   // 回测控制
   if ($("btBrowseStrategyBtn")) $("btBrowseStrategyBtn").addEventListener("click", browseStrategyFile);
   if ($("btStartBtn")) $("btStartBtn").addEventListener("click", startBacktest);
@@ -2548,7 +2638,12 @@ async function init() {
 
   // 实时分析控制
   if ($("rtSourceSelect")) $("rtSourceSelect").addEventListener("change", onRtSourceChange);
+  if ($("rtTimeframeSelect")) $("rtTimeframeSelect").addEventListener("change", (e) => {
+    syncSelectPlaceholder(e.target);
+    onRtStrategyChange();
+  });
   if ($("rtStrategySelect")) $("rtStrategySelect").addEventListener("change", onRtStrategyChange);
+  if ($("rtSymbolInput")) $("rtSymbolInput").addEventListener("input", onRtStrategyChange);
   if ($("rtBrowseStrategyBtn")) $("rtBrowseStrategyBtn").addEventListener("click", rtBrowseStrategy);
   if ($("rtAddBtn")) $("rtAddBtn").addEventListener("click", rtAddWatch);
   if ($("tvBlockedMt5Btn")) $("tvBlockedMt5Btn").addEventListener("click", onTvBlockedSwitchMt5);
