@@ -1,3 +1,5 @@
+> **历史提示词（已被取代）**：现行网页版总控入口为 `docs/GPT_WEB_PRO_EXTENDED_TASK.md`。
+
 # 给 GPT-5.6 Pro Extended Thinking 的提示词
 
 你收到的是 AlphaMaster 的“稳定基线 + 未提交候选实现”安全审查包，不是一个已经完成的发布版本。

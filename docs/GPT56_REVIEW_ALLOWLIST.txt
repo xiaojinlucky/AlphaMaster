@@ -1,4 +1,5 @@
-# AlphaMaster GPT-5.6 审查包白名单 v2
+# 历史审查包白名单 v2；现行 GitHub MCP 入口见 docs/GPT_WEB_PRO_EXTENDED_TASK.md
+# 本文件仅保留旧安全包可复核性，不再作为当前移交清单。
 
 根文件：
 .gitattributes

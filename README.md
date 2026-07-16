@@ -8,7 +8,9 @@
 
 当前私有工作仓库：[github.com/Jinqingchang/AlphaMaster](https://github.com/Jinqingchang/AlphaMaster)；原作者仓库保留为只读 `upstream`：[rosemarycox5334-debug/AlphaMaster](https://github.com/rosemarycox5334-debug/AlphaMaster)。
 
-当前数据身份、checkpoint、旧 MT5 注册、样本外回测和训练包候选实现仍在最终审查，接手前先读 [`CONTEXT.md`](CONTEXT.md)，不要把未提交候选当成稳定功能。
+当前数据身份、checkpoint、旧 MT5 注册、样本外回测和训练包 v2 已随 `d4dcb75` 发布并通过独立严格审查。接手或让外部模型规划前，先读 [`CONTEXT.md`](CONTEXT.md) 和 [`docs/GPT5_6SOL_HANDOFF.md`](docs/GPT5_6SOL_HANDOFF.md)。
+
+网页版 GPT Pro Extended Thinking 的总控入口为 [`docs/GPT_WEB_PRO_EXTENDED_TASK.md`](docs/GPT_WEB_PRO_EXTENDED_TASK.md)。用户的高层目标是 PA_Agent 打通到实盘；AlphaMaster 仍作为独立研究/训练项目提供背景，不自动成为 PA 的执行层。
 
 ---
 
@@ -89,8 +91,8 @@ AlphaMaster/
 ├── web/                 # FastAPI Web UI（训练 / 回测 / 实时）
 ├── model_core/          # 特征、算子、StackVM、训练引擎、回测评分
 ├── data_pipeline/       # Parquet / MT5 K 线加载与对齐
-├── strategy_manager/    # 实盘信号与仓位逻辑（与回测口径一致）
-├── execution/           # MT5 下单接口
+├── strategy_manager/    # 信号与仓位状态逻辑；真实 trader 已移除
+├── execution/           # MT5 实时报价兼容层，不含下单适配器
 ├── backtest_viz/        # 回测引擎与图表
 ├── strategies/          # best_{symbol}.json 策略文件
 ├── checkpoints/         # 训练检查点
@@ -105,7 +107,7 @@ AlphaMaster/
 
 - Python **3.10+**（建议 3.11）  
 - PyTorch、pandas、FastAPI、uvicorn 等（见 `requirements.txt`）  
-- 可选：MetaTrader 5 终端（实时 MT5 源 / 实盘相关脚本）  
+- 可选：MetaTrader 5 终端（实时 MT5 行情；当前仓库不提供可用下单适配器）
 - 复制 `.env.example` 为 `.env` 填写 MT5 等凭证（`.env` 已 gitignore）  
 
 ```bash
