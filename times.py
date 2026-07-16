@@ -10,7 +10,6 @@ import math
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
-TS_TOKEN = '20af39742f461b1edc79ff0aec09c8940265babe0c6733e7bf358078'
 INDEX_CODE = '511260.SH'
 START_DATE = '20150101' # 训练数据开始
 END_DATE = '20240101' # 训练数据结束
@@ -102,7 +101,10 @@ class AlphaGPT(nn.Module):
 
 class DataEngine:
     def __init__(self):
-        self.pro = ts.pro_api(TS_TOKEN)
+        token = os.getenv("TUSHARE_TOKEN", "").strip()
+        if not token:
+            raise RuntimeError("缺少 TUSHARE_TOKEN 环境变量；请在本机 .env 中配置")
+        self.pro = ts.pro_api(token)
     def load(self):
         if os.path.exists(DATA_CACHE_PATH):
             df = pd.read_parquet(DATA_CACHE_PATH)
