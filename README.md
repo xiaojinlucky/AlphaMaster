@@ -6,7 +6,9 @@
 
 ![Web 控制台总览](docs/images/00_hero.png)
 
-仓库地址：[github.com/rosemarycox5334-debug/AlphaMaster](https://github.com/rosemarycox5334-debug/AlphaMaster)
+当前私有工作仓库：[github.com/Jinqingchang/AlphaMaster](https://github.com/Jinqingchang/AlphaMaster)；原作者仓库保留为只读 `upstream`：[rosemarycox5334-debug/AlphaMaster](https://github.com/rosemarycox5334-debug/AlphaMaster)。
+
+当前数据身份、checkpoint、A 股转换和训练包候选实现仍在深度审查，接手前先读 [`CONTEXT.md`](CONTEXT.md) 与 [`docs/GPT56_PRO_EXTENDED_HANDOFF.md`](docs/GPT56_PRO_EXTENDED_HANDOFF.md)，不要把未提交候选当成稳定功能。
 
 ---
 
@@ -173,7 +175,7 @@ python train_file.py --data-file D:\K线数据\XAUUSD_H1.parquet --from-scratch 
 
 ## 截图更新
 
-仓库内展示图由当前 Web UI 截取，可用：
+仓库内展示图是 2026-07-12 的历史参考；当前三页统一版以提交 `186217e` 的代码和视觉合同测试为准。需要刷新展示图时可用：
 
 ```bash
 python scripts/capture_readme_shots.py

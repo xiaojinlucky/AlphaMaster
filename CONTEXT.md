@@ -1,11 +1,28 @@
 # CONTEXT
 
-正在做：`BTCUSDT_H1` 两步真实 Slurm 新手教学训练、使用文档、界面收口和私有 GitHub 备份均已完成；等待用户决定正式训练的步数与时限。
+## 当前目标
 
-上次停在：用户授权后已取消误启动的 XAUUSD job `542862`；BTC run `run_20260715T031117Z_2ad7721d` / job `542890` 在 Slurm 分配的 `cu09` 上以 12 CPU 完成，2 步耗时 `00:17:50`，状态 `READY`。57,553 根闭合 OKX H1 K 线的数据身份贯穿 run/result/published strategy/export package；3 个产物哈希全部通过。演示进程已结束，桌面快捷方式已按日常配置重启，当前 9000 步、调试关闭；界面按最近已发布 run 正确显示 `2/2、100%、completed`，没有活动 Slurm 作业。
+为 GPT-5.6 Pro Extended Thinking 准备 AlphaMaster 的安全、可复核交接包。交接包应最大化保留源码、测试、文档和无明文密钥配置，但不得包含 `.git`、`.env`、凭证、原始行情/交易/训练数据、数据库、日志、运行态文件或模型 checkpoint。TradingView 继续暂缓，不启动训练。
 
-近期决定：2026-07-15 按用户要求将正式 Slurm 任务默认 CPU 从 8 调整为 12；12 CPU 尚未做同口径基准，不作性能更优声明。当前 `9000` 步与 `00:30:00` 时限对 BTC 明显不相容，在用户确认正式预算前不得直接提交。快捷方式保持“项目虚拟环境可执行文件 + 固定工作目录”结构；关闭 Web 服务窗口不取消 Slurm 作业。登录节点只作 SSH 跳板，训练节点由 Slurm 调度。
+## 稳定基线
 
-Git 管理：2026-07-15 已建立私有仓库 `https://github.com/Jinqingchang/AlphaMaster`，本机 `main` 默认推送到该仓库；原作者仓库保留为 `upstream`。`.env`、Parquet、检查点、训练产物和本机运行状态继续由 `.gitignore` 排除。
+- 私有工作仓库：`https://github.com/Jinqingchang/AlphaMaster`，分支 `main`，上游为原作者仓库。
+- 当前已推送基线：`093e3172a24f1e4f7621e590b2641c4c5c61e83d`。
+- 前端三页统一完成于 `186217ecb7c9658187b8a335c1445af576263f02`；相关视觉合同测试 21 项通过，01/02/03 已统一大字体、舒展排版、侧边栏、卡片和控件基线。
+- `093e317` 已将 `times.py` 的 Tushare 明文 token 改为只读取本机 `TUSHARE_TOKEN` 环境变量；但旧 Git 历史仍含旧值和历史训练产物，必须先轮换 token，且不得把 `.git` 交给外部模型。
 
-AI 配置：2026-07-15 已在本机忽略文件 `web_settings.json` 中配置 DeepSeek 用户密钥，通道固定为官方 `deepseek-v4-flash` / `https://api.deepseek.com`；已通过 AlphaMaster 自身流式调用完成真实响应验证。密钥不写入项目文档、Git 索引或远端仓库。
+## 未提交候选实现
+
+当前工作区还有一组用于深度审查的候选改动：A 股旧 Parquet 严格转换、Parquet 数据身份、按 `timeframe + data_sha256 + run` 隔离 checkpoint、Slurm 身份贯穿、回测数据合同、训练包 v2 安全校验。它们不是已完成版本，已知阻断项与审查问题见 `docs/GPT56_PRO_EXTENDED_HANDOFF.md`。
+
+## 已知关键决策与约束
+
+- 登录节点只作 SSH 跳板；远端计算入口在指定计算节点中选择，训练节点由 Slurm 调度。
+- 12 CPU 是当前用户配置，尚无同口径性能基准；BTC 两步演示耗时约 17 分 50 秒，因此 9000 步与 30 分钟上限明显不相容，正式预算未决前不得启动。
+- 项目级 Stitch 配置只引用 `ALPHAMASTER_STITCH_API_KEY` 环境变量，不保存明文密钥。
+- 训练包导出 v2 已有候选实现；Web/API 导入入口仍固定关闭，不得宣称用户可导入。
+- 当前候选回测合同要求策略与回测文件哈希完全一致；这会阻止正常样本外回测，必须由 GPT-5.6 与用户先确定研究语义。
+
+## 下一步
+
+先让 GPT-5.6 对候选实现做需求、逻辑、边界、代码质量、测试和真实运行六维审查，重点解决旧训练入口、样本外回测身份、Windows 长路径发布和多数据身份 checkpoint 选择。方案获用户确认后再修复、复验并决定是否进入 `main`。
