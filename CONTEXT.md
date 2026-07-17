@@ -2,7 +2,7 @@
 
 ## 当前目标
 
-把 AlphaMaster 的真实代码、上下文、项目规则、用户问题/需求/修改意见、已完成内容和验证证据收敛为 GitHub 可直接读取的 canonical 文档链，供网页版 GPT 与 PA_Agent 私有仓库一起做只读总控规划。用户的高层核心目标是 PA_Agent 打通到实盘；AlphaMaster 继续作为独立研究/训练项目，不自动成为 PA 的执行层。
+在原始 AlphaMaster fork 上做轻量二次开发，重点打通 Windows 本机控制端与 Linux Slurm 服务器之间稳定、可审计、可恢复的联通和交互：本机选择与校验数据，自动上传并提交任务，持续查看状态和日志，支持取消与重启恢复，训练完成后自动下载、校验并发布产物。网页版 GPT 只读取 AlphaMaster 私有仓库，为这一目标编写小工单和硬验收。
 
 ## 稳定基线
 
@@ -37,7 +37,8 @@
 - manifest 不是 AlphaMaster 算法的固有要求：本地读取 / 本地训练不强制；Slurm 远程训练强制。旧 MT5 / OKX 分别登记为 `mt5_legacy_attested` / `okx_legacy_attested`，不得伪装成新版导出器验证数据。
 - 回测允许训练数据与测试数据哈希不同，但必须保持品种、周期、来源族和列合同一致；默认从训练结束后的第一根可用 K 线开始样本外评分，评估数据负责回测年化。
 - Slurm run、Worker 结果、策略 JSON 和发布指针必须同时匹配 `data_rows`、`data_start`、`data_end`、`columns`；任何结果或策略范围篡改都不得进入 `READY`。
-- PA_Agent 是实盘主项目；AlphaMaster 只作为独立研究项目和审计模式参考。未经另行授权不接入 PA 信号或订单生命周期。
+- AlphaMaster 是完全独立的项目。不得把其他仓库的目标、上下文、源码、任务、提交、文件包或执行流程混入本项目。
+- 当前不建设券商订单执行通道；实时分析只负责已收盘 K 线信号展示与可选提醒。
 
 ## Canonical 移交入口
 
@@ -50,4 +51,4 @@
 
 ## 下一步
 
-验证文档事实与链接后，按精确文件范围提交私有 GitHub。用户随后在网页版 GPT Pro Extended Thinking 中粘贴总控指令，并把工单+硬验收通过 `@` 当前对话交回；本地 Codex 再按真实 skills、memory、代码、环境和测试进行修订。旧 MT5 批量计划未获 apply 授权，正式训练预算未决，均不得执行。
+验证 AlphaMaster 专属文档的事实、项目隔离和链接后，按精确文件范围提交私有 GitHub。用户随后在网页版 GPT Pro Extended Thinking 中粘贴总控指令，并把工单+硬验收通过 `@` 当前对话交回；本地 Codex 再按真实 skills、memory、代码、环境和测试进行修订。旧 MT5 批量计划未获 apply 授权，正式训练预算未决，均不得执行。

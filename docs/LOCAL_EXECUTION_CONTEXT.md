@@ -38,8 +38,6 @@
 | `github:yeet` | 精确 Git 范围、密钥扫描、私有远程校验和发布 | 本项目禁止未经确认开分支/PR，实际发布按项目 Git 规则适配 |
 | `codex-remote-ops` | Windows 到远程 Codex/节点链路排障 | 仅在远程基础设施故障时使用，不替代 Slurm 训练合同 |
 
-AlphaMaster 不是 `open-xquant`；不得把 open-xquant 专用策略 spec、回测或实盘 skill 当作本项目现成功能。
-
 ## 5. 与本项目有关的既定偏好
 
 - 用户要求真实文件、真实测试、真实渲染和真实运行证据，不接受只给抽象建议。
@@ -48,6 +46,7 @@ AlphaMaster 不是 `open-xquant`；不得把 open-xquant 专用策略 spec、回
 - manifest 是 fork 后为 Slurm 增加的远程身份合同，不得说成原仓库算法要求。
 - 不启动未经确认的正式训练，不配置本轮未授权的 TradingView。
 - 完成重要开发后，必须循环独立严格审查直到阻塞项清零。
+- AlphaMaster 与任何其他仓库完全隔离，不做跨项目分析、提交、打包或执行。
 
 ## 6. 外部工单转为本地任务的检查表
 
@@ -56,6 +55,6 @@ AlphaMaster 不是 `open-xquant`；不得把 open-xquant 专用策略 spec、回
 3. 核对外部模型引用的 skill、命令和路径在本机是否存在。
 4. 涉及 MT5、OKX、Slurm、SSH、PyTorch 或第三方 API 时重新查官方资料/实际接口。
 5. 补回外部计划容易遗漏的凭据隔离、数据身份、幂等、未知状态、重启恢复和失败关闭。
-6. 删除无关重构、TradingView 配置、正式训练和未经授权的跨项目集成。
+6. 删除无关重构、TradingView 配置、正式训练、券商接入和任何跨项目内容。
 7. 每张工单写清入口、禁止行为、测试证据、实际运行证据、用户确认点和回退。
 8. 本地 Codex 修订后的工单再由用户确认执行。

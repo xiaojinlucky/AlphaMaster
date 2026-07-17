@@ -10,7 +10,7 @@
 
 当前数据身份、checkpoint、旧 MT5 注册、样本外回测和训练包 v2 已随 `d4dcb75` 发布并通过独立严格审查。接手或让外部模型规划前，先读 [`CONTEXT.md`](CONTEXT.md) 和 [`docs/GPT5_6SOL_HANDOFF.md`](docs/GPT5_6SOL_HANDOFF.md)。
 
-网页版 GPT Pro Extended Thinking 的总控入口为 [`docs/GPT_WEB_PRO_EXTENDED_TASK.md`](docs/GPT_WEB_PRO_EXTENDED_TASK.md)。用户的高层目标是 PA_Agent 打通到实盘；AlphaMaster 仍作为独立研究/训练项目提供背景，不自动成为 PA 的执行层。
+网页版 GPT Pro Extended Thinking 的 AlphaMaster 专属总控入口为 [`docs/GPT_WEB_PRO_EXTENDED_TASK.md`](docs/GPT_WEB_PRO_EXTENDED_TASK.md)。当前轻量二次开发重点是打通 Windows 本机控制端与 Linux Slurm 服务器之间的训练提交、状态/日志交互、恢复和产物回传。
 
 ---
 
