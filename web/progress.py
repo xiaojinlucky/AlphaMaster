@@ -16,7 +16,7 @@ from config import Config
 from data_pipeline.a_share_data import ASHARE_SPECS_BY_TIMEFRAME
 from data_pipeline.dataset_contracts import TRAINING_SOURCE_IDS
 from model_core.config import ModelConfig
-from model_core.vocab import FORMULA_VOCAB
+from model_core.vocab import FORMULA_VOCAB, VocabVersionMismatchError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints"
@@ -249,6 +249,9 @@ def _load_checkpoint_meta(path: Path) -> dict[str, Any]:
 
     with filesystem_path.open("rb") as handle:
         ckpt = torch.load(handle, map_location="cpu", weights_only=True)
+    if not isinstance(ckpt, dict):
+        raise ValueError(f"checkpoint {path} 顶层不是对象")
+    FORMULA_VOCAB.verify(ckpt.get("vocab_version"))
     meta = {
         "step": int(ckpt.get("step", _step_from_name(path))),
         "best_score": ckpt.get("best_score"),
@@ -281,6 +284,10 @@ def _load_strategy(symbol: str) -> dict[str, Any] | None:
     except (json.JSONDecodeError, OSError):
         return None
     if not isinstance(payload, dict):
+        return None
+    try:
+        FORMULA_VOCAB.verify(payload.get("vocab_version"))
+    except VocabVersionMismatchError:
         return None
     if bundle:
         payload = dict(payload)

@@ -297,7 +297,14 @@ def test_progress_reads_long_nested_checkpoint_via_file_handle(tmp_path: Path) -
         filesystem_path = progress_module._filesystem_path(checkpoint)
         filesystem_path.parent.mkdir(parents=True)
         with filesystem_path.open("wb") as handle:
-            torch.save({"step": 10, "training_history": {}}, handle)
+            torch.save(
+                {
+                    "vocab_version": manager_module.VOCAB_VERSION,
+                    "step": 10,
+                    "training_history": {},
+                },
+                handle,
+            )
         if os.name == "nt":
             assert len(str(checkpoint.resolve())) > 260
             assert str(filesystem_path).startswith("\\\\?\\")

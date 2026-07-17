@@ -330,6 +330,9 @@ def _seed_best_from_strategy(engine: AlphaEngine, symbol: str) -> None:
     except TypeError as e:
         print(f"  [警告] 已有策略格式非法: {e}")
         return
+    if data.get("vocab_version") != VOCAB_VERSION:
+        print("  [重新训练] 已有最优策略的公式执行版本不同，不作为本次分数下限")
+        return
     if not _same_strategy_identity(data, engine):
         print("  [重新训练] 已有最优策略的数据身份不同，不作为本次分数下限")
         return
@@ -366,7 +369,8 @@ def _save_strategy(
                 raise TypeError("策略 JSON 顶层必须是对象")
             old_score = old.get("best_score")
             if (
-                _same_strategy_identity(old, engine)
+                old.get("vocab_version") == VOCAB_VERSION
+                and _same_strategy_identity(old, engine)
                 and old_score is not None
                 and float(old_score) > float(engine.best_score)
             ):

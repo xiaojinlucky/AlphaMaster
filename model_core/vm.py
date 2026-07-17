@@ -1,4 +1,9 @@
 import torch
+from .formula_contract import (
+    STACKVM_OUTPUT_NORM_CLIP,
+    STACKVM_OUTPUT_NORM_EPS,
+    STACKVM_OUTPUT_NORM_WINDOW,
+)
 from .ops import OPS_CONFIG
 from .vocab import FORMULA_VOCAB
 
@@ -153,41 +158,81 @@ class StackVM:
     @staticmethod
     def _normalize_output(x: torch.Tensor) -> torch.Tensor:
         """
-        对因子输出做标准化，确保幅度足够触发 neutral band 入场。
+        对因子输出做严格因果标准化。
 
-        策略（三级降级）：
-        1. 截面 zscore（跨品种，每时间步）：适合因子跨品种有分散
-        2. 时序 zscore（每品种，全局）：当截面 std 太小时使用
-        3. 若两级都失败（因子是常数）：返回原值，由 const_cnt 拦截
+        时序统计量只使用当前及之前最多 200 根 K 线；warm-up 期只使用
+        当时已有样本，不补未来值。多品种在同一时间点有截面分散时保留
+        截面 z-score，否则回退到各品种的因果时序 z-score。
 
         Returns:
-            [N, T] clip 到 [-3, 3]，若是常数则返回原值（engine 会过滤）
+            [N, T]，clip 到 [-3, 3]；样本不足或零方差位置返回 0
         """
         N, T = x.shape
+        if T == 0:
+            return x
 
-        # 检测是否是全局常数（标准化无意义）
-        global_std = x.std()
-        if global_std < 1e-6:
-            return x   # 常数因子，由 engine 的 const_cnt 拦截
+        orig_dtype = x.dtype
+        # 累计和法把每次公式归一化保持在 O(N*T)；float64 避免平方和相减
+        # 在较长序列上产生明显的负方差或前后端数值分歧。
+        work = torch.nan_to_num(
+            x.to(torch.float64),
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        )
 
-        # ── 截面标准化（跨品种，每时间步；N=1 时跳过）──────────────
+        prefix_sum = torch.cumsum(work, dim=1)
+        prefix_sq_sum = torch.cumsum(work * work, dim=1)
+        rolling_sum = prefix_sum.clone()
+        rolling_sq_sum = prefix_sq_sum.clone()
+        if T > STACKVM_OUTPUT_NORM_WINDOW:
+            rolling_sum[:, STACKVM_OUTPUT_NORM_WINDOW:] -= (
+                prefix_sum[:, :-STACKVM_OUTPUT_NORM_WINDOW]
+            )
+            rolling_sq_sum[:, STACKVM_OUTPUT_NORM_WINDOW:] -= (
+                prefix_sq_sum[:, :-STACKVM_OUTPUT_NORM_WINDOW]
+            )
+
+        count = torch.arange(
+            1,
+            T + 1,
+            device=work.device,
+            dtype=work.dtype,
+        ).clamp(max=STACKVM_OUTPUT_NORM_WINDOW).unsqueeze(0)
+        ts_mean = rolling_sum / count
+        ts_var = torch.clamp(rolling_sq_sum / count - ts_mean * ts_mean, min=0.0)
+        ts_std = torch.sqrt(ts_var)
+        ts_valid = (count >= 2) & (ts_std > STACKVM_OUTPUT_NORM_EPS)
+        ts_z = torch.where(
+            ts_valid,
+            (work - ts_mean) / ts_std.clamp(min=STACKVM_OUTPUT_NORM_EPS),
+            torch.zeros_like(work),
+        )
+
+        result = ts_z
         if N > 1:
-            cs_mean = x.mean(dim=0, keepdim=True)
-            cs_std  = x.std(dim=0, keepdim=True).clamp(min=1e-8)
-            cs_z    = (x - cs_mean) / cs_std
-            if cs_z.std() >= 0.3:
-                return torch.clamp(cs_z, -3.0, 3.0)
+            # 截面统计只比较同一时间点，不接触未来。某时点截面无分散时，
+            # 使用该品种自身的因果时序结果，避免依赖完整序列决定降级路径。
+            cs_mean = work.mean(dim=0, keepdim=True)
+            cs_var = ((work - cs_mean) ** 2).mean(dim=0, keepdim=True)
+            cs_std = torch.sqrt(torch.clamp(cs_var, min=0.0))
+            cs_valid = cs_std > STACKVM_OUTPUT_NORM_EPS
+            cs_z = (work - cs_mean) / cs_std.clamp(
+                min=STACKVM_OUTPUT_NORM_EPS
+            )
+            result = torch.where(cs_valid, cs_z, ts_z)
 
-        # ── 时序标准化（每品种独立）─────────────────────────────────
-        ts_mean = x.mean(dim=1, keepdim=True)
-        ts_std  = x.std(dim=1, keepdim=True).clamp(min=1e-8)
-        ts_z    = (x - ts_mean) / ts_std
-
-        if ts_z.std() >= 0.1:
-            return torch.clamp(ts_z, -3.0, 3.0)
-
-        # ── 两级均失败：因子无区分度，返回原值让 engine 过滤 ────────
-        return x
+        result = torch.nan_to_num(
+            result,
+            nan=0.0,
+            posinf=STACKVM_OUTPUT_NORM_CLIP,
+            neginf=-STACKVM_OUTPUT_NORM_CLIP,
+        )
+        return torch.clamp(
+            result,
+            -STACKVM_OUTPUT_NORM_CLIP,
+            STACKVM_OUTPUT_NORM_CLIP,
+        ).to(orig_dtype)
 
     def execute(self, formula_tokens, feat_tensor):
         stack = []

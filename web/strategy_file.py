@@ -297,6 +297,11 @@ def sync_best_strategy_for_symbol(
             data = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
+        if (
+            not isinstance(data, dict)
+            or data.get("vocab_version") != VOCAB_VERSION
+        ):
+            continue
         formula = data.get("formula")
         score = data.get("best_score")
         if not formula or score is None:

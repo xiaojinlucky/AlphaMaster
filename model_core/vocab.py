@@ -9,9 +9,10 @@ model_core/vocab.py -- Formula_Vocabulary 集成与确定性版本（R3）
   - token id 分段：feature id ∈ [0, F-1]，operator id ∈ [F, F+O-1]，两段严格
     不相交（`operator_offset == feature_count`，R3.3）。
   - 构建时用集合校验 token 名称全局唯一、无缺失/重复/多余（R3.1、R3.2）。
-  - `VOCAB_VERSION` 由有序 token 名称列表确定性派生（R3.4、R3.5）：
-        VOCAB_VERSION = "v" + sha256("\n".join(token_names)).hexdigest()[:12]
-    相同有序列表 → 相同版本；任意组成/顺序变化 → 不同版本。
+  - `VOCAB_VERSION` 由公式执行合同与有序 token 名称共同确定性派生：
+        VOCAB_VERSION =
+            "v" + sha256(execution_contract + "\n" + token_names).hexdigest()[:12]
+    token 或执行语义任一变化 → 不同兼容版本，旧产物失败关闭。
   - `FORMULA_VOCAB.verify(artifact_version)`：版本不匹配抛
     `VocabVersionMismatchError`，拒绝且不消费任何 token（R3.7）。
   - `VOCAB_SCHEMA_TAG`：人类可读的 schema 标签，仅供日志展示，不参与兼容判定。
@@ -27,6 +28,7 @@ import hashlib
 from dataclasses import dataclass
 
 from .features import FEATURE_REGISTRY
+from .formula_contract import FORMULA_EXECUTION_CONTRACT
 from .ops import OPERATOR_REGISTRY
 
 # 人类可读 schema 标签（仅供日志/报告展示，不参与兼容性判定，R3.5）
@@ -46,14 +48,12 @@ class VocabVersionMismatchError(Exception):
 # ── 确定性版本派生（R3.4、R3.5）─────────────────────────────────────────
 
 def compute_vocab_version(token_names: tuple[str, ...]) -> str:
-    """由有序 token 名称列表确定性派生紧凑版本标识。
+    """由执行合同与有序 token 名称确定性派生紧凑兼容版本。
 
-    VOCAB_VERSION = "v" + sha256("\n".join(token_names)).hexdigest()[:12]
-
-    性质：相同的有序列表 → 相同版本；任意组成或顺序变化 → 不同版本。使用换行
-    作为稳定分隔符，避免名称拼接歧义。
+    相同执行合同及有序列表产生相同版本；任一组成、顺序或执行语义变化都会
+    产生不同版本。使用换行作为稳定分隔符，避免名称拼接歧义。
     """
-    joined = "\n".join(token_names)
+    joined = "\n".join((FORMULA_EXECUTION_CONTRACT, *token_names))
     digest = hashlib.sha256(joined.encode("utf-8")).hexdigest()
     return "v" + digest[:12]
 
@@ -82,7 +82,7 @@ class FormulaVocab:
 
     @property
     def version(self) -> str:
-        """当前词表组成确定性派生的 VOCAB_VERSION（R3.4）。"""
+        """当前执行合同与词表共同派生的兼容版本（R3.4）。"""
         return compute_vocab_version(self.token_names)
 
     def verify(self, artifact_version: str) -> None:
@@ -150,7 +150,7 @@ FORMULA_VOCAB = _build_formula_vocab()
 # 由注册表导出有序特征名视图（保持下游 import 兼容）
 FEATURE_NAMES = FORMULA_VOCAB.feature_names
 
-# 词表版本：由有序 token 名称列表确定性派生（R3.4、R3.5）。
+# 公式兼容版本：由执行合同与有序 token 名称共同派生（R3.4、R3.5）。
 # 特征/算子的组成或顺序变化都会改变本值，旧 checkpoint / best_strategy.json 将
 # 因版本不匹配而被 verify() 拒绝加载。
 VOCAB_VERSION = FORMULA_VOCAB.version

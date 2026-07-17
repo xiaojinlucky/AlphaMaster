@@ -17,7 +17,7 @@ import pytest
 import torch
 
 from model_core.alphagpt import AlphaGPT
-from model_core.vocab import FORMULA_VOCAB
+from model_core.vocab import FORMULA_VOCAB, VocabVersionMismatchError
 import web.training_package as package_module
 
 
@@ -64,6 +64,11 @@ def _checkpoint_bytes(*, symbol: str = SYMBOL, step: int = STEP) -> bytes:
         buffer,
     )
     return buffer.getvalue()
+
+
+def _legacy_token_only_vocab_version() -> str:
+    joined = "\n".join(FORMULA_VOCAB.token_names)
+    return "v" + hashlib.sha256(joined.encode("utf-8")).hexdigest()[:12]
 
 
 def _strategy_bytes(
@@ -421,6 +426,29 @@ def test_rejects_checkpoint_identity_mismatch_before_publish(
         package_module.import_training_package(
             _secure_package(checkpoint=_checkpoint_bytes(symbol="BTCUSDT")),
             "wrong-checkpoint.zip",
+            SYMBOL,
+        )
+
+    _assert_existing_unchanged(snapshot)
+
+
+def test_rejects_checkpoint_from_previous_execution_contract_before_publish(
+    isolated_project: Path,
+) -> None:
+    snapshot = _seed_existing(isolated_project)
+    checkpoint = torch.load(
+        io.BytesIO(_checkpoint_bytes()),
+        map_location="cpu",
+        weights_only=True,
+    )
+    checkpoint["vocab_version"] = _legacy_token_only_vocab_version()
+    buffer = io.BytesIO()
+    torch.save(checkpoint, buffer)
+
+    with pytest.raises(VocabVersionMismatchError):
+        package_module.import_training_package(
+            _secure_package(checkpoint=buffer.getvalue()),
+            "old-execution-contract.zip",
             SYMBOL,
         )
 

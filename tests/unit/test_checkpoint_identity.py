@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import inspect
 import os
@@ -15,6 +16,7 @@ from model_core.engine import (
     CHECKPOINT_IDENTITY_FIELDS,
     CheckpointIdentityError,
 )
+from model_core.vocab import FORMULA_VOCAB, VocabVersionMismatchError
 
 
 class _TinyState:
@@ -39,6 +41,11 @@ def _identity(digest: str = "a" * 64) -> dict:
         "periods_per_year": 6240,
         "minimum_bars": 3000,
     }
+
+
+def _legacy_token_only_vocab_version() -> str:
+    joined = "\n".join(FORMULA_VOCAB.token_names)
+    return "v" + hashlib.sha256(joined.encode("utf-8")).hexdigest()[:12]
 
 
 def _engine(identity: dict | None = None) -> AlphaEngine:
@@ -208,6 +215,23 @@ def test_checkpoint_dataset_hash_mismatch_is_rejected_before_state_apply(
     assert target.opt.loaded == []
 
 
+def test_checkpoint_from_previous_execution_contract_is_rejected_before_state_apply(
+    tmp_path: Path,
+) -> None:
+    checkpoint = tmp_path / "checkpoint.pt"
+    _engine().save_checkpoint(20, str(checkpoint))
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    payload["vocab_version"] = _legacy_token_only_vocab_version()
+    torch.save(payload, checkpoint)
+    target = _engine()
+
+    with pytest.raises(VocabVersionMismatchError):
+        target.load_checkpoint(str(checkpoint))
+
+    assert target.model.loaded == []
+    assert target.opt.loaded == []
+
+
 def test_checkpoint_rejects_bool_for_integer_identity_before_state_apply(
     tmp_path: Path,
 ) -> None:
@@ -305,7 +329,12 @@ def test_matching_best_strategy_can_seed_from_scratch(
     monkeypatch.chdir(tmp_path)
     strategies = tmp_path / "strategies"
     strategies.mkdir()
-    matching = {**_identity(), "formula": [9], "best_score": 99.0}
+    matching = {
+        **_identity(),
+        "vocab_version": FORMULA_VOCAB.version,
+        "formula": [9],
+        "best_score": 99.0,
+    }
     (strategies / "best_BTCUSDT.json").write_text(
         json.dumps(matching), encoding="utf-8"
     )
@@ -317,3 +346,62 @@ def test_matching_best_strategy_can_seed_from_scratch(
 
     assert engine.best_formula == [9]
     assert engine.best_score == 99.0
+
+
+def test_previous_execution_contract_strategy_cannot_seed_from_scratch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    strategies = tmp_path / "strategies"
+    strategies.mkdir()
+    legacy = {
+        **_identity(),
+        "vocab_version": _legacy_token_only_vocab_version(),
+        "formula": [9],
+        "best_score": 99.0,
+    }
+    (strategies / "best_BTCUSDT.json").write_text(
+        json.dumps(legacy), encoding="utf-8"
+    )
+    engine = _engine()
+    engine.best_formula = None
+    engine.best_score = -float("inf")
+
+    train_file._seed_best_from_strategy(engine, "BTCUSDT")
+
+    assert engine.best_formula is None
+    assert engine.best_score == -float("inf")
+
+
+def test_previous_execution_contract_score_cannot_block_current_strategy_save(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    strategies = tmp_path / "strategies"
+    strategies.mkdir()
+    legacy = {
+        **_identity(),
+        "vocab_version": _legacy_token_only_vocab_version(),
+        "formula": [9],
+        "best_score": 99.0,
+    }
+    strategy_path = strategies / "best_BTCUSDT.json"
+    strategy_path.write_text(json.dumps(legacy), encoding="utf-8")
+    engine = _engine()
+
+    train_file._save_strategy(
+        engine,
+        "BTCUSDT",
+        "H1",
+        str(tmp_path / "BTCUSDT_H1.parquet"),
+        6240,
+        3000,
+        "okx",
+        f"sha256:{'a' * 64}",
+        "a" * 64,
+    )
+
+    saved = json.loads(strategy_path.read_text(encoding="utf-8"))
+    assert saved["vocab_version"] == FORMULA_VOCAB.version
+    assert saved["formula"] == engine.best_formula
+    assert saved["best_score"] == engine.best_score

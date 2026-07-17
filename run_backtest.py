@@ -26,7 +26,11 @@ from config import Config
 from data_pipeline.parquet_manager import ParquetDataManager
 from data_pipeline.dataset_contracts import source_family
 from backtest_viz import BacktestEngine
-from model_core.vocab import FORMULA_VOCAB, VOCAB_VERSION
+from model_core.vocab import (
+    FORMULA_VOCAB,
+    VOCAB_VERSION,
+    VocabVersionMismatchError,
+)
 from model_core.vm import StackVM
 from model_core.features import MT5FeatureEngineer
 from strategy_manager.signal import compute_target_positions_stateless
@@ -47,7 +51,17 @@ def load_strategy(path: Path) -> dict | None:
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
     if isinstance(data, list):
-        return {"formula": data, "vocab_version": "legacy", "symbol": None}
+        raise VocabVersionMismatchError(
+            f"策略 {path} 是无兼容版本的旧格式；需重新训练/重建后回测"
+        )
+    if not isinstance(data, dict):
+        raise ValueError(f"策略 {path} 顶层必须是 JSON 对象")
+    artifact_version = data.get("vocab_version")
+    if artifact_version is None:
+        raise VocabVersionMismatchError(
+            f"策略 {path} 缺少公式兼容版本；需重新训练/重建后回测"
+        )
+    FORMULA_VOCAB.verify(artifact_version)
     return data
 
 

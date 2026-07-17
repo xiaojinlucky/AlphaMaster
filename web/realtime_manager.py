@@ -16,7 +16,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from model_core.vocab import VOCAB_VERSION
+from model_core.vocab import (
+    FORMULA_VOCAB,
+    VOCAB_VERSION,
+    VocabVersionMismatchError,
+)
 from strategy_manager.live_signal import evaluate_signal, min_exposure
 from web.data_sources.base import bars_to_raw_dict
 from web.data_sources.factory import SOURCE_KINDS, get_source
@@ -95,10 +99,20 @@ def _ensure_closed_bars(bars: list, timeframe: str, now: float | None = None) ->
 def _load_strategy_meta(path: str) -> dict[str, Any]:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if isinstance(data, list):
-        return {"formula": data, "vocab_version": "legacy", "symbol": None, "timeframe": None, "best_score": None}
+        raise VocabVersionMismatchError(
+            f"策略 {path} 是无兼容版本的旧格式；需重新训练/重建后监控"
+        )
+    if not isinstance(data, dict):
+        raise ValueError(f"策略 {path} 顶层必须是 JSON 对象")
+    artifact_version = data.get("vocab_version")
+    if artifact_version is None:
+        raise VocabVersionMismatchError(
+            f"策略 {path} 缺少公式兼容版本；需重新训练/重建后监控"
+        )
+    FORMULA_VOCAB.verify(artifact_version)
     return {
         "formula": data.get("formula"),
-        "vocab_version": data.get("vocab_version"),
+        "vocab_version": artifact_version,
         "symbol": data.get("symbol"),
         "timeframe": data.get("timeframe"),
         "best_score": data.get("best_score"),

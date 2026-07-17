@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from model_core.vocab import FORMULA_VOCAB
 from web import strategy_file as sf
 from web.settings import save_settings
 
@@ -65,6 +66,7 @@ def test_sync_best_writes_data_file(project: Path) -> None:
                 "formula": [1, 2, 3],
                 "best_score": 1.5,
                 "formula_decoded": "A → B",
+                "vocab_version": FORMULA_VOCAB.version,
             }
         ),
         encoding="utf-8",
