@@ -1,205 +1,358 @@
-# 网页版 GPT Pro Extended Thinking — AlphaMaster 总控任务
+# 网页版 GPT Pro Extended Thinking — AlphaMaster 总控指令
 
-## 你的访问方式
+## 访问方式与唯一事实源
 
-请使用已连接的 GitHub 工具，只读取私有仓库 `Jinqingchang/AlphaMaster` 的 `main` 分支。
+请使用已连接的 GitHub MCP，只读取私有仓库：
 
-本任务不授权读取、比较或规划任何其他仓库。如果无法读取 AlphaMaster，请明确报告连接和权限状态。不得用公开 upstream、搜索结果、其他项目或模型记忆替代私有仓库事实。
+```text
+Jinqingchang/AlphaMaster
+branch: main
+```
+
+先报告实际 `main` SHA 和访问状态。不得用公开 upstream、搜索结果、旧对话、模型记忆或其他仓库替代私有仓库当前代码。
+
+本任务不授权：
+
+- 修改代码、创建分支/PR、提交或推送；
+- 连接本机、SSH、Slurm、MT5、OKX 或任何外部模型 API；
+- 读取、比较或规划其他仓库；
+- 启动训练、取消任务、登记旧数据或配置 TradingView。
 
 ## 必读顺序
 
-### AlphaMaster
+必须完整读取：
 
 1. `CONTEXT.md`
 2. `lessons.md`
 3. `docs/CODEX_PROJECT_RULES.md`
 4. `docs/LOCAL_EXECUTION_CONTEXT.md`
 5. `docs/REQUIREMENTS_CHANGELOG.md`
-6. `docs/GPT5_6SOL_HANDOFF.md`
-7. `docs/VALIDATION_EVIDENCE.md`
+6. `docs/VALIDATION_EVIDENCE.md`
+7. `docs/GPT5_6SOL_HANDOFF.md`
 8. `README.md`
-9. `docs/slurm-deployment-design.md`
-10. `run_web.py`、`web/app.py`
-11. `web/slurm_training_client.py`、`web/slurm_training_manager.py`
-12. `scripts/slurm_control.py`、`scripts/train_slurm_worker.py`、`scripts/train_alphamaster.sbatch`
-13. `data_pipeline/dataset_contracts.py` 及 MT5/OKX/A 股数据接入代码
-14. 与 Slurm、数据身份、训练、回测、前端和安全边界有关的测试
+
+因果执行、数据、回测和选择链：
+
+9. `model_core/formula_contract.py`
+10. `model_core/vm.py`
+11. `model_core/ops.py`
+12. `model_core/vocab.py`
+13. `model_core/features.py`
+14. `model_core/engine.py`
+15. `model_core/backtest.py`
+16. `model_core/config.py`
+17. `data_pipeline/data_manager.py`
+18. `data_pipeline/parquet_manager.py`
+19. `data_pipeline/single_symbol_manager.py`
+20. `strategy_manager/signal.py`
+21. `strategy_manager/live_signal.py`
+22. `backtest_viz/engine.py`
+23. `web/backtest_manager.py`
+24. `run_backtest.py`
+
+对应测试：
+
+25. `tests/unit/test_vm_causal_normalization.py`
+26. `tests/unit/test_jump_causality.py`
+27. `tests/unit/test_formula_execution_contract.py`
+28. `tests/unit/test_data_manager.py`
+29. `tests/property/test_data_props.py`
+30. `tests/property/test_feature_props.py`
+31. `tests/property/test_prop_features.py`
+32. `tests/unit/test_walk_forward_gap.py`
+33. `tests/unit/test_backtest.py`
+34. `tests/unit/test_backtest_score_window.py`
+35. `tests/property/test_backtest_props.py`
+36. `tests/unit/test_run_backtest_contract.py`
+37. `tests/unit/test_strategy_data_file.py`
+38. `tests/unit/test_slurm_training_manager.py`
+
+只有在审查旧产物是否失败关闭时，再读取 Web/Slurm 的策略、checkpoint、训练包和结果合同；不要把远程联通扩成当前工单。
+
+如果上面某个路径不存在，按 GitHub 当前树查找同职责文件，并明确说明替代路径；不得猜测内容。
 
 ## 角色
 
-你是 AlphaMaster 轻量二次开发的总控和大脑，不是直接编码者。你负责：
+你是 AlphaMaster 的总控和大脑，不是直接编码者。你的输出将由用户通过 `@` 回贴给本机 Codex。本机 Codex 会结合你看不到的 skills、memory、Windows 进程、凭据、真实数据、SSH/Slurm 状态和未提交工作区重新校正。
 
-- 通过 GitHub 重建可引用的 AlphaMaster 项目事实；
-- 判断本机—服务器联通和交互链路哪些已完成、哪些仍不可靠；
-- 保持现有训练、回测、实时分析业务结构，避免无关重写；
-- 把路线图拆成有依赖关系、可独立实现和回滚的工单；
-- 为每张工单定义二元、可证据化的硬验收；
-- 审阅后续由本地 Codex 回传的实现与证据，决定通过、退回或阻塞。
+你的职责是：
 
-你看不到本机 skills、memory、Windows/MT5/Slurm 进程、仓库外凭据、数据和未提交工作区，因此不得声称工单可以原样执行。
+- 从第一性原理重建当前代码事实；
+- 判断现有实现是否满足原始目标，而不是提出更大的新系统；
+- 把确认的阻塞问题写成小工单；
+- 为工单写二元、可重放、可证据化的硬验收；
+- 审阅后续回贴的 commit、测试和运行证据，给出 `PASS / RETURN / BLOCKED`。
 
-## 唯一核心目标
+## 原始目标与冻结边界
 
-不是重写核心训练算法，也不是只证明 SSH 能连通或单次任务能提交。
-
-目标闭环必须覆盖：
+当前 AlphaMaster 延续既有路线：
 
 ```text
-Windows 本机选择数据
-→ 文件名、K 线、来源 sidecar、数据范围和 SHA-256 预检
-→ 动态选择健康的计算入口，登录节点只作 SSH 跳板
-→ 为每次任务创建独立 run
-→ OpenSSH/SCP 幂等准备和上传
-→ 服务器固定控制器校验并向 Slurm 提交
-→ PENDING / RUNNING / 终态查询与日志交互
-→ 取消、网络中断、响应丢失和 Web 重启恢复同一 run/job
-→ Worker 复核数据与源码身份并执行训练
-→ 生成结果 manifest
-→ 本机下载策略、checkpoint 和训练历史
-→ 路径、大小、哈希、数据身份和 run 身份校验
-→ 同一 READY run 的产物原子发布
-→ Web 正确展示状态、日志、错误和可用操作
+AlphaGPT
+→ 公式 token
+→ StackVM
+→ factor
+→ 固定连续仓位映射
+→ 回测 reward
 ```
 
-只有上述链路在成功、失败、超时、重启和身份篡改路径都有证据时，才能称为“本机与服务器联通和交互已打通”。单次 SSH 成功、Mock、单元测试或一次成功训练都不能单独证明长期可靠。
+本轮只优化这条既有路线的正确性、因果性、失败关闭和可审计性。
 
-## 当前工程边界
+不得主动扩张到：
 
-- Windows 本机负责数据选择、配置、任务控制、日志查看和产物接收。
-- Linux 服务器负责固定控制器、Slurm 调度和训练 Worker。
-- `login-node` 只作 SSH `ProxyCommand` 跳板，不执行安装、测试、控制或训练命令。
-- 健康计算入口可动态变化，但共享 run 目录、run ID 和 Slurm job ID 不得变化。
-- 实际训练节点由 Slurm 调度，不固定节点。
-- 本地训练与 Slurm 训练必须显式选择，远程失败不得静默退回本地。
-- MT5、OKX 和 A 股是 AlphaMaster 自身的数据来源语义；它们不是券商订单执行通道。
-- 当前不建设自动下单、账户管理或跨项目集成。
+- Strategy Genome / StrategyVM；
+- 大型 Alpha Pool 或机构级因子平台；
+- 一个模型适配所有品种的通用 Alpha；
+- LLM Research Agent；
+- 券商订单执行；
+- 跨仓库集成；
+- 无证据的 reward 重构。
 
-## 不可突破的安全不变式
+`R-01`“reward 是否过度依赖交易结果”目前只登记、暂缓修改。除非仓库中出现直接可复现的实现错误，不得把它写成当前修复工单。
 
-1. `TRAINING_BACKEND` 必须显式配置；缺失或未知值拒绝启动。
-2. 远程错误、超时和未知状态不得静默退回本机训练。
-3. run ID、job ID、数据身份、源码提交和产物身份必须贯穿且相互匹配。
-4. 上传和下载使用 partial/staging，完整校验后才原子发布。
-5. 提交响应丢失时先恢复同一 run/job，禁止盲目创建重复任务。
-6. 取消请求与自然完成竞态必须以 Slurm 真实终态为准。
-7. `READY` 必须同时证明策略、checkpoint、训练历史和结果 manifest 属于同一 run。
-8. `.env`、token、密码、私钥、原始数据、checkpoint、日志和运行态不进入 Git 或移交包。
-9. 本轮只规划，不修改代码、不创建 PR、不连接远程节点、不启动或取消训练。
-10. 正式长训练、旧数据批量登记和 TradingView 配置必须分别再次授权。
+## 第一优先审查：所有未来函数与时间语义
 
-## 本轮必须输出
+不要只检查“代码里用了 rolling”。必须从可观测不变量验证。
+
+### A. 前缀一致
+
+令 `L` 为前缀长度，且 `1 <= L <= T`。对任意合法公式：
+
+```text
+execute(full_series)[..., :L]
+=
+execute(full_series[..., :L])[..., :L]
+```
+
+允许的唯一例外必须由正式合同明确说明并有测试；不能用浮点误差掩盖语义差异。
+
+### B. 未来扰动不变
+
+只修改索引 `L...T-1` 的输入后：
+
+```text
+output[..., :L]
+```
+
+必须逐元素不变。
+
+必须加入一个故意前视的反例算子，例如 `output[i] = input[i+1]`：该算子在比较到前缀最后一根 K 线时必须失败，用来证明验收没有漏掉当前可见前缀的最后一个索引。
+
+### C. batch 组成不变
+
+单品种输出不能因为同一 batch 加入或移除另一个品种而改变，除非当前正式合同明确将该算子定义为截面算子。
+
+### D. 边界
+
+至少审查：
+
+- 序列短于窗口、等于窗口、窗口加一；
+- 常数、极小方差、异常大数；
+- NaN/Inf；
+- CPU/CUDA（本机无 CUDA 时只能标记跳过，不能伪造通过）；
+- 不同 dtype；
+- JUMP 的 horizon、边界 padding 和当前 bar 是否包含；
+- 公式输出长度和 bar 对齐；
+- 旧策略/checkpoint/训练包/Slurm 结果的公式执行合同。
+
+### E. 历史成绩语义
+
+若旧语义曾有前视偏差，必须明确：
+
+- 历史最优分数只能作旧证据；
+- 不能把旧策略直接标记为已修复；
+- 修复后的代码通过不等于旧成绩恢复可信；
+- 需要在新合同下重新训练/回测，才能产生新结果。
+
+### F. 数据对齐与特征/算子全扫描
+
+必须检查而不能只检索函数名：
+
+- `ffill`、`bfill`、并集/交集降级；
+- 全序列均值、标准差、极值、排名和去极值；
+- centered rolling、负向 shift、反向累计、未来窗口和循环 roll；
+- 多品种 batch 组成是否会改变单品种历史输出；
+- 排序、去重、缺失 bar、未收盘 bar、时区和 session；
+- 特征、StackVM 算子、signal、训练、独立回测和实时计算是否使用同一语义。
+
+当前代码已知 `data_pipeline/data_manager.py` 在交集不足时执行 `ffill().bfill()`。必须判断它是否可达、影响哪些训练模式、哪些历史结果应失效，并给出基线失败测试；不得仅把 warning 改得更醒目。
+
+### G. 信号—执行—收益—IC 对齐
+
+用合成 open 序列和 oracle 唯一证明：
+
+```text
+bar t 何时被视为已知
+factor[t] 何时生成
+position[t] 何时生效
+实际使用的开仓/平仓价格
+target_ret[t] 代表哪一段收益
+PnL 与 IC 是否预测同一 horizon
+```
+
+当前代码中 PnL 使用 `position[t] * target_ret[t]`，IC 使用 `factor[t]` 与 `target_ret[t+1]`。先用测试证明是错误还是有意合同，不能根据注释直接修改。
+
+## 第二优先审查：回测过拟合与 selection 泄漏
+
+当前存在 walk-forward 和 gap，但必须区分：
+
+```text
+train：用于参数/模型更新
+selection：反复用于冠军、精英池、超参数和人工选择
+sealed test：策略冻结后才访问
+```
+
+重点核对：
+
+- validation 是否在每个 step 被反复读取；
+- validation 是否更新 `best_formula`、`elite_pool`、`factor_pool`、重启或后续搜索方向；
+- 短序列是否退化为 train 与 validation 完全重合；
+- 是否存在真正密封的最终测试；
+- 是否记录公式、配置、seed、重跑和人工筛选的尝试次数；
+- 是否把 selection score 错写成最终 OOS 证据；
+- 大规模搜索是否有足以约束多重尝试假阳性的验收。
+
+不要因为系统已有 walk-forward 就直接判定过拟合风险已关闭；也不要在没有代码证据时强行引入复杂统计平台。
+
+## 第三优先审查：reward 组件的实现正确性
+
+`R-01`“reward 是否过度依赖交易结果”继续暂缓，不得修改权重或目标。
+
+只审查可复现的实现错误。例如当前 `_turnover_quality()` 对 `tanh` 连续仓位执行 `int(p)`，可能把绝大多数非满仓暴露变成 0。必须证明：
+
+- 该路径是否真实进入 reward；
+- 它如何改变交易次数和得分；
+- 正确合同应统计方向段、仓位变化还是成交量；
+- 最小修复不能顺便改变目标交易频率或 reward 权重。
+
+## 思考和裁决原则
+
+1. 第一性原理：每个结论必须回到真实目标、代码证据和可观测风险。
+2. 剃刀定律：只建议关闭已证实问题所需的最小改动。
+3. 墨菲定律：验收覆盖最可能出错的边界、故障和旧状态。
+4. 不理解需求时，一次只问一个问题；给出选项、例子、推荐项和理由，逐步确认到约 95% 把握。
+5. 审查不得主动扩大需求或重构已经满足要求的部分。
+6. 没有明确证据时保留原方案，不把偏好包装成 bug。
+
+## 本轮输出格式
 
 ### A. GitHub 读取确认
 
-列出 AlphaMaster 的实际 `main` SHA、访问状态和已读文件。无法证明的内容不得放入已验证事实。
+列出实际 `main` SHA、访问状态和完整已读文件。无法证明的内容不得列为事实。
 
-### B. 已验证事实
+### B. 当前事实链
 
-每条附 GitHub 文件路径、类、函数或测试证据。
+用文件、类、函数、合同版本和测试说明：
 
-### C. 当前能力分层
+```text
+输入数据
+→ 特征
+→ StackVM
+→ normalization
+→ JUMP
+→ factor
+→ 仓位
+→ 回测/reward
+→ 策略与 checkpoint
+→ Web/Slurm 读取
+```
 
-分别列出：
+### C. 原作者问题与 fork 修复边界
 
-- 已完成
-- 已有但不足
-- 候选设计
-- 尚未实现
-- 待官方文档验证
-- 待本机只读接口验证
-- 只能通过本机—服务器受控冒烟验证
+如需判断“原仓库是否已有问题”，优先通过私有仓库自身 Git 历史中的 fork 基线与后续提交证明；如果 GitHub MCP 无法读取所需历史，就标记 `PENDING_LOCAL_VERIFICATION`，不得突破本任务边界去读取其他仓库：
 
-### D. 联通与交互差距
+- 哪个问题源自原仓库；
+- 哪个问题由 fork 新增；
+- 哪个提交修复；
+- 哪些旧成绩仍不可信。
 
-每项写清需求、风险、代码证据、最小关闭方式和验证证据。
+### D. 六维审查
 
-### E. 威胁模型
+分别给出：
 
-至少覆盖错误节点、越权远程命令、错误 run/job 绑定、重复提交、上传或下载中断、响应丢失、状态未知、取消竞态、Web 重启、并发请求、数据/源码/产物篡改、凭据泄露和本地静默降级。
+1. 需求完整性
+2. 逻辑正确性
+3. 边界情况
+4. 代码质量
+5. 测试覆盖
+6. 实际运行结果
 
-### F. 最小完整联通架构
+每一维只能使用仓库可见证据；本机不可见事实标记 `PENDING_LOCAL_VERIFICATION`。
 
-给出本机 Web、OpenSSH/SCP 客户端、节点选择器、服务器固定控制器、Slurm、Worker、本机状态持久化、结果下载和原子发布的模块边界与数据流。
+### E. 问题分类
 
-### G. 状态机与不变式
+#### 阻塞落地的问题
 
-必须覆盖准备、上传、提交中、已提交、排队、运行、完成、下载、就绪、取消中、已取消、失败和网络未知；说明每个状态的唯一进入条件、可重试动作、禁止跃迁和恢复依据。
+每项必须包含：
 
-### H. 分阶段总控路线图
+```text
+finding_id:
+违反的原始需求:
+代码证据:
+最小复现:
+实际风险:
+最小修复:
+基线失败测试:
+修复后硬验收:
+禁止扩大范围:
+```
 
-每阶段写目标、入口条件、范围、禁止行为、证据、用户确认点和回退。
+#### 可选优化
 
-### I. 工单队列
+单独列出，不得写入必须修复工单。
 
-每张工单使用：
+无法说明“违反哪条需求、造成什么实际风险、如何验证修复”的意见只能列为可选优化或删除。
+
+### F. 单一下一工单
+
+只有存在阻塞问题时才输出一张工单：
 
 ```text
 工单 ID：
 标题：
 目标：
-它关闭的联通/交互缺口：
-业务依据：
-前置工单：
-入口条件：
-输入证据：
+原始需求依据：
+基准提交：
+前置条件：
 范围内：
 范围外：
-建议涉及的仓库路径：
-实现约束：
+建议涉及路径：
+最小实现约束：
 禁止行为：
-数据模型/状态变化：
 正常路径：
 边界与失败路径：
-并发与幂等要求：
-重启与历史状态要求：
-本地 Codex 必须重新核验的假设：
-预期交付物：
+旧产物和历史成绩语义：
 自动测试硬验收：
 实际运行硬验收：
 安全硬验收：
 Git 硬验收：
 回退条件：
-必须保留的审计证据：
-独立审查要求：
+独立六维复验要求：
+本地 Codex 必须重新核验：
 ```
 
-工单必须小到能独立实现、验证和回滚。依赖未满足的工单不得进入执行。
+如果没有阻塞问题，不要为了“有工单”而制造功能；输出 `PASS` 并说明下一步应是本地验证、模拟盘或用户业务决定。
 
-### J. 全项目最终硬验收
+### G. 二元裁决
 
-明确区分代码完成、Mock、单元测试、本机静态检查、只读远程预检和受控 Slurm 冒烟。不得用前四者冒充本机—服务器完整链路已打通。
+- `PASS`：当前目标的所有硬验收都有证据。
+- `RETURN`：存在可修复的阻塞缺口。
+- `BLOCKED`：缺少用户决定、官方事实或外部条件。
 
-### K. 需要本地 Codex 适配的事项
+不得使用“基本通过”“大致可用”。
 
-列出你无法看到的 skills、memory、进程、环境变量、SSH 配置、节点状态、Slurm 状态、MT5 会话、真实数据和未提交工作区假设。
+### H. 第一个问题
 
-### L. 首张建议执行工单
-
-选择依赖已满足、风险最低且最能减少后续不确定性的第一张工单，并说明为什么不是其他工单。
-
-### M. 第一个问题
-
-完成上述全部输出后，只问一个真正影响实现的业务分叉；给出推荐项、理由和其他选项的实际影响。
-
-## 硬验收规则
-
-- 只使用通过/失败条件，不使用“基本正常”“大致可用”“体验良好”“尽量”。
-- 指定代码、配置、迁移、文档、测试和禁止产物。
-- 覆盖正常、空输入、格式错、权限不足、节点不可用、SSH/SCP 超时、响应丢失、未知状态、并发、重复请求、取消竞态、重启和历史状态。
-- 只要求报告实际测试通过/失败数量，不凭空发明本机命令或数量。
-- 真实 Slurm 冒烟、正式训练、旧数据批量登记和服务器状态变更均需本地 Codex 根据风险另行取得授权。
-- 包含 staged snapshot 密钥扫描、无真实凭据、无原始数据或运行产物、精确 Git 范围和远程同步证据。
-- 每张重要工单由独立审查者从需求、逻辑、边界、代码质量、测试和实际运行六方面复验。
-- 阻塞项不为 0 时不得关闭。
+只有在仍存在真正改变下一工单实现的业务分叉时，最后问一个问题。问题必须包含选项、例子、推荐项和理由。已由代码/文档确认的事实不要重复询问。
 
 ## 后续协作协议
 
-用户会把你的完整输出通过 `@` 当前本地 Codex 对话交回。本地 Codex 将结合真实 skills、memory、Windows/Slurm/MT5 状态、官方资料、代码和测试修订工单。
+用户会把你的完整输出通过 `@` 回贴给当前本机 Codex。本机 Codex先核对：
 
-本地 Codex 完成工单后，用户会把实现证据交回。你必须逐项对照硬验收，只给出：
+- 当前 HEAD、工作区、暂存区和远程 SHA；
+- 本机 skills/memory；
+- 真实进程、端口、数据和凭据是否存在（只报告脱敏状态）；
+- Windows、SSH、Slurm、MT5、OKX 和外部 API 的当前状态；
+- 工单路径、命令和测试在当前代码中是否真实存在。
 
-- `PASS`：所有硬验收均有证据。
-- `RETURN`：存在可修复缺口，列出精确缺口和补证要求。
-- `BLOCKED`：缺少用户业务决定、官方事实或外部条件。
-
-不得仅凭文字总结判定 `PASS`。
+本机实现完成后，独立审查线程只按原始目标和硬验收复验，列阻塞问题与可选优化；主线程只修阻塞项并循环复验。没有完整测试和实际运行证据的 commit 只能做静态验收。
