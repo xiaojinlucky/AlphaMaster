@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from data_pipeline.parquet_manager import inspect_parquet_file
-from model_core.vocab import VOCAB_VERSION
+from model_core.vocab import (
+    FORMULA_VOCAB,
+    VOCAB_VERSION,
+    VocabVersionMismatchError,
+)
 from web.progress import (
     STRATEGIES_DIR,
     _decode_formula,
@@ -167,6 +171,11 @@ def inspect_strategy_file(
         vocab_version = data.get("vocab_version")
     else:
         raise ValueError("策略文件格式无效")
+
+    try:
+        FORMULA_VOCAB.verify(vocab_version)
+    except VocabVersionMismatchError as exc:
+        raise ValueError(str(exc)) from exc
 
     if not formula:
         raise ValueError("策略文件缺少 formula 字段")

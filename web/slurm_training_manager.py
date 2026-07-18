@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pyarrow.parquet as pq
+import torch
 
 from config import Config
 from data_pipeline.a_share_data import (
@@ -725,6 +726,9 @@ class SlurmTrainingManager:
         symbol = re.escape(str(expected["symbol"]))
         timeframe = re.escape(str(expected["timeframe"]))
         data_sha256 = re.escape(str(expected["data_sha256"]))
+        all_checkpoint_artifacts = sorted(
+            path for path in rows if path.startswith("checkpoints/")
+        )
         checkpoints = sorted(
             path
             for path in rows
@@ -738,6 +742,8 @@ class SlurmTrainingManager:
         histories = sorted(path for path in rows if path == f"training_history_{expected['symbol']}.json")
         if not checkpoints or len(strategies) != 1 or len(histories) != 1:
             raise RuntimeError("结果必须同时包含 checkpoint、目标策略和训练历史")
+        if all_checkpoint_artifacts != checkpoints:
+            raise RuntimeError("结果包含未登记或路径非法的 checkpoint")
         if sorted(manifest.get("checkpoint_files") or []) != checkpoints:
             raise RuntimeError("结果 manifest 的 checkpoint_files 不一致")
         if sorted(manifest.get("strategy_files") or []) != strategies:
@@ -746,6 +752,45 @@ class SlurmTrainingManager:
         actual_hashes = {path: row.get("sha256") for path, row in rows.items()}
         if declared_hashes != actual_hashes:
             raise RuntimeError("结果 manifest 的 artifact_sha256 不一致")
+
+        checkpoint_identity = {
+            "symbol": expected["symbol"],
+            "timeframe": expected["timeframe"],
+            "dataset_id": expected["dataset_id"],
+            "data_sha256": expected["data_sha256"],
+            "local_source": expected["local_source"],
+            "periods_per_year": expected["periods_per_year"],
+            "minimum_bars": expected["minimum_bars"],
+        }
+        for relative in checkpoints:
+            checkpoint_path = artifact_root.joinpath(*relative.split("/"))
+            try:
+                with checkpoint_path.open("rb") as handle:
+                    checkpoint = torch.load(
+                        handle,
+                        map_location="cpu",
+                        weights_only=True,
+                    )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"回传 checkpoint 无法安全读取: {relative}"
+                ) from exc
+            if not isinstance(checkpoint, dict):
+                raise RuntimeError(f"回传 checkpoint 顶层不是对象: {relative}")
+            if checkpoint.get("vocab_version") != VOCAB_VERSION:
+                raise RuntimeError(
+                    f"回传 checkpoint 公式执行版本不匹配: {relative}"
+                )
+            for field, expected_value in checkpoint_identity.items():
+                actual_value = checkpoint.get(field)
+                if (
+                    type(actual_value) is not type(expected_value)
+                    or actual_value != expected_value
+                ):
+                    raise RuntimeError(
+                        f"回传 checkpoint 的 {field} 与 run 身份不匹配: "
+                        f"{relative}"
+                    )
 
         strategy_path = artifact_root.joinpath(*strategies[0].split("/"))
         try:
@@ -792,12 +837,14 @@ class SlurmTrainingManager:
     ) -> None:
         if not self._job:
             raise RuntimeError("没有当前 Slurm 任务")
+        verified_checkpoints = set(manifest["checkpoint_files"])
         for row in manifest["artifacts"]:
             rel = str(row["path"])
-            source = artifact_root.joinpath(*rel.split("/"))
-            if rel.startswith("checkpoints/"):
+            if rel in verified_checkpoints:
+                source = artifact_root.joinpath(*rel.split("/"))
                 _atomic_copy(source, PROJECT_ROOT / rel)
             elif rel.startswith("training_history_"):
+                source = artifact_root.joinpath(*rel.split("/"))
                 _atomic_copy(source, PROJECT_ROOT / rel)
         self._publish_strategy(artifact_root, manifest)
 

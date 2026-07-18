@@ -10,6 +10,9 @@ import torch
 import web.progress as progress_module
 from model_core.formula_contract import (
     FORMULA_EXECUTION_CONTRACT,
+    STACKVM_JUMP_EPS,
+    STACKVM_JUMP_THRESHOLD,
+    STACKVM_JUMP_WINDOW,
     STACKVM_OUTPUT_NORM_CLIP,
     STACKVM_OUTPUT_NORM_WINDOW,
 )
@@ -42,6 +45,14 @@ def test_compatibility_version_includes_fixed_execution_contract() -> None:
     assert VOCAB_VERSION != legacy_version
     assert f"w{STACKVM_OUTPUT_NORM_WINDOW}" in FORMULA_EXECUTION_CONTRACT
     assert f"clip-{int(STACKVM_OUTPUT_NORM_CLIP)}" in FORMULA_EXECUTION_CONTRACT
+    assert "jump-v1" in FORMULA_EXECUTION_CONTRACT
+    assert (
+        f"zscore-w{STACKVM_JUMP_WINDOW}-current-inclusive"
+        in FORMULA_EXECUTION_CONTRACT
+    )
+    assert f"eps-{STACKVM_JUMP_EPS!r}" in FORMULA_EXECUTION_CONTRACT
+    assert "nonfinite-to-zero" in FORMULA_EXECUTION_CONTRACT
+    assert f"threshold-{STACKVM_JUMP_THRESHOLD}" in FORMULA_EXECUTION_CONTRACT
     with pytest.raises(VocabVersionMismatchError):
         FORMULA_VOCAB.verify(legacy_version)
     FORMULA_VOCAB.verify(VOCAB_VERSION)

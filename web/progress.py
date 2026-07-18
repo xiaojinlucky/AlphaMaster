@@ -456,6 +456,12 @@ def list_strategies() -> list[dict[str, Any]]:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
+        if not isinstance(data, dict):
+            continue
+        try:
+            FORMULA_VOCAB.verify(data.get("vocab_version"))
+        except VocabVersionMismatchError:
+            continue
         formula = data.get("formula")
         rows.append({
             "file": path.name,

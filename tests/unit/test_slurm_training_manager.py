@@ -46,10 +46,14 @@ class FakeClient:
         *,
         transport_failures: dict[str, int] | None = None,
         cancel_error: Exception | None = None,
+        checkpoint_version: str | None = None,
+        checkpoint_problem: str | None = None,
     ) -> None:
         self.states = list(states or [])
         self.transport_failures = dict(transport_failures or {})
         self.cancel_error = cancel_error
+        self.checkpoint_version = checkpoint_version
+        self.checkpoint_problem = checkpoint_problem
         self.prepared: list[str] = []
         self.uploaded: list[str] = []
         self.submitted: list[str] = []
@@ -117,26 +121,33 @@ class FakeClient:
         checkpoint.parent.mkdir(parents=True, exist_ok=True)
         strategy.parent.mkdir(parents=True, exist_ok=True)
         model_state, optimizer_state = _real_checkpoint_states()
-        with checkpoint.open("wb") as handle:
-            torch.save(
-                {
-                    "vocab_version": manager_module.VOCAB_VERSION,
-                    "symbol": run_manifest["symbol"],
-                    "step": run_manifest["training_parameters"]["train_steps"],
-                    "best_score": 0.5,
-                    "best_formula": [1, 2, 3],
-                    "training_history": {},
-                    "model_state_dict": model_state,
-                    "optimizer_state_dict": optimizer_state,
-                    "timeframe": run_manifest["timeframe"],
-                    "dataset_id": run_manifest["dataset_id"],
-                    "data_sha256": run_manifest["data_sha256"],
-                    "local_source": run_manifest["local_source"],
-                    "periods_per_year": run_manifest["periods_per_year"],
-                    "minimum_bars": run_manifest["minimum_bars"],
-                },
-                handle,
-            )
+        checkpoint_payload = {
+            "vocab_version": (
+                self.checkpoint_version or manager_module.VOCAB_VERSION
+            ),
+            "symbol": run_manifest["symbol"],
+            "step": run_manifest["training_parameters"]["train_steps"],
+            "best_score": 0.5,
+            "best_formula": [1, 2, 3],
+            "training_history": {},
+            "model_state_dict": model_state,
+            "optimizer_state_dict": optimizer_state,
+            "timeframe": run_manifest["timeframe"],
+            "dataset_id": run_manifest["dataset_id"],
+            "data_sha256": run_manifest["data_sha256"],
+            "local_source": run_manifest["local_source"],
+            "periods_per_year": run_manifest["periods_per_year"],
+            "minimum_bars": run_manifest["minimum_bars"],
+        }
+        if self.checkpoint_problem == "missing_version":
+            checkpoint_payload.pop("vocab_version")
+        elif self.checkpoint_problem == "identity_mismatch":
+            checkpoint_payload["dataset_id"] = "sha256:" + "0" * 64
+        if self.checkpoint_problem == "corrupt":
+            checkpoint.write_bytes(b"not-a-checkpoint")
+        else:
+            with checkpoint.open("wb") as handle:
+                torch.save(checkpoint_payload, handle)
         strategy.write_text(
             json.dumps(
                 {
@@ -161,8 +172,16 @@ class FakeClient:
             encoding="utf-8",
         )
         history.write_text("{}", encoding="utf-8")
+        extra_checkpoint = None
+        if self.checkpoint_problem == "extra_checkpoint":
+            extra_checkpoint = local_artifact_root / "checkpoints" / "unvalidated_extra.pt"
+            with extra_checkpoint.open("wb") as handle:
+                torch.save({"vocab_version": "vprevious0000"}, handle)
         artifacts = []
-        for path in (checkpoint, strategy, history):
+        artifact_paths = [checkpoint, strategy, history]
+        if extra_checkpoint is not None:
+            artifact_paths.append(extra_checkpoint)
+        for path in artifact_paths:
             relative = path.relative_to(local_artifact_root).as_posix()
             artifacts.append(
                 {
@@ -438,6 +457,62 @@ def test_ready_publishes_one_run_bundle_and_replaces_old_higher_score_strategy(
             "strategies/best_XAUUSD.json",
             "training_history_XAUUSD.json",
         }
+
+
+@pytest.mark.parametrize(
+    ("checkpoint_version", "checkpoint_problem"),
+    [
+        ("vprevious0000", None),
+        (None, "missing_version"),
+        (None, "identity_mismatch"),
+        (None, "corrupt"),
+        (None, "extra_checkpoint"),
+    ],
+    ids=(
+        "previous-version",
+        "missing-version",
+        "identity-mismatch",
+        "corrupt",
+        "extra-checkpoint",
+    ),
+)
+def test_invalid_checkpoint_bundle_never_reaches_ready(
+    isolated_project: Path,
+    tmp_path: Path,
+    checkpoint_version: str | None,
+    checkpoint_problem: str | None,
+) -> None:
+    client = FakeClient(
+        ["COMPLETED"],
+        checkpoint_version=checkpoint_version,
+        checkpoint_problem=checkpoint_problem,
+    )
+    runs = tmp_path / "local-runs"
+    pointer_path = (
+        isolated_project / "published_training" / "current_XAUUSD.json"
+    )
+    pointer_path.parent.mkdir(parents=True)
+    pointer_before = b'{"bundle_id":"old"}'
+    pointer_path.write_bytes(pointer_before)
+    strategy_path = isolated_project / "strategies" / "best_XAUUSD.json"
+    strategy_path.parent.mkdir(parents=True)
+    strategy_before = b'{"best_score":9.9}'
+    strategy_path.write_bytes(strategy_before)
+    manager = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=runs,
+    )
+
+    manager.start(str(_dataset(tmp_path)), "XAUUSD", "H1")
+    status = manager.status()["job"]
+
+    assert status["remote_state"] == "FAILED"
+    assert "checkpoint" in status["error"]
+    assert pointer_path.read_bytes() == pointer_before
+    assert strategy_path.read_bytes() == strategy_before
+    assert not (
+        isolated_project / "checkpoints" / "unvalidated_extra.pt"
+    ).exists()
 
 
 @pytest.mark.parametrize(

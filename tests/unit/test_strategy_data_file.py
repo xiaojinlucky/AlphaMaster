@@ -43,7 +43,14 @@ def test_inspect_strategy_fills_data_file_from_settings(project: Path) -> None:
 
     strat_path = project / "strategies" / "best_XAUUSD.json"
     strat_path.write_text(
-        json.dumps({"symbol": "XAUUSD", "formula": [1, 2, 3], "best_score": 1.5}),
+        json.dumps(
+            {
+                "symbol": "XAUUSD",
+                "formula": [1, 2, 3],
+                "best_score": 1.5,
+                "vocab_version": FORMULA_VOCAB.version,
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -83,6 +90,7 @@ def test_sync_best_writes_data_file(project: Path) -> None:
 def _complete_strategy() -> dict:
     digest = "a" * 64
     return {
+        "vocab_version": FORMULA_VOCAB.version,
         "symbol": "XAUUSD",
         "timeframe": "H1",
         "formula": [1, 2, 3],
@@ -128,3 +136,78 @@ def test_incomplete_oos_identity_stays_legacy_unknown(
     info = sf.inspect_strategy_file(str(path))
 
     assert info["identity_registration"] == "legacy_unknown"
+
+
+@pytest.mark.parametrize("version", [None, "vprevious0000"], ids=("missing", "previous"))
+def test_inspect_rejects_previous_formula_execution_version(
+    project: Path,
+    version: str | None,
+) -> None:
+    path = project / "strategies" / "best_XAUUSD.json"
+    strategy = _complete_strategy()
+    if version is None:
+        strategy.pop("vocab_version")
+    else:
+        strategy["vocab_version"] = version
+    path.write_text(json.dumps(strategy), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="词表版本不匹配"):
+        sf.inspect_strategy_file(str(path))
+
+
+@pytest.mark.parametrize("version", [None, "vprevious0000"], ids=("missing", "previous"))
+def test_local_strategy_list_excludes_previous_formula_execution_version(
+    project: Path,
+    version: str | None,
+) -> None:
+    import web.progress as progress_mod
+
+    old_path = project / "strategies" / "best_XAUUSD.json"
+    old_strategy = _complete_strategy()
+    if version is None:
+        old_strategy.pop("vocab_version")
+    else:
+        old_strategy["vocab_version"] = version
+    old_path.write_text(json.dumps(old_strategy), encoding="utf-8")
+
+    current_path = project / "strategies" / "best_EURUSD.json"
+    current_strategy = _complete_strategy()
+    current_strategy["symbol"] = "EURUSD"
+    current_path.write_text(json.dumps(current_strategy), encoding="utf-8")
+
+    rows = progress_mod.list_strategies()
+
+    assert [row["file"] for row in rows] == ["best_EURUSD.json"]
+
+
+@pytest.mark.parametrize("version", [None, "vprevious0000"], ids=("missing", "previous"))
+def test_backtest_manager_rejects_previous_version_before_starting_process(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    version: str | None,
+) -> None:
+    import web.backtest_manager as backtest_mod
+
+    strategy_path = project / "strategies" / "best_XAUUSD.json"
+    strategy = _complete_strategy()
+    if version is None:
+        strategy.pop("vocab_version")
+    else:
+        strategy["vocab_version"] = version
+    strategy_path.write_text(json.dumps(strategy), encoding="utf-8")
+    data_path = project / "XAUUSD_H1.parquet"
+    data_path.write_bytes(b"PAR1")
+
+    def unexpected_popen(*_args, **_kwargs):
+        pytest.fail("旧公式执行版本不得创建回测子进程")
+
+    monkeypatch.setattr(backtest_mod.subprocess, "Popen", unexpected_popen)
+    manager = backtest_mod.BacktestManager()
+
+    with pytest.raises(ValueError, match="词表版本不匹配"):
+        manager.start(
+            strategy_file=str(strategy_path),
+            data_file=str(data_path),
+        )
+
+    assert manager.status()["job"] is None
