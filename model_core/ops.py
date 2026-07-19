@@ -18,12 +18,6 @@ model_core/ops.py -- 算子库（Operator_Library, R2）
 的 `ArityMismatchError` 误报。
 """
 import torch
-
-from .formula_contract import (
-    STACKVM_JUMP_EPS,
-    STACKVM_JUMP_THRESHOLD,
-    STACKVM_JUMP_WINDOW,
-)
 from .registry import OperatorSpec, Registry
 
 
@@ -46,134 +40,20 @@ def _op_gate(condition: torch.Tensor, x: torch.Tensor, y: torch.Tensor) -> torch
     return mask * x + (1.0 - mask) * y
 
 def _op_jump(x: torch.Tensor) -> torch.Tensor:
-    """200 根严格因果 JUMP：当前值相对当前及历史窗口的正向异常程度。"""
+    """降低稀疏度：阈值从 3σ 改为 1.5σ，让更多时间步有非零输出。
+
+    因果 expanding zscore：每个 t 仅用 x[:, :t+1] 计算 mean/std，
+    避免原 dim=1 全局聚合（含未来统计量）引入的 look-ahead bias。
+    """
     N, T = x.shape
-    if T == 0:
-        return x.clone()
-
-    work = torch.nan_to_num(
-        x.to(dtype=torch.float64),
-        nan=0.0,
-        posinf=0.0,
-        neginf=0.0,
-    )
-
-    # 每个滚动窗口最多跨两个 200 根分块。块内先减去必定属于该段的
-    # 端点，再用 Chan 合并公式拼接前一块后缀和当前块前缀，避免
-    # E[x²]-E[x]² 在“大基数、小波动”输入上的灾难性抵消。
-    block_size = STACKVM_JUMP_WINDOW
-    padded_length = ((T + block_size - 1) // block_size) * block_size
-    padded = torch.zeros((N, padded_length), dtype=work.dtype, device=work.device)
-    padded[:, :T] = work
-    blocks = padded.reshape(N, -1, block_size)
-
-    prefix_counts = torch.arange(
-        1,
-        block_size + 1,
-        dtype=work.dtype,
-        device=work.device,
-    ).reshape(1, 1, -1)
-    prefix_delta = blocks - blocks[:, :, :1]
-    prefix_sum = torch.cumsum(prefix_delta, dim=2)
-    prefix_sq_sum = torch.cumsum(prefix_delta * prefix_delta, dim=2)
-    prefix_offset_mean = prefix_sum / prefix_counts
-    prefix_m2 = torch.clamp(
-        prefix_sq_sum - prefix_sum * prefix_sum / prefix_counts,
-        min=0.0,
-    )
-
-    suffix_counts = torch.arange(
-        block_size,
-        0,
-        -1,
-        dtype=work.dtype,
-        device=work.device,
-    ).reshape(1, 1, -1)
-    suffix_delta = blocks - blocks[:, :, -1:]
-    suffix_sum = torch.flip(
-        torch.cumsum(torch.flip(suffix_delta, dims=(2,)), dim=2),
-        dims=(2,),
-    )
-    suffix_sq_sum = torch.flip(
-        torch.cumsum(
-            torch.flip(suffix_delta * suffix_delta, dims=(2,)),
-            dim=2,
-        ),
-        dims=(2,),
-    )
-    suffix_offset_mean = suffix_sum / suffix_counts
-    suffix_m2 = torch.clamp(
-        suffix_sq_sum - suffix_sum * suffix_sum / suffix_counts,
-        min=0.0,
-    )
-
-    previous_offset_mean = torch.zeros_like(prefix_offset_mean)
-    previous_anchor = torch.zeros_like(prefix_offset_mean)
-    previous_m2 = torch.zeros_like(prefix_m2)
-    if blocks.shape[1] > 1:
-        previous_offset_mean[:, 1:, :-1] = suffix_offset_mean[:, :-1, 1:]
-        previous_anchor[:, 1:, :-1] = blocks[:, :-1, -1:].expand(
-            -1,
-            -1,
-            block_size - 1,
-        )
-        previous_m2[:, 1:, :-1] = suffix_m2[:, :-1, 1:]
-
-    previous_count_pattern = torch.arange(
-        block_size - 1,
-        -1,
-        -1,
-        dtype=work.dtype,
-        device=work.device,
-    ).reshape(1, 1, -1)
-    previous_counts = previous_count_pattern.expand(N, blocks.shape[1], -1).clone()
-    previous_counts[:, 0, :] = 0.0
-    current_counts = prefix_counts.expand(N, blocks.shape[1], -1)
-    counts = previous_counts + current_counts
-
-    has_previous = previous_counts > 0.0
-    delta = torch.where(
-        has_previous,
-        blocks[:, :, :1]
-        - previous_anchor
-        + prefix_offset_mean
-        - previous_offset_mean,
-        torch.zeros_like(prefix_offset_mean),
-    )
-    combined_m2 = (
-        previous_m2
-        + prefix_m2
-        + delta
-        * delta
-        * previous_counts
-        * current_counts
-        / counts
-    )
-    centered_current = (
-        prefix_delta
-        - prefix_offset_mean
-        + delta * previous_counts / counts
-    )
-    sample_var = torch.clamp(
-        combined_m2 / torch.clamp(counts - 1.0, min=1.0),
-        min=0.0,
-    ).reshape(N, padded_length)[:, :T]
-    std = torch.sqrt(sample_var)
-    counts = counts.reshape(N, padded_length)[:, :T]
-    centered_current = centered_current.reshape(N, padded_length)[:, :T]
-    valid = (counts >= 2.0) & (std > STACKVM_JUMP_EPS)
-    z = torch.where(
-        valid,
-        centered_current / (std + STACKVM_JUMP_EPS),
-        torch.zeros_like(work),
-    )
-    result = torch.tanh(z - STACKVM_JUMP_THRESHOLD)
-    return torch.nan_to_num(
-        result,
-        nan=0.0,
-        posinf=1.0,
-        neginf=-1.0,
-    ).to(dtype=x.dtype)
+    cnt = torch.arange(1, T + 1, device=x.device, dtype=x.dtype).view(1, T)
+    cumsum = x.cumsum(dim=1)
+    mean = cumsum / cnt                       # [N,T]，t 位 = x[:,:t+1].mean()
+    cumsum_sq = (x * x).cumsum(dim=1)
+    var = (cumsum_sq / cnt) - mean * mean     # E[x^2] - E[x]^2
+    std = var.clamp(min=1e-12).sqrt() + 1e-6
+    z = (x - mean) / std
+    return torch.tanh(z - 1.5)   # tanh 软化，不再产生全零区间
 
 def _op_decay(x: torch.Tensor) -> torch.Tensor:
     return x + 0.8 * _ts_delay(x, 1) + 0.6 * _ts_delay(x, 2)

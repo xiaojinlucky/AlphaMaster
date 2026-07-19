@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import inspect
 import os
@@ -43,9 +42,8 @@ def _identity(digest: str = "a" * 64) -> dict:
     }
 
 
-def _legacy_token_only_vocab_version() -> str:
-    joined = "\n".join(FORMULA_VOCAB.token_names)
-    return "v" + hashlib.sha256(joined.encode("utf-8")).hexdigest()[:12]
+def _mismatched_vocab_version() -> str:
+    return "v000000000000"
 
 
 def _engine(identity: dict | None = None) -> AlphaEngine:
@@ -215,13 +213,13 @@ def test_checkpoint_dataset_hash_mismatch_is_rejected_before_state_apply(
     assert target.opt.loaded == []
 
 
-def test_checkpoint_from_previous_execution_contract_is_rejected_before_state_apply(
+def test_checkpoint_with_mismatched_vocab_version_is_rejected_before_state_apply(
     tmp_path: Path,
 ) -> None:
     checkpoint = tmp_path / "checkpoint.pt"
     _engine().save_checkpoint(20, str(checkpoint))
     payload = torch.load(checkpoint, map_location="cpu", weights_only=True)
-    payload["vocab_version"] = _legacy_token_only_vocab_version()
+    payload["vocab_version"] = _mismatched_vocab_version()
     torch.save(payload, checkpoint)
     target = _engine()
 
@@ -348,7 +346,7 @@ def test_matching_best_strategy_can_seed_from_scratch(
     assert engine.best_score == 99.0
 
 
-def test_previous_execution_contract_strategy_cannot_seed_from_scratch(
+def test_mismatched_vocab_strategy_cannot_seed_from_scratch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
@@ -356,7 +354,7 @@ def test_previous_execution_contract_strategy_cannot_seed_from_scratch(
     strategies.mkdir()
     legacy = {
         **_identity(),
-        "vocab_version": _legacy_token_only_vocab_version(),
+        "vocab_version": _mismatched_vocab_version(),
         "formula": [9],
         "best_score": 99.0,
     }
@@ -373,7 +371,7 @@ def test_previous_execution_contract_strategy_cannot_seed_from_scratch(
     assert engine.best_score == -float("inf")
 
 
-def test_previous_execution_contract_score_cannot_block_current_strategy_save(
+def test_mismatched_vocab_score_cannot_block_current_strategy_save(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
@@ -381,7 +379,7 @@ def test_previous_execution_contract_score_cannot_block_current_strategy_save(
     strategies.mkdir()
     legacy = {
         **_identity(),
-        "vocab_version": _legacy_token_only_vocab_version(),
+        "vocab_version": _mismatched_vocab_version(),
         "formula": [9],
         "best_score": 99.0,
     }

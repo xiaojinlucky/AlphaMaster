@@ -7,6 +7,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SETTINGS_PATH = PROJECT_ROOT / "web_settings.json"
 STRATEGIES_DIR = PROJECT_ROOT / "strategies"
+_AI_PROVIDERS = ("codex", "deepseek", "kimi", "mimo")
+_AI_REASONING_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 
 _DEFAULT = {
     "last_data_file": "",
@@ -15,6 +17,10 @@ _DEFAULT = {
     "debug_mode": False,
     "ai_provider": "deepseek",
     "ai_api_key": "",
+    "ai_api_key_provider": "",
+    "ai_model": "",
+    "ai_thinking": True,
+    "ai_reasoning_effort": "high",
     # 回测单边成本（单位 %）：手续费 0.02% + 滑点 0.01% ≈ 常见加密货币轻度成本
     "bt_commission_pct": 0.02,
     "bt_slippage_pct": 0.01,
@@ -116,9 +122,21 @@ def load_settings() -> dict:
     ).strip()
     out["last_strategy_file"] = str(out.get("last_strategy_file") or "").strip()
     out["ai_provider"] = str(out.get("ai_provider") or "deepseek").strip().lower()
-    if out["ai_provider"] not in ("deepseek", "openclaw", "openclaw_wb"):
+    if out["ai_provider"] not in _AI_PROVIDERS:
         out["ai_provider"] = "deepseek"
     out["ai_api_key"] = str(out.get("ai_api_key") or "").strip()
+    out["ai_api_key_provider"] = str(
+        out.get("ai_api_key_provider") or ""
+    ).strip().lower()
+    if out["ai_api_key"] and out["ai_api_key_provider"] not in _AI_PROVIDERS:
+        out["ai_api_key_provider"] = out["ai_provider"]
+    out["ai_model"] = str(out.get("ai_model") or "").strip()
+    out["ai_thinking"] = bool(out.get("ai_thinking", True))
+    out["ai_reasoning_effort"] = str(
+        out.get("ai_reasoning_effort") or "high"
+    ).strip().lower()
+    if out["ai_reasoning_effort"] not in _AI_REASONING_EFFORTS:
+        out["ai_reasoning_effort"] = "high"
     out["bt_commission_pct"] = _as_pct(
         out.get("bt_commission_pct"), _DEFAULT["bt_commission_pct"]
     )
@@ -180,10 +198,24 @@ def save_settings(data: dict) -> dict:
     if "ai_provider" in data:
         provider = str(data["ai_provider"] or "deepseek").strip().lower()
         current["ai_provider"] = (
-            provider if provider in ("deepseek", "openclaw", "openclaw_wb") else "deepseek"
+            provider if provider in _AI_PROVIDERS else "deepseek"
         )
     if "ai_api_key" in data:
         current["ai_api_key"] = str(data["ai_api_key"] or "").strip()
+    if "ai_api_key_provider" in data:
+        provider = str(data["ai_api_key_provider"] or "").strip().lower()
+        current["ai_api_key_provider"] = (
+            provider if provider in _AI_PROVIDERS else ""
+        )
+    if "ai_model" in data:
+        current["ai_model"] = str(data["ai_model"] or "").strip()
+    if "ai_thinking" in data:
+        current["ai_thinking"] = bool(data["ai_thinking"])
+    if "ai_reasoning_effort" in data:
+        effort = str(data["ai_reasoning_effort"] or "high").strip().lower()
+        current["ai_reasoning_effort"] = (
+            effort if effort in _AI_REASONING_EFFORTS else "high"
+        )
     if "bt_commission_pct" in data:
         current["bt_commission_pct"] = _as_pct(
             data["bt_commission_pct"], _DEFAULT["bt_commission_pct"]

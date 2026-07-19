@@ -847,60 +847,128 @@ async function refreshAiProviderStatus() {
 
 async function initAiPanel(cfg) {
   const keyInput = $("aiApiKeyInput");
-  if (!keyInput) return;
+  const providerSelect = $("aiProviderSelect");
+  const modelInput = $("aiModelInput");
+  const thinkingSelect = $("aiThinkingSelect");
+  const effortSelect = $("aiEffortSelect");
+  if (!keyInput || !providerSelect || !modelInput || !thinkingSelect || !effortSelect) return;
 
-  window.__aiHasStoredKey = !!cfg?.has_ai_api_key;
+  providerSelect.value = cfg?.ai_provider || "deepseek";
+  window.__aiStoredKeyProvider = cfg?.has_ai_api_key ? providerSelect.value : "";
+  modelInput.value = cfg?.ai_model || "";
+  thinkingSelect.value = cfg?.ai_thinking === false ? "false" : "true";
+  effortSelect.value = cfg?.ai_reasoning_effort || "high";
   if (cfg?.has_ai_api_key) {
     keyInput.value = "";
     keyInput.placeholder = "已配置（留空使用已保存 Key）";
-  } else if (cfg?.ai_provider === "openclaw" || cfg?.ai_provider === "openclaw_wb") {
-    keyInput.value = cfg.ai_provider;
   }
 
   await refreshAiProviderStatus();
-  if (!keyInput.dataset.aiStatusBound) {
-    keyInput.dataset.aiStatusBound = "1";
-    keyInput.addEventListener("input", () => {
+  const selectedRow = (window.__aiProviderStatus?.providers || []).find(
+    (row) => row.id === providerSelect.value,
+  );
+  if (!modelInput.value && selectedRow?.model) modelInput.value = selectedRow.model;
+  updateAiChannelHint();
+
+  if (!providerSelect.dataset.aiStatusBound) {
+    providerSelect.dataset.aiStatusBound = "1";
+    providerSelect.addEventListener("change", () => {
+      const row = (window.__aiProviderStatus?.providers || []).find(
+        (item) => item.id === providerSelect.value,
+      );
+      modelInput.value = row?.model || (providerSelect.value === "codex" ? "auto" : "");
+      keyInput.value = "";
       updateAiChannelHint();
-      refreshAiProviderStatus();
     });
+    modelInput.addEventListener("input", updateAiChannelHint);
+    thinkingSelect.addEventListener("change", updateAiChannelHint);
+    effortSelect.addEventListener("change", updateAiChannelHint);
+    keyInput.addEventListener("input", updateAiChannelHint);
   }
 }
 
 function resolveAiFromKey(raw) {
-  const v = (raw || "").trim().toLowerCase();
-  // openclaw_wb 必须先于 openclaw，避免前缀误匹配
-  if (v === "openclaw_wb" || v.startsWith("openclaw_wb/")) {
-    return { provider: "openclaw_wb", apiKey: raw.trim(), isAlias: true };
+  return {
+    provider: $("aiProviderSelect")?.value || "deepseek",
+    apiKey: (raw || "").trim(),
+  };
+}
+
+function hasStoredAiKeyFor(provider) {
+  return !!provider && window.__aiStoredKeyProvider === provider;
+}
+
+function replaceAiEffortOptions(values, preferred) {
+  const select = $("aiEffortSelect");
+  if (!select) return;
+  const options = values?.length ? values : ["high"];
+  select.innerHTML = "";
+  for (const value of options) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value;
+    select.appendChild(option);
   }
-  if (v === "openclaw" || v.startsWith("openclaw/")) {
-    return { provider: "openclaw", apiKey: raw.trim(), isAlias: true };
-  }
-  return { provider: "deepseek", apiKey: (raw || "").trim(), isAlias: false };
+  select.value = options.includes(preferred) ? preferred : (options.includes("high") ? "high" : options[0]);
+  select.disabled = !values?.length;
 }
 
 function updateAiChannelHint() {
   const hint = $("aiChannelHint");
   const headHint = $("aiProviderHint");
   const keyInput = $("aiApiKeyInput");
-  if (!hint || !keyInput) return;
+  const providerSelect = $("aiProviderSelect");
+  const modelInput = $("aiModelInput");
+  const thinkingSelect = $("aiThinkingSelect");
+  const effortSelect = $("aiEffortSelect");
+  if (!hint || !keyInput || !providerSelect || !modelInput || !thinkingSelect || !effortSelect) return;
 
   const resolved = resolveAiFromKey(keyInput.value);
   const status = window.__aiProviderStatus;
   const row = (status?.providers || []).find((p) => p.id === resolved.provider);
+  const provider = resolved.provider;
+  const model = (modelInput.value || row?.model || (provider === "codex" ? "auto" : "")).trim();
 
-  if (resolved.provider === "deepseek") {
-    if (headHint) headHint.textContent = "DeepSeek · deepseek-v4-flash";
-    hint.textContent = "当前：DeepSeek（deepseek-v4-flash · https://api.deepseek.com）。";
-  } else if (resolved.provider === "openclaw") {
-    if (headHint) {
-      headHint.textContent = row?.available ? "openclaw (QClaw) · 已匹配" : "openclaw (QClaw) · 未就绪";
+  let supportsOff = row?.supports_thinking_off !== false;
+  let efforts = Array.isArray(row?.supported_efforts) ? row.supported_efforts : [];
+  if (provider === "kimi") {
+    const modelId = model.toLowerCase();
+    if (modelId.startsWith("kimi-k3")) {
+      supportsOff = false;
+      efforts = ["max"];
+    } else if (modelId.startsWith("kimi-k2.7-code")) {
+      supportsOff = false;
+      efforts = [];
+    } else {
+      supportsOff = true;
+      efforts = [];
     }
-    hint.textContent = row?.hint || "已匹配 openclaw：将自动使用本地 QClaw token。";
-  } else {
-    if (headHint) headHint.textContent = row?.available ? "openclaw_wb · 已匹配" : "openclaw_wb · 未就绪";
-    hint.textContent = row?.hint || "已匹配 openclaw_wb：将自动使用 WorkBuddy token。";
   }
+  if (!supportsOff) thinkingSelect.value = "true";
+  thinkingSelect.disabled = !supportsOff || row?.supports_thinking_on === false;
+  replaceAiEffortOptions(efforts, effortSelect.value || "high");
+
+  const noApiKey = provider === "codex";
+  const hasStoredKey = hasStoredAiKeyFor(provider);
+  keyInput.disabled = noApiKey;
+  keyInput.placeholder = noApiKey
+    ? "该通道不需要填写 API Key"
+    : (
+      hasStoredKey
+        ? "已配置（留空使用已保存 Key）"
+        : (row?.available ? "已从 Quant/env 读取（也可临时覆盖）" : "请输入该供应商的 API Key")
+    );
+
+  if (headHint) {
+    let stateText = row?.available ? "已匹配" : "未就绪";
+    if (["deepseek", "kimi", "mimo"].includes(provider)) {
+      stateText = row?.configured ? "已配置（未测试）" : "未配置";
+    } else if (provider === "codex") {
+      stateText = row?.available ? "已登录" : "未登录";
+    }
+    headHint.textContent = `${row?.label || provider} · ${stateText}`;
+  }
+  hint.textContent = row?.hint || `当前模型：${model || "供应商默认模型"}`;
 }
 
 function openUnlimitedModal() {
@@ -918,11 +986,21 @@ async function runAiAnalyze() {
   const view = $("aiAnswerView");
   const rawKey = $("aiApiKeyInput")?.value || "";
   const resolved = resolveAiFromKey(rawKey);
+  const row = (window.__aiProviderStatus?.providers || []).find((p) => p.id === resolved.provider);
+  const model = ($("aiModelInput")?.value || row?.model || "").trim();
+  const thinking = $("aiThinkingSelect")?.value !== "false";
+  const reasoningEffort = $("aiEffortSelect")?.value || "high";
   if (!view) return;
 
-  if (resolved.provider === "deepseek" && !resolved.apiKey && !window.__aiHasStoredKey) {
+  const apiProvider = ["deepseek", "kimi", "mimo"].includes(resolved.provider);
+  if (
+    apiProvider
+    && !resolved.apiKey
+    && !hasStoredAiKeyFor(resolved.provider)
+    && !row?.available
+  ) {
     view.className = "ai-answer error";
-    view.textContent = "请填写 DeepSeek API Key，或在 Key 中输入 openclaw / openclaw_wb";
+    view.textContent = `请填写 ${row?.label || resolved.provider} API Key，或在 Quant/env 配置该供应商的 Key。`;
     return;
   }
 
@@ -942,12 +1020,18 @@ async function runAiAnalyze() {
       body: JSON.stringify({
         provider: resolved.provider,
         api_key: resolved.apiKey || null,
+        model: model || null,
+        thinking,
+        reasoning_effort: reasoningEffort,
         symbol: selectedSymbol || null,
       }),
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       throw new Error(formatApiError(data, res.status, "/api/ai/analyze-training"));
+    }
+    if (resolved.apiKey && apiProvider) {
+      window.__aiStoredKeyProvider = resolved.provider;
     }
     if (!res.body) throw new Error("浏览器不支持流式响应");
 

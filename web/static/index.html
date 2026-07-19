@@ -236,9 +236,42 @@
       </div>
       <div class="ai-form">
         <div class="ai-row">
+          <label class="ai-field">
+            <span>模型供应商</span>
+            <select id="aiProviderSelect">
+              <option value="codex">Codex 订阅</option>
+              <option value="deepseek">DeepSeek API</option>
+              <option value="kimi">Kimi API</option>
+              <option value="mimo">小米 MiMo API</option>
+            </select>
+          </label>
+          <label class="ai-field">
+            <span>模型 ID</span>
+            <input type="text" id="aiModelInput" placeholder="留空使用供应商默认模型" autocomplete="off" />
+          </label>
+          <label class="ai-field">
+            <span>Thinking</span>
+            <select id="aiThinkingSelect">
+              <option value="true">开启</option>
+              <option value="false">关闭</option>
+            </select>
+          </label>
+          <label class="ai-field">
+            <span>推理强度</span>
+            <select id="aiEffortSelect">
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+              <option value="xhigh">xhigh</option>
+              <option value="max">max</option>
+              <option value="ultra">ultra</option>
+            </select>
+          </label>
+        </div>
+        <div class="ai-row">
           <label class="ai-field ai-key-field" id="aiKeyField">
             <span>API Key</span>
-            <input type="password" id="aiApiKeyInput" placeholder="填入 DeepSeek API Key" autocomplete="off" />
+            <input type="password" id="aiApiKeyInput" placeholder="可留空使用 Quant/env 中的 Key" autocomplete="off" />
           </label>
           <button type="button" class="btn btn-primary" id="aiAnalyzeBtn">开始分析</button>
           <button type="button" class="btn btn-unlimited" id="aiUnlimitedBtn">获取无限分析功能</button>
@@ -609,6 +642,6 @@
   </div>
 
   <script src="/static/bg.js?v=1"></script>
-  <script src="/static/app.js?v=63"></script>
+  <script src="/static/app.js?v=65"></script>
 </body>
 </html>

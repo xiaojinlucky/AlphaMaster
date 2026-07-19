@@ -6,7 +6,7 @@
 
 ![Web 控制台总览](docs/images/00_hero.png)
 
-当前私有工作仓库：[github.com/Jinqingchang/AlphaMaster](https://github.com/Jinqingchang/AlphaMaster)；原作者仓库保留为只读 `upstream`：[rosemarycox5334-debug/AlphaMaster](https://github.com/rosemarycox5334-debug/AlphaMaster)。
+目标发布仓库：[github.com/Jinqingchang/AlphaMaster](https://github.com/Jinqingchang/AlphaMaster)；原作者仓库保留为只读 `upstream`：[rosemarycox5334-debug/AlphaMaster](https://github.com/rosemarycox5334-debug/AlphaMaster)。默认只向私有仓库发布；当前仓库公开，但用户已于 2026-07-20 明确授权临时发布本次已审查的 36 路快照。`.env`、真实配置、密钥、数据、模型和日志始终不上传，后续发布仍须重新确认。
 
 当前数据身份、checkpoint、旧 MT5 注册、样本外回测和训练包 v2 已随 `d4dcb75` 发布并通过独立严格审查。接手或让外部模型规划前，先读 [`CONTEXT.md`](CONTEXT.md) 和 [`docs/GPT5_6SOL_HANDOFF.md`](docs/GPT5_6SOL_HANDOFF.md)。
 
@@ -60,6 +60,14 @@ Windows 已可使用桌面 `AlphaMaster` 快捷方式：双击后自动启动本
 - **manifest 边界**：AlphaMaster 核心读取本地 Parquet 不依赖 manifest；Slurm 远程训练必须用 sidecar 绑定文件哈希、来源和数据范围。旧 MT5 文件可在页面一次确认后自动注册，新版 MT5 / OKX 导出器会自动生成
 - **Slurm 第一阶段**：每个 run 独立训练；网络中断会重连同一 run/job，跨 run checkpoint 续训尚未开放；每次 `READY` 会以单一原子指针发布该 run 的 checkpoint、训练历史和策略整套产物，不跨 run 混用
 - 展示最优分数、验证分数、训练曲线与最优公式；可选 AI 分析当前训练情况  
+
+### AI 模型供应商
+
+训练页可直接切换 Codex 订阅、DeepSeek、Kimi 和小米 MiMo，并按模型控制 Thinking 与推理强度。DeepSeek、Kimi、MiMo 默认从仓库外的 `D:\Desktop\Quant\env` 读取 `DEEPSEEK_*`、`MOONSHOT_*`、`MIMO_*`；也可在界面填写并保存在本机 `web_settings.json`（该文件不得提交）。Codex 不需要 API Key，使用官方 Codex CLI 当前的 `codex login` 登录。
+
+Codex 的订阅可用性、额度、限流和计费取决于当时的 ChatGPT 计划与官方 rate card；不得假定“永远不按 token/额度计费”。部署或使用前请核对 [OpenAI 的 Codex 计划说明](https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan) 与 [当前 rate card](https://help.openai.com/en/articles/20001106-codex-rate-card)。AlphaMaster 会在空临时目录运行它，禁用 Shell、网页、应用、MCP 与子 Agent，只接收最终文本。
+
+AI 通道采用固定白名单，不读取浏览器、IDE、Electron、WorkBuddy、QClaw 或其他客户端的登录会话和 token。旧的 OpenClaw/WorkBuddy 通道与 Key 别名已停用。
 
 ### 策略回测
 

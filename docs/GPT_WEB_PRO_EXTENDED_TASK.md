@@ -1,5 +1,7 @@
 # 网页版 GPT Pro Extended Thinking — AlphaMaster 总控指令
 
+> 历史未来函数专项：本文件保留 200-bar/未来函数审查任务的原始说明，不是当前总控入口。2026-07-19 后请先使用 `docs/WEB_GPT_CONTROLLER_PROMPT.md`，再按其指令决定是否读取本文件。文中已删除的 `formula_contract.py` 与对应测试路径仅属历史快照。
+
 ## 访问方式与唯一事实源
 
 请使用已连接的 GitHub MCP，只读取私有仓库：

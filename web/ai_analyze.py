@@ -109,12 +109,20 @@ def analyze_training(
     *,
     provider: str,
     api_key: str | None = None,
+    model: str | None = None,
+    thinking: bool | None = None,
+    reasoning_effort: str | None = None,
     symbol: str | None = None,
 ) -> dict[str, Any]:
     answer_parts: list[str] = []
     meta: dict[str, Any] = {}
     for event in analyze_training_stream(
-        provider=provider, api_key=api_key, symbol=symbol
+        provider=provider,
+        api_key=api_key,
+        model=model,
+        thinking=thinking,
+        reasoning_effort=reasoning_effort,
+        symbol=symbol,
     ):
         if event.get("type") == "meta":
             meta = event
@@ -141,6 +149,9 @@ def analyze_training_stream(
     *,
     provider: str,
     api_key: str | None = None,
+    model: str | None = None,
+    thinking: bool | None = None,
+    reasoning_effort: str | None = None,
     symbol: str | None = None,
 ):
     """Yield SSE-ready event dicts: meta / delta / done / error."""
@@ -149,7 +160,13 @@ def analyze_training_stream(
     try:
         snapshot = build_training_snapshot(symbol)
         prior = load_prior_analyses(snapshot["symbol"], snapshot["timeframe"])
-        resolved = resolve_provider(provider, api_key)
+        resolved = resolve_provider(
+            provider,
+            api_key,
+            model=model,
+            thinking=thinking,
+            reasoning_effort=reasoning_effort,
+        )
     except Exception as exc:
         yield {"type": "error", "message": str(exc)}
         return

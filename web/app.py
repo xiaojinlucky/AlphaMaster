@@ -136,7 +136,9 @@ def _public_settings(settings: dict[str, Any]) -> dict[str, Any]:
         )
 
     public = {k: v for k, v in settings.items() if not is_sensitive(k)}
-    public["has_ai_api_key"] = bool(settings.get("ai_api_key"))
+    public["has_ai_api_key"] = bool(settings.get("ai_api_key")) and (
+        settings.get("ai_api_key_provider") == settings.get("ai_provider")
+    )
     public["feishu_webhook_configured"] = bool(settings.get("feishu_webhook_url"))
     public["feishu_secret_configured"] = bool(settings.get("feishu_secret"))
     return public
@@ -185,6 +187,9 @@ class SettingsRequest(BaseModel):
     debug_mode: bool | None = None
     ai_provider: str | None = None
     ai_api_key: str | None = None
+    ai_model: str | None = None
+    ai_thinking: bool | None = None
+    ai_reasoning_effort: str | None = None
     bt_commission_pct: float | None = None
     bt_slippage_pct: float | None = None
 
@@ -192,6 +197,9 @@ class SettingsRequest(BaseModel):
 class AnalyzeTrainingRequest(BaseModel):
     provider: str | None = None
     api_key: str | None = None
+    model: str | None = None
+    thinking: bool | None = None
+    reasoning_effort: str | None = None
     symbol: str | None = None
 
 
@@ -534,6 +542,16 @@ def api_put_settings(req: SettingsRequest) -> dict[str, Any]:
         payload["ai_provider"] = req.ai_provider
     if req.ai_api_key is not None:
         payload["ai_api_key"] = req.ai_api_key
+        payload["ai_api_key_provider"] = req.ai_provider or load_settings().get(
+            "ai_provider",
+            "deepseek",
+        )
+    if req.ai_model is not None:
+        payload["ai_model"] = req.ai_model
+    if req.ai_thinking is not None:
+        payload["ai_thinking"] = req.ai_thinking
+    if req.ai_reasoning_effort is not None:
+        payload["ai_reasoning_effort"] = req.ai_reasoning_effort
     if req.bt_commission_pct is not None:
         payload["bt_commission_pct"] = req.bt_commission_pct
     if req.bt_slippage_pct is not None:
@@ -587,9 +605,14 @@ def api_config() -> dict[str, Any]:
         "backtest_data_file": backtest_file_info,
         "last_strategy_file": strat_ctx["last_strategy_file"],
         "strategy_file": strat_ctx["strategy_file"],
-        "debug_mode": load_settings().get("debug_mode", False),
-        "ai_provider": load_settings().get("ai_provider", "deepseek"),
-        "has_ai_api_key": bool(load_settings().get("ai_api_key")),
+        "debug_mode": settings.get("debug_mode", False),
+        "ai_provider": settings.get("ai_provider", "deepseek"),
+        "ai_model": settings.get("ai_model", ""),
+        "ai_thinking": settings.get("ai_thinking", True),
+        "ai_reasoning_effort": settings.get("ai_reasoning_effort", "high"),
+        "has_ai_api_key": bool(settings.get("ai_api_key")) and (
+            settings.get("ai_api_key_provider") == settings.get("ai_provider")
+        ),
         "bt_commission_pct": settings.get("bt_commission_pct", 0.02),
         "bt_slippage_pct": settings.get("bt_slippage_pct", 0.01),
     }
@@ -602,7 +625,12 @@ def api_ai_providers() -> dict[str, Any]:
     status = provider_status()
     settings = load_settings()
     status["selected"] = settings.get("ai_provider", "deepseek")
-    status["has_api_key"] = bool(settings.get("ai_api_key"))
+    status["model"] = settings.get("ai_model", "")
+    status["thinking"] = settings.get("ai_thinking", True)
+    status["reasoning_effort"] = settings.get("ai_reasoning_effort", "high")
+    status["has_api_key"] = bool(settings.get("ai_api_key")) and (
+        settings.get("ai_api_key_provider") == settings.get("ai_provider")
+    )
     return status
 
 
@@ -613,29 +641,51 @@ def api_ai_analyze_training(req: AnalyzeTrainingRequest):
     from web.ai_analyze import analyze_training_stream
 
     settings = load_settings()
-    raw_key = req.api_key if req.api_key is not None else settings.get("ai_api_key") or ""
-    key_lower = str(raw_key).strip().lower()
-
-    # openclaw_wb 必须先于 openclaw 判断
-    if key_lower in ("openclaw_wb",) or key_lower.startswith("openclaw_wb/"):
-        provider = "openclaw_wb"
-    elif key_lower in ("openclaw",) or key_lower.startswith("openclaw/"):
-        provider = "openclaw"
+    requested_provider = (
+        req.provider or settings.get("ai_provider") or "deepseek"
+    ).strip().lower()
+    if req.api_key is not None:
+        raw_key = str(req.api_key).strip()
+    elif settings.get("ai_api_key_provider") == requested_provider:
+        raw_key = str(settings.get("ai_api_key") or "").strip()
     else:
-        provider = (req.provider or settings.get("ai_provider") or "deepseek").strip()
+        raw_key = ""
+    provider = requested_provider
 
-    save_settings({
+    save_payload = {
         "ai_provider": provider,
-        "ai_api_key": str(raw_key).strip(),
-    })
+        "ai_model": str(
+            req.model if req.model is not None else settings.get("ai_model") or ""
+        ).strip(),
+        "ai_thinking": (
+            req.thinking
+            if req.thinking is not None
+            else bool(settings.get("ai_thinking", True))
+        ),
+        "ai_reasoning_effort": str(
+            req.reasoning_effort
+            if req.reasoning_effort is not None
+            else settings.get("ai_reasoning_effort") or "high"
+        ).strip(),
+    }
+    if req.api_key is not None and str(req.api_key).strip():
+        save_payload["ai_api_key"] = str(req.api_key).strip()
+        save_payload["ai_api_key_provider"] = provider
 
     def event_gen():
+        settings_saved = False
         try:
             for event in analyze_training_stream(
                 provider=provider,
                 api_key=str(raw_key).strip() or None,
+                model=save_payload["ai_model"] or None,
+                thinking=bool(save_payload["ai_thinking"]),
+                reasoning_effort=save_payload["ai_reasoning_effort"],
                 symbol=req.symbol,
             ):
+                if not settings_saved and event.get("type") != "error":
+                    save_settings(save_payload)
+                    settings_saved = True
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as exc:
             yield f"data: {json.dumps({'type': 'error', 'message': str(exc)}, ensure_ascii=False)}\n\n"

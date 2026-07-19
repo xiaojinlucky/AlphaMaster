@@ -1,5 +1,7 @@
 # GPT-5.6-sol 移交说明
 
+> 历史专项快照：本文件记录 200-bar 标准化与未来函数审计背景。2026-07-19 后的当前方向、选择性上游同步和网页版 GPT 入口以 `docs/LIVE_TRADING_DIRECTION_HANDOFF.md` 与 `docs/WEB_GPT_CONTROLLER_PROMPT.md` 为准。
+
 ## 1. 项目定位
 
 AlphaMaster 是基于原始公开仓库的私有轻量二次开发项目。现有核心路线保持为：

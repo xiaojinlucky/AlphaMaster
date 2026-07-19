@@ -37,9 +37,56 @@ from model_core.features import MT5FeatureEngineer
 
 _TIMEFRAMES = ("M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN1")
 _PARQUET_RE = re.compile(
-    rf"^(.+)_({'|'.join(_TIMEFRAMES)})\.parquet$",
+    r"^(.+)_([^.]+)\.parquet$",
     re.IGNORECASE,
 )
+_TF_ALIASES: dict[str, str] = {
+    # Bare 1m means one minute. Month aliases must be explicit (1mo/month/...)
+    # so that third-party minute exports cannot be silently interpreted as months.
+    "m1": "M1",
+    "1m": "M1",
+    "1min": "M1",
+    "min1": "M1",
+    "m5": "M5",
+    "5m": "M5",
+    "5min": "M5",
+    "min5": "M5",
+    "m15": "M15",
+    "15m": "M15",
+    "15min": "M15",
+    "min15": "M15",
+    "m30": "M30",
+    "30m": "M30",
+    "30min": "M30",
+    "min30": "M30",
+    "h1": "H1",
+    "1h": "H1",
+    "60m": "H1",
+    "60min": "H1",
+    "min60": "H1",
+    "60": "H1",
+    "h4": "H4",
+    "4h": "H4",
+    "240m": "H4",
+    "240min": "H4",
+    "min240": "H4",
+    "240": "H4",
+    "d1": "D1",
+    "1d": "D1",
+    "day": "D1",
+    "daily": "D1",
+    "1440m": "D1",
+    "1440min": "D1",
+    "w1": "W1",
+    "1w": "W1",
+    "week": "W1",
+    "weekly": "W1",
+    "mn1": "MN1",
+    "1mo": "MN1",
+    "1mon": "MN1",
+    "month": "MN1",
+    "monthly": "MN1",
+}
 _CANONICAL_ASHARE_RE = re.compile(r"^[0-9]{6}_(M5|M15|H1|D1)\.parquet$", re.IGNORECASE)
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
@@ -249,6 +296,20 @@ def _resolve_training_contract(
     return volume_col, periods_per_year, minimum_bars, source_id, data_sha256, dataset_id
 
 
+def normalize_timeframe_token(token: str) -> str | None:
+    """把文件名中的周期别名归一为下游使用的标准 token。"""
+    raw = (token or "").strip()
+    if not raw:
+        return None
+    key = raw.lower().replace("-", "").replace("_", "")
+    if key in _TF_ALIASES:
+        return _TF_ALIASES[key]
+    upper = raw.upper()
+    if upper in _TIMEFRAMES:
+        return upper
+    return None
+
+
 def parse_parquet_filename(path: str | Path) -> tuple[str, str]:
     """Parse ``{symbol}_{timeframe}.parquet`` e.g. ``AAPL_H1.parquet``."""
     name = Path(path).name
@@ -257,7 +318,10 @@ def parse_parquet_filename(path: str | Path) -> tuple[str, str]:
         raise ValueError(
             f"文件名须为 {{品种}}_{{周期}}.parquet，例如 AAPL_H1.parquet；当前: {name}"
         )
-    return m.group(1), m.group(2).upper()
+    timeframe = normalize_timeframe_token(m.group(2))
+    if timeframe is None:
+        raise ValueError(f"文件名周期不受支持: {m.group(2)}；当前: {name}")
+    return m.group(1), timeframe
 
 
 def inspect_parquet_file(
