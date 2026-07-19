@@ -8,7 +8,7 @@
 - 项目路径：`D:\Desktop\Quant\AlphaMaster`。
 - Python：项目 `.venv`，当前主验证环境为 Python 3.11。
 - Web：本机回环地址 `127.0.0.1:8765`；桌面快捷方式只启动控制台，不会自动提交训练。
-- 目标发布仓库：`Jinqingchang/AlphaMaster`，`main` 跟踪 `origin/main`。默认要求私有发布；2026-07-20 用户仅授权将本次 36 路精确快照临时推送到当前公开仓库。密钥、真实配置、数据、模型和日志仍是硬阻断项，后续发布必须重新确认。
+- 目标发布仓库：`Jinqingchang/AlphaMaster`，`main` 跟踪 `origin/main`。默认要求私有发布；2026-07-20 用户仅授权将本次 36 路精确快照临时推送到当前公开仓库，主交接提交为 `4a897de`。密钥、真实配置、数据、模型和日志仍是硬阻断项，后续发布必须重新确认。
 - 原作者仓库：`rosemarycox5334-debug/AlphaMaster`，本机只读 remote 为 `upstream`。
 
 ## 2. 远程训练环境
