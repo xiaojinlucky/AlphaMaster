@@ -102,7 +102,7 @@
 
 ## 11. 用 Git 管理自己的 AlphaMaster
 
-目标发布仓库是 `github.com/Jinqingchang/AlphaMaster.git`，本机 `main` 跟踪 `origin/main`；`github.com/rosemarycox5334-debug/AlphaMaster.git` 保留为只读上游。默认只向私有仓库发布；该仓库当前公开，但用户已于 2026-07-20 明确授权临时发布本次已审查的 36 路快照。无论仓库是否公开，`.env`、密钥、真实配置、原始数据、模型和日志都不能上传。
+目标发布仓库是 `github.com/xiaojinlucky/AlphaMaster.git`，本机 `main` 跟踪 `origin/main`；`github.com/rosemarycox5334-debug/AlphaMaster.git` 保留为只读上游。默认只向私有仓库发布；该仓库当前公开，但用户已于 2026-07-20 明确授权临时发布本次已审查的 36 路快照。无论仓库是否公开，`.env`、密钥、真实配置、原始数据、模型和日志都不能上传。
 
 推荐结构是：
 

@@ -10,7 +10,7 @@
 
 ## 2. 精确快照
 
-- 私有仓库：`Jinqingchang/AlphaMaster`
+- 当前目标仓库：`xiaojinlucky/AlphaMaster`（当前为公开仓库）
 - 稳定分支：`main`
 - 代码审查基线：`093e3172a24f1e4f7621e590b2641c4c5c61e83d`
 - 前端完成提交：`186217ecb7c9658187b8a335c1445af576263f02`

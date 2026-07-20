@@ -6,7 +6,7 @@
 
 ![Web 控制台总览](docs/images/00_hero.png)
 
-目标发布仓库：[github.com/Jinqingchang/AlphaMaster](https://github.com/Jinqingchang/AlphaMaster)；原作者仓库保留为只读 `upstream`：[rosemarycox5334-debug/AlphaMaster](https://github.com/rosemarycox5334-debug/AlphaMaster)。默认只向私有仓库发布；当前仓库公开，但用户已于 2026-07-20 明确授权临时发布本次已审查的 36 路快照，主交接提交为 `4a897de`。`.env`、真实配置、密钥、数据、模型和日志始终不上传，后续发布仍须重新确认。
+目标发布仓库：[github.com/xiaojinlucky/AlphaMaster](https://github.com/xiaojinlucky/AlphaMaster)；原作者仓库保留为只读 `upstream`：[rosemarycox5334-debug/AlphaMaster](https://github.com/rosemarycox5334-debug/AlphaMaster)。默认只向私有仓库发布；当前仓库公开，但用户已于 2026-07-20 明确授权临时发布本次已审查的 36 路快照，主交接提交为 `4a897de`。`.env`、真实配置、密钥、数据、模型和日志始终不上传，后续发布仍须重新确认。
 
 当前数据身份、checkpoint、旧 MT5 注册、样本外回测和训练包 v2 已随 `d4dcb75` 发布并通过独立严格审查。接手或让外部模型规划前，先读 [`CONTEXT.md`](CONTEXT.md) 和 [`docs/GPT5_6SOL_HANDOFF.md`](docs/GPT5_6SOL_HANDOFF.md)。
 
