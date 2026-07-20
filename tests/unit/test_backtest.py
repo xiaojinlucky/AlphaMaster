@@ -185,3 +185,56 @@ def test_split_point_exact_count():
         assert oos < 0, (
             f"T={T}: OOS 均值应 < 0，期望 OOS={expected_oos} 期，实际 {oos}"
         )
+
+
+class TestTurnoverQualityContinuousPosition:
+    """验证连续 tanh 仓位按方向区间统计交易频率。"""
+
+    def test_continuous_position_is_not_truncated_to_zero(self):
+        bt = MT5Backtest()
+        position = torch.tensor([[0.8, 0.8, -0.8, -0.8]])
+
+        actual = bt._turnover_quality(position)
+
+        # 两个持仓区间，actual_ratio=2；按现有公式结果为约 0.6676692。
+        expected = math.exp(-0.5) + math.log(2.0) / math.log(30.0) * 0.3
+        assert actual == pytest.approx(expected)
+        assert actual != -2.0
+
+    def test_steady_position_is_low_frequency(self):
+        bt = MT5Backtest()
+        position = torch.full((1, 40), 0.8)
+
+        actual = bt._turnover_quality(position)
+
+        assert actual < 0.0
+
+    def test_rapid_direction_reversal_is_penalized(self):
+        bt = MT5Backtest()
+        position = torch.tensor([[0.5, -0.5] * 20])
+
+        assert bt._turnover_quality(position) == pytest.approx(-2.0)
+
+    def test_same_direction_resizing_is_one_position_run(self):
+        bt = MT5Backtest()
+        position = torch.tensor([[0.8, 0.6, 0.4, 0.2]])
+
+        actual = bt._turnover_quality(position)
+
+        expected = 1.0 + math.log(4.0) / math.log(30.0) * 0.3
+        assert actual == pytest.approx(expected)
+
+    def test_all_flat_is_penalized(self):
+        bt = MT5Backtest()
+        position = torch.zeros((1, 40))
+
+        assert bt._turnover_quality(position) == pytest.approx(-2.0)
+
+    def test_entry_exit_reentry_counts_two_position_runs(self):
+        bt = MT5Backtest()
+        position = torch.tensor([[0.0, 0.5, 0.5, 0.0, 0.0, 0.6, 0.6]])
+
+        actual = bt._turnover_quality(position)
+
+        expected = math.exp(-0.5) + math.log(2.0) / math.log(30.0) * 0.3
+        assert actual == pytest.approx(expected)

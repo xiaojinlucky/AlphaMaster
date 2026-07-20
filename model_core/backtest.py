@@ -187,6 +187,8 @@ class MT5Backtest:
         """交易频率质量奖励（每天约 1 笔为最优）。
 
         目标：每 12 bar 一笔（H1 每天约一笔）。
+        连续仓位模式下按方向区间计数：同向加减仓不新增交易，
+        空仓进场或多空方向翻转才开始新的持仓区间。
         """
         N, T = position.shape
         pos_2d = position.tolist()
@@ -195,13 +197,19 @@ class MT5Backtest:
         for n in range(N):
             runs, cur_len, cur_dir = [], 0, 0
             for p in pos_2d[n]:
-                pi = int(p)
-                if pi != 0:
-                    if pi == cur_dir:
+                if p > 1e-9:
+                    direction = 1
+                elif p < -1e-9:
+                    direction = -1
+                else:
+                    direction = 0
+
+                if direction != 0:
+                    if direction == cur_dir:
                         cur_len += 1
                     else:
                         if cur_len > 0: runs.append(cur_len)
-                        cur_dir, cur_len = pi, 1
+                        cur_dir, cur_len = direction, 1
                 else:
                     if cur_len > 0: runs.append(cur_len)
                     cur_dir, cur_len = 0, 0

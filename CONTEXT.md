@@ -37,7 +37,7 @@
 - AI 大模型接入是 AlphaMaster 的 fork 定制边界。用户已明确授权把当前 AI provider/前端源码和对应测试一起纳入本次精确快照；`.env`、真实 `web_settings.json`、浏览器/客户端会话、token 和其他运行态继续排除。
 - 当前优先级重新冻结为 AM 自身的历史成绩真实性：继续审计数据对齐、特征/算子因果性、信号—目标收益—PnL 时间对齐，以及反复试验造成的回测过拟合。
 - 2026-07-20 已修复并随 `67e81f3` 推送：多品种时间交集不足时仅做 `ffill()`，统一裁掉没有历史报价的前段；裁剪后不足 `MIN_BARS` 会失败关闭。定向单元 11 通过、时间轴属性 1 通过，独立六维审查 `PASS`。
-- 已确认但尚未修复：`model_core/backtest.py::_turnover_quality()` 对 `tanh` 连续仓位执行 `int(p)`，绝大多数 `(-1, 1)` 仓位被截成 0，交易频率奖励会失真。
+- 2026-07-20 已修复：`model_core/backtest.py::_turnover_quality()` 不再对 `tanh` 连续仓位执行 `int(p)`，改按正负方向区间计数；同向加减仓保持一个持仓区间，空仓进场、平仓后再进场和方向翻转才新增区间。该 F02 语义是本 fork 的有意修复，后续选择性上游同步不得覆盖它。定向回归与回测契约测试共 42 项通过；项目 `.venv` 仍受 PyTorch `c10.dll` 的 `WinError 1114` 影响，结果来自隔离测试环境。
 - 高优先待审查：训练循环反复使用 walk-forward validation 分数更新冠军、精英池和搜索方向，因此这些 validation 折更接近 selection 数据，不应在没有独立密封测试证据时直接称为最终样本外成绩。
 - 待合成序列确认：PnL 使用 `position[t] * target_ret[t]`，但 IC 使用 `factor[t]` 对齐 `target_ret[t+1]`；必须证明两者预测窗口是否一致。
 
