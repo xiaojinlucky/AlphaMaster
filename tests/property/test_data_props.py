@@ -236,13 +236,23 @@ def test_property2_timeline_alignment_t_dimension_identical(raw_dfs: dict):
     mgr._symbols = list(raw_dfs.keys())
 
     # ── Step 1: align timelines ───────────────────────────────────────────
-    aligned = mgr._align_timelines(raw_dfs)
+    # 生成器只产生 10–60 根数据；显式使用相同的较小门槛，
+    # 以验证对齐合同本身，而不是隐式依赖生产环境的 3000 根门槛。
+    from config import Config
+    with patch.object(Config, "MIN_BARS", 10):
+        aligned = mgr._align_timelines(raw_dfs)
 
     # All aligned DataFrames must have the same number of rows
     row_counts = {sym: len(df) for sym, df in aligned.items()}
     assert len(set(row_counts.values())) == 1, (
         f"Aligned DataFrames have different row counts: {row_counts}"
     )
+    common_index = next(iter(aligned.values())).index
+    for symbol, frame in aligned.items():
+        assert frame.index.equals(common_index), f"{symbol} 未使用公共时间轴"
+        assert frame[RAW_DICT_FIELDS].notna().all().all(), (
+            f"{symbol} 对齐后仍含缺失 OHLCV"
+        )
 
     # ── Step 2: build raw_dict ────────────────────────────────────────────
     raw_dict = mgr._build_raw_dict(aligned)

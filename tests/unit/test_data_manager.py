@@ -11,6 +11,7 @@ tests/unit/test_data_manager.py — MT5DataManager 单元测试
 import pytest
 import pandas as pd
 import numpy as np
+import torch
 from unittest.mock import MagicMock, patch
 
 # 测试用的 MIN_BARS 值（与测试数据大小匹配）
@@ -60,6 +61,21 @@ def _make_mock_fetcher(return_map: dict) -> MagicMock:
 
     fetcher.fetch.side_effect = _fetch_side_effect
     return fetcher
+
+
+def _make_deterministic_ohlcv_df(
+    times: list[int], base_open: float
+) -> pd.DataFrame:
+    """构造价格可预测的 OHLCV 数据，便于验证时间轴语义。"""
+    opens = base_open + np.arange(len(times), dtype=np.float64)
+    return pd.DataFrame({
+        "time":        np.asarray(times, dtype=np.int64),
+        "open":        opens,
+        "high":        opens + 1.0,
+        "low":         opens - 1.0,
+        "close":       opens + 0.5,
+        "tick_volume": np.full(len(times), 100, dtype=np.int64),
+    })
 
 
 # ── 测试 1：少于 100 bars 的品种被排除 ────────────────────────────────────────
@@ -129,6 +145,100 @@ class TestSymbolExcludedWhenBelowMinBars:
 
 
 # ── 测试 2：所有品种都不足 100 bars 时抛出 ValueError ─────────────────────────
+
+# ── 多品种时间轴回退必须保持因果 ─────────────────────────────────────────────
+
+class TestCausalTimelineFallback:
+    """交集不足时只能使用已有报价，不能把未来首报价填到过去。"""
+
+    def test_union_fallback_drops_head_before_late_symbol_first_quote(self):
+        """交集不足时，结果必须从晚开始品种的首个真实报价开始。"""
+        from data_pipeline.data_manager import MT5DataManager
+        from config import Config
+
+        # 两个品种各有 10 根；交集只有 9 根，触发回退。
+        # 修复前 B 的第一根报价会被 bfill 到 time=0。
+        fetch_map = {
+            "A": _make_deterministic_ohlcv_df(list(range(0, 10)), 10.0),
+            "B": _make_deterministic_ohlcv_df(list(range(1, 11)), 100.0),
+        }
+        manager = MT5DataManager(_make_mock_fetcher(fetch_map))
+
+        with patch.object(Config, "MIN_BARS", 10), patch.object(Config, "SYMBOLS", ["A", "B"]):
+            manager.load()
+
+        raw = manager.raw_dict
+        expected_times = torch.arange(1, 11, dtype=torch.int64)
+        assert torch.equal(raw["time"][0], expected_times)
+        assert torch.equal(raw["time"][1], expected_times)
+        assert raw["open"].shape == (2, 10), "因果裁剪后恰好 MIN_BARS 也应可用"
+        for field in ["open", "high", "low", "close", "volume"]:
+            assert bool(torch.isfinite(raw[field]).all()), f"{field} 不应含 NaN 或 Inf"
+        assert bool(torch.isfinite(manager.target_ret).all())
+
+    def test_union_fallback_uses_only_prior_quote_for_internal_gap(self):
+        """回退中的内部缺口只能沿用上一根真实报价。"""
+        from data_pipeline.data_manager import MT5DataManager
+        from config import Config
+
+        fetch_map = {
+            "A": _make_deterministic_ohlcv_df(list(range(0, 11)), 10.0),
+            "B": _make_deterministic_ohlcv_df(
+                [1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12], 100.0
+            ),
+        }
+        manager = MT5DataManager(_make_mock_fetcher(fetch_map))
+
+        with patch.object(Config, "MIN_BARS", 11), patch.object(Config, "SYMBOLS", ["A", "B"]):
+            manager.load()
+
+        raw = manager.raw_dict
+        # 共同时间轴从 1 开始；time=4 缺 B 的真实报价，必须沿用 time=3 的 102。
+        assert raw["time"][1, 3].item() == 4
+        assert raw["open"][1, 3].item() == pytest.approx(102.0)
+        assert raw["open"][1, 4].item() == pytest.approx(103.0)
+
+    def test_strict_intersection_path_is_unchanged(self):
+        """交集足够时必须只保留真实共享时间戳，不进入回退填充。"""
+        from data_pipeline.data_manager import MT5DataManager
+        from config import Config
+
+        fetch_map = {
+            "A": _make_deterministic_ohlcv_df([0, 1, 3, 4], 10.0),
+            "B": _make_deterministic_ohlcv_df([1, 2, 3, 5], 100.0),
+        }
+        manager = MT5DataManager(_make_mock_fetcher(fetch_map))
+
+        with patch.object(Config, "MIN_BARS", 2), patch.object(Config, "SYMBOLS", ["A", "B"]):
+            manager.load()
+
+        raw = manager.raw_dict
+        expected_times = torch.tensor([1, 3], dtype=torch.int64)
+        assert torch.equal(raw["time"][0], expected_times)
+        assert torch.equal(raw["time"][1], expected_times)
+        assert torch.equal(raw["open"][0], torch.tensor([11.0, 12.0]))
+        assert torch.equal(raw["open"][1], torch.tensor([100.0, 102.0]))
+
+    def test_insufficient_causal_timeline_raises_without_partial_state(self):
+        """原始行数够但去重后公共因果时间轴不足时，必须失败关闭。"""
+        from data_pipeline.data_manager import MT5DataManager
+        from config import Config
+
+        # B 原始行数为 10，但全是一个重复时间戳；去重后仅有一根真实报价。
+        fetch_map = {
+            "A": _make_deterministic_ohlcv_df(list(range(0, 10)), 10.0),
+            "B": _make_deterministic_ohlcv_df([100] * 10, 100.0),
+        }
+        manager = MT5DataManager(_make_mock_fetcher(fetch_map))
+
+        with patch.object(Config, "MIN_BARS", 10), patch.object(Config, "SYMBOLS", ["A", "B"]):
+            with pytest.raises(ValueError, match="MIN_BARS"):
+                manager.load()
+
+        assert manager.symbols == []
+        with pytest.raises(RuntimeError):
+            _ = manager.raw_dict
+
 
 class TestAllSymbolsBelowMinBarsRaisesError:
     """Req 3.5: 若所有品种均不满足 MIN_BARS，应抛出 ValueError。"""

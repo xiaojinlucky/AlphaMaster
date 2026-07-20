@@ -48,7 +48,8 @@ class MT5DataManager:
 
         - 遍历 Config.SYMBOLS，调用 fetcher.fetch() 获取每个品种数据。
         - 排除 bars < Config.MIN_BARS 的品种并记录 WARNING。
-        - 对剩余品种做时间轴对齐（时间戳并集 + forward-fill）。
+        - 优先用时间戳交集对齐；交集不足时仅以前向填充回退，
+          并移除没有历史报价的共同前段。
         - 构建 raw_dict 和 target_ret 并缓存。
 
         Raises:
@@ -77,15 +78,17 @@ class MT5DataManager:
                 f"{Config.MIN_BARS} bars."
             )
 
-        self._symbols = list(raw_dfs.keys())
+        valid_symbols = list(raw_dfs.keys())
         logger.info(
-            f"Valid symbols ({len(self._symbols)}): {self._symbols}"
+            f"Valid symbols ({len(valid_symbols)}): {valid_symbols}"
         )
 
         # ── 步骤 2：时间轴对齐 ────────────────────────────────────────
         aligned = self._align_timelines(raw_dfs)
 
         # ── 步骤 3：构建 raw_dict ─────────────────────────────────────
+        # 仅在时间轴对齐成功后写入 symbols，避免失败时暴露半完成状态。
+        self._symbols = valid_symbols
         self._raw_dict = self._build_raw_dict(aligned)
 
         # ── 步骤 4：计算 target_ret ───────────────────────────────────
@@ -201,17 +204,18 @@ class MT5DataManager:
     def _align_timelines(
         self, raw_dfs: dict[str, pd.DataFrame]
     ) -> dict[str, pd.DataFrame]:
-        """将多品种 DataFrame 对齐到统一时间轴（时间戳交集）。
+        """将多品种 DataFrame 对齐到统一且因果安全的时间轴。
 
-        使用交集而非并集：只保留所有品种都有真实报价的时间戳，
-        彻底消除因休市 forward-fill 导致的"重复K线"问题。
+        交集达到最小长度时，只保留所有品种都有真实报价的时间戳。
+        交集不足时，回退到时间戳并集并仅做前向填充；随后移除任一
+        品种尚无历史报价的共同前段，绝不使用未来首报价回填过去。
 
         Args:
             raw_dfs: 品种名 → DataFrame（含 time 列，以及 OHLCV 列）的字典。
 
         Returns:
             品种名 → 对齐后 DataFrame（以 time 为索引，含 open/high/low/close/volume 列）。
-            所有品种行数完全相同，无任何 NaN（交集保证每个时间戳各品种均有真实数据）。
+            所有品种共享同一时间轴；回退路径中不存在缺少历史报价的行。
         """
         fields = ["open", "high", "low", "close", "volume"]
 
@@ -233,10 +237,12 @@ class MT5DataManager:
         inter_index = inter_index.sort_values()
 
         if len(inter_index) < Config.MIN_BARS:
-            # 交集太小时降级回并集+ffill，并记录警告
+            # 交集太小时回退到并集+前向填充。前向填充只使用过去报价；
+            # 不能做后向填充，因为它会把未来首报价写入更早时点。
             logger.warning(
                 f"Intersection timeline has only {len(inter_index)} bars "
-                f"(< MIN_BARS={Config.MIN_BARS}). Falling back to union+ffill."
+                f"(< MIN_BARS={Config.MIN_BARS}). Falling back to union+ffill "
+                "with causal leading-gap trim."
             )
             union_index: pd.Index = pd.Index([], dtype="int64")
             for sub in indexed.values():
@@ -245,9 +251,27 @@ class MT5DataManager:
             aligned: dict[str, pd.DataFrame] = {}
             for symbol, sub in indexed.items():
                 reindexed = sub.reindex(union_index)
-                reindexed = reindexed.ffill().bfill()
+                reindexed = reindexed.ffill()
                 aligned[symbol] = reindexed[fields]
-            return aligned
+
+            # 所有品种必须使用同一段时间轴。前向填充后仍为 NaN 的位置
+            # 只可能来自该品种尚未出现的首段（或原始字段缺失），统一裁掉。
+            common_valid = pd.Series(True, index=union_index)
+            for frame in aligned.values():
+                common_valid &= frame.notna().all(axis=1)
+            causal_index = common_valid[common_valid].index
+
+            if len(causal_index) < Config.MIN_BARS:
+                raise ValueError(
+                    "Causal union timeline has only "
+                    f"{len(causal_index)} bars after forward-fill and leading-gap trim "
+                    f"(< MIN_BARS={Config.MIN_BARS})."
+                )
+
+            return {
+                symbol: frame.loc[causal_index, fields]
+                for symbol, frame in aligned.items()
+            }
 
         logger.info(
             f"Intersection timeline: {len(inter_index)} bars "
