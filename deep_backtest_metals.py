@@ -21,6 +21,10 @@ from data_pipeline.data_manager import MT5DataManager
 from data_pipeline.fetcher import MT5DataFetcher
 from model_core.vocab import FORMULA_VOCAB, VOCAB_VERSION
 from model_core.vm import StackVM
+from model_core.target_contract import (
+    SCORING_CONTRACT_VERSION,
+    align_target_return_window,
+)
 from model_core.features import MT5FeatureEngineer
 from strategy_manager.signal import compute_target_positions_stateless
 
@@ -126,6 +130,8 @@ def main():
     data = json.load(open("strategies/best_metals_comm.json"))
     if data.get("vocab_version") != VOCAB_VERSION:
         print("[ERROR] vocab 版本不符"); return
+    if data.get("scoring_contract_version") != SCORING_CONTRACT_VERSION:
+        print("[ERROR] 评分合同不兼容，旧成绩仅可作诊断"); return
     formula = data["formula"]
     readable = " -> ".join(FORMULA_VOCAB.token_names[t] for t in formula)
     print(f"\n因子: {readable}")
@@ -152,6 +158,7 @@ def main():
             if factor is None:
                 print("[ERROR] 因子执行失败"); return
 
+            factor, target_ret = align_target_return_window(factor, target_ret)
             position = compute_target_positions_stateless(factor)
             prev_pos = torch.roll(position, 1, dims=1)
             prev_pos[:, 0] = 0.0
@@ -259,6 +266,7 @@ def main():
         return obj
 
     report = _to_native({
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
         "formula": formula,
         "readable": readable,
         "symbols": symbols,

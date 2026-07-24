@@ -24,6 +24,10 @@ from data_pipeline.data_manager import MT5DataManager
 from data_pipeline.fetcher import MT5DataFetcher
 from model_core.vocab import FORMULA_VOCAB, VOCAB_VERSION
 from model_core.vm import StackVM
+from model_core.target_contract import (
+    SCORING_CONTRACT_VERSION,
+    align_target_return_window,
+)
 from model_core.features import MT5FeatureEngineer
 from strategy_manager.signal import compute_target_positions_stateless
 
@@ -64,8 +68,8 @@ def calc_ic(factor, target_ret):
     N, T = factor.shape
     ic_list = []
     for n in range(N):
-        x = factor[n, :-1]
-        y = target_ret[n, 1:]
+        x = factor[n]
+        y = target_ret[n]
         xm = x - x.mean()
         ym = y - y.mean()
         sx = np.sqrt((xm**2).mean())
@@ -105,6 +109,7 @@ def backtest_one(formula, feat, target_ret, symbols, cost_rate):
     if factor is None:
         return None
 
+    factor, target_ret = align_target_return_window(factor, target_ret)
     N, T = factor.shape
     factor_np = factor.detach().numpy()
     target_np = target_ret.detach().numpy()
@@ -245,6 +250,9 @@ def run_group_backtest(group_name, group_cfg, fetcher, multi_mgr):
     if data.get("vocab_version", "unknown") != VOCAB_VERSION:
         print(f"  [SKIP] Vocab mismatch: {data.get('vocab_version')} != {VOCAB_VERSION}")
         return None
+    if data.get("scoring_contract_version") != SCORING_CONTRACT_VERSION:
+        print("  [SKIP] Scoring contract mismatch")
+        return None
 
     formula = data["formula"]
     best_score = data.get("best_score", 0.0)
@@ -338,6 +346,7 @@ def run_group_backtest(group_name, group_cfg, fetcher, multi_mgr):
 
     # Save JSON report
     report = {
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
         "group":         group_name,
         "formula":       formula,
         "readable":      result["readable"],
@@ -395,6 +404,10 @@ def main():
         import torch
         latest_ckpt = ckpt_files[-1]
         ckpt = torch.load(latest_ckpt, map_location='cpu', weights_only=False)
+        if ckpt.get("scoring_contract_version") != SCORING_CONTRACT_VERSION:
+            raise RuntimeError(
+                "metals_comm checkpoint 评分合同不兼容，拒绝覆盖正式策略"
+            )
         best_formula = ckpt.get('best_formula')
         best_score = ckpt.get('best_score', 0)
         step = ckpt.get('step', 0)
@@ -404,6 +417,7 @@ def main():
             strategy_path.parent.mkdir(exist_ok=True)
             strategy_path.write_text(json.dumps({
                 "vocab_version": VOCAB_VERSION,
+                "scoring_contract_version": SCORING_CONTRACT_VERSION,
                 "symbol": "metals_comm",
                 "formula": best_formula,
                 "best_score": best_score,
@@ -493,6 +507,7 @@ def main():
 
             # Save combined report
             combined_report = {
+                "scoring_contract_version": SCORING_CONTRACT_VERSION,
                 "groups": list(all_results.keys()),
                 "T": min_T,
                 "total_ret": round(float(combined_cum[-1]), 6),

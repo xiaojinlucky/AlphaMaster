@@ -94,9 +94,11 @@ class BacktestReport:
                 trades_data.append({
                     "direction":   "long" if t.direction == 1 else "short",
                     "entry_bar":   t.entry_bar,
+                    "entry_exec_bar": t.entry_exec_bar,
                     "entry_time":  _ts(t.entry_time),
                     "entry_price": round(t.entry_price, 6),
                     "exit_bar":    t.exit_bar,
+                    "exit_exec_bar": t.exit_exec_bar,
                     "exit_time":   _ts(t.exit_time) if t.exit_time else None,
                     "exit_price":  round(t.exit_price, 6) if t.exit_price else None,
                     "pnl":         round(t.pnl, 8),

@@ -1,4 +1,7 @@
-import tushare as ts
+try:
+    import tushare as ts
+except ImportError:  # 只导入成本/时间合同辅助函数时不强制安装数据源 SDK
+    ts = None
 import pandas as pd
 import numpy as np
 import torch
@@ -9,6 +12,7 @@ import os
 import math
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+from model_core.target_contract import TARGET_RETURN_HORIZON
 
 INDEX_CODE = '511260.SH'
 START_DATE = '20150101' # 训练数据开始
@@ -23,6 +27,25 @@ COST_RATE = 0.0005         # 双边万一 (ETF/IC期货费率较低)，设为万
 DATA_CACHE_PATH = 'data_cache_final.parquet' # 缓存文件，如果修改配置需要重命名
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.set_float32_matmul_precision('high')
+
+
+def _torch_turnover_from_flat(position: torch.Tensor) -> torch.Tensor:
+    """独立回测窗口从空仓开始，首个非零仓位必须计入建仓成本。"""
+    if position.numel() == 0:
+        return torch.zeros_like(position)
+    previous = torch.cat([torch.zeros_like(position[:1]), position[:-1]])
+    return torch.abs(position - previous)
+
+
+def _numpy_turnover_from_flat(position: np.ndarray) -> np.ndarray:
+    """NumPy 口径与训练口径一致：窗口开始前的仓位固定为零。"""
+    if position.size == 0:
+        return np.zeros_like(position)
+    previous = np.empty_like(position)
+    previous[0] = 0
+    previous[1:] = position[:-1]
+    return np.abs(position - previous)
+
 
 @torch.jit.script
 def _ts_delay(x: torch.Tensor, d: int) -> torch.Tensor:
@@ -101,6 +124,8 @@ class AlphaGPT(nn.Module):
 
 class DataEngine:
     def __init__(self):
+        if ts is None:
+            raise RuntimeError("缺少 tushare 依赖，无法获取训练数据")
         token = os.getenv("TUSHARE_TOKEN", "").strip()
         if not token:
             raise RuntimeError("缺少 TUSHARE_TOKEN 环境变量；请在本机 .env 中配置")
@@ -177,7 +202,7 @@ class DataEngine:
         open_t2 = torch.roll(open_tensor, -2)
 
         self.target_oto_ret = (open_t2 - open_t1) / (open_t1 + 1e-6)
-        self.target_oto_ret[-2:] = 0.0
+        self.target_oto_ret[-TARGET_RETURN_HORIZON:] = 0.0
 
         self.raw_open = open_tensor
         self.raw_close = torch.from_numpy(close).to(DEVICE)
@@ -255,13 +280,14 @@ class DeepQuantMiner:
         if factors.shape[0] == 0: return torch.tensor([], device=DEVICE)
 
         split = self.engine.split_idx
+        train_end = split - TARGET_RETURN_HORIZON
         # 使用 Open-to-Open 的收益率
-        target = self.engine.target_oto_ret[:split]
+        target = self.engine.target_oto_ret[:train_end]
 
         rewards = torch.zeros(factors.shape[0], device=DEVICE)
 
         for i in range(factors.shape[0]):
-            f = factors[i, :split]
+            f = factors[i, :train_end]
 
             if torch.isnan(f).all() or (f == 0).all() or f.numel() == 0:
                 rewards[i] = -2.0
@@ -270,10 +296,8 @@ class DeepQuantMiner:
             sig = torch.tanh(f)
             pos = torch.sign(sig)
 
-            turnover = torch.abs(pos - torch.roll(pos, 1))
-            if turnover.numel() > 0:
-                turnover[0] = 0.0
-            else:
+            turnover = _torch_turnover_from_flat(pos)
+            if turnover.numel() == 0:
                 rewards[i] = -2.0
                 continue
 
@@ -390,13 +414,14 @@ def final_reality_check(miner, engine):
 
     # 2. 提取测试集数据 (Strict OOS)
     split = engine.split_idx
-    test_dates = engine.dates[split:]
-    test_factors = factor_all[split:].cpu().numpy()
+    valid_end = len(engine.dates) - TARGET_RETURN_HORIZON
+    test_dates = engine.dates[split:valid_end]
+    test_factors = factor_all[split:valid_end].cpu().numpy()
 
     # 使用 Open-to-Open 收益
     # 注意：target_oto_ret[t] 对应的是 t+1 开盘买, t+2 开盘卖的收益
     # 所以我们的 signal[t] 应该和 target_oto_ret[t] 对齐
-    test_ret = engine.target_oto_ret[split:].cpu().numpy()
+    test_ret = engine.target_oto_ret[split:valid_end].cpu().numpy()
 
     # 减少噪音
     rolling_mean_factor = pd.Series(test_factors).rolling(3).mean().fillna(0).values
@@ -411,13 +436,12 @@ def final_reality_check(miner, engine):
     # 需要对齐时间轴。target_oto_ret 对应的是 t+1 到 t+2。
     # 我们检查 t+1 开盘是否可交易。
 
-    raw_close = engine.raw_close[split:].cpu().numpy()
-    raw_open_next = engine.raw_open[split:].cpu().numpy() # 这里稍微错位，简化处理
+    raw_close = engine.raw_close[split:valid_end].cpu().numpy()
+    raw_open_next = engine.raw_open[split:valid_end].cpu().numpy() # 这里稍微错位，简化处理
     # 实际上，DataEngine需要更精细的时间对齐来做Limit Check，这里做个简单近似
 
     # 换手
-    turnover = np.abs(position - np.roll(position, 1))
-    turnover[0] = 0
+    turnover = _numpy_turnover_from_flat(position)
 
     # PnL
     daily_ret = position * test_ret - turnover * COST_RATE

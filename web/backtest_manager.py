@@ -121,6 +121,11 @@ class BacktestManager:
             from web.strategy_file import inspect_strategy_file
 
             info = inspect_strategy_file(strategy_file)
+            if not info.get("score_compatible") or info.get("valid") is False:
+                raise ValueError(
+                    info.get("message")
+                    or "策略评分合同与当前版本不兼容，不能启动正式回测"
+                )
             symbol = info.get("symbol") or ""
 
             ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")

@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+from model_core.target_contract import SCORING_CONTRACT_VERSION
+from model_core.vocab import FORMULA_VOCAB
 from scan_all_factors import solo_backtest
 
 CANDIDATES = [
@@ -18,6 +20,12 @@ print("-" * 56)
 results = []
 for name, path, key in CANDIDATES:
     data = json.load(open(path, encoding="utf-8"))
+    if (
+        data.get("vocab_version") != FORMULA_VOCAB.version
+        or data.get("scoring_contract_version") != SCORING_CONTRACT_VERSION
+    ):
+        print(f"{name:<28} {'SKIP':>8} {'旧评分合同':>8} {'NO':>6}")
+        continue
     formula = data.get(key) or data.get("formula") or data.get("formula_tokens")
     bt = solo_backtest([int(t) for t in formula], "XAUUSD")
     tag = "YES" if bt.get("valid") else "NO"
@@ -25,5 +33,14 @@ for name, path, key in CANDIDATES:
     results.append({"name": name, "symbol": "XAUUSD", **bt})
 
 out = Path("backtest_output/xauusd_scan.json")
-out.write_text(json.dumps(results, indent=2), encoding="utf-8")
+out.write_text(
+    json.dumps(
+        {
+            "scoring_contract_version": SCORING_CONTRACT_VERSION,
+            "strategies": results,
+        },
+        indent=2,
+    ),
+    encoding="utf-8",
+)
 print(f"\n-> {out}")

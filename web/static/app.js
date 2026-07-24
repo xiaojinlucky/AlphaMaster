@@ -377,7 +377,9 @@ function updateBtStartBtn() {
   if (!startBtn) return;
   const strategyReady =
     !!selectedStrategyFile &&
-    selectedStrategyInfo?.identity_registration === "registered";
+    selectedStrategyInfo?.identity_registration === "registered" &&
+    selectedStrategyInfo?.score_compatible === true &&
+    selectedStrategyInfo?.valid !== false;
   startBtn.disabled =
     btActive || !strategyReady || !selectedBacktestDataFile;
   ["btCommissionInput", "btSlippageInput"].forEach((id) => {

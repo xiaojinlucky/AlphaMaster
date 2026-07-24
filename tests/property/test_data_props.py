@@ -80,10 +80,12 @@ def test_property1_fetcher_returns_canonical_dataframe(symbol: str, timeframe: i
     mock_mt5.last_error.return_value = (0, "No error")
 
     with patch("data_pipeline.fetcher.mt5", mock_mt5), \
-         patch("data_pipeline.fetcher._MT5_AVAILABLE", True):
+         patch("data_pipeline.fetcher._MT5_AVAILABLE", True), \
+         patch("data_pipeline.kline_cache.KlineCache.get", return_value=None):
 
         from data_pipeline.fetcher import MT5DataFetcher
         fetcher = MT5DataFetcher()
+        fetcher.connect()
         df = fetcher.fetch(symbol, timeframe, count=5)
 
     # ── Assertions ────────────────────────────────────────────────────────────
@@ -94,7 +96,7 @@ def test_property1_fetcher_returns_canonical_dataframe(symbol: str, timeframe: i
     assert len(df) > 0, "DataFrame must have at least 1 row when MT5 returns data"
 
     # Also verify copy_rates_from_pos was called with the correct positional args
-    mock_mt5.copy_rates_from_pos.assert_called_once_with(symbol, timeframe, 0, 5)
+    mock_mt5.copy_rates_from_pos.assert_called_once_with(symbol, timeframe, 1, 5)
 
 
 # Feature: mt5-alphagpt-refactor, Property 5: 目标收益率 open-to-open 公式

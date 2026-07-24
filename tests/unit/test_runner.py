@@ -6,9 +6,11 @@ tests/unit/test_runner.py — MT5StrategyRunner 单元测试
   - shutdown() 调用 mt5.shutdown()（Req 10.7）
 """
 import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+import torch
 
 import strategy_manager.runner as runner_module
 from strategy_manager.runner import MT5StrategyRunner
@@ -57,3 +59,77 @@ def test_shutdown_calls_mt5_shutdown():
         runner.shutdown()
 
     mock_mt5.shutdown.assert_called_once(), "shutdown() 必须恰好调用一次 mt5.shutdown()"
+
+
+def test_bar_time_failure_never_authorizes_rebalance():
+    runner = MT5StrategyRunner.__new__(MT5StrategyRunner)
+    runner._last_bar_time = torch.tensor([100], dtype=torch.int64)
+
+    class BrokenManager:
+        @property
+        def bar_time(self):
+            raise RuntimeError("broken clock")
+
+    runner._data_manager = BrokenManager()
+
+    with patch.object(runner_module.Config, "SYMBOLS", ["XAUUSD"]):
+        assert runner._has_new_closed_bar() is False
+    assert torch.equal(
+        runner._last_bar_time,
+        torch.tensor([100], dtype=torch.int64),
+    )
+
+
+def test_bar_time_shape_mismatch_never_authorizes_rebalance():
+    runner = MT5StrategyRunner.__new__(MT5StrategyRunner)
+    runner._last_bar_time = torch.tensor([100], dtype=torch.int64)
+    runner._data_manager = SimpleNamespace(
+        bar_time=torch.tensor([100, 200], dtype=torch.int64)
+    )
+
+    with patch.object(runner_module.Config, "SYMBOLS", ["XAUUSD"]):
+        assert runner._has_new_closed_bar() is False
+
+
+def test_bar_time_regression_never_authorizes_rebalance():
+    runner = MT5StrategyRunner.__new__(MT5StrategyRunner)
+    runner._last_bar_time = torch.tensor([200], dtype=torch.int64)
+    runner._data_manager = SimpleNamespace(
+        bar_time=torch.tensor([100], dtype=torch.int64)
+    )
+
+    with patch.object(runner_module.Config, "SYMBOLS", ["XAUUSD"]):
+        assert runner._has_new_closed_bar() is False
+    assert runner._last_bar_time.item() == 200
+
+
+def test_bar_time_strict_forward_move_authorizes_once():
+    runner = MT5StrategyRunner.__new__(MT5StrategyRunner)
+    runner._last_bar_time = torch.tensor([100], dtype=torch.int64)
+    runner._data_manager = SimpleNamespace(
+        bar_time=torch.tensor([200], dtype=torch.int64)
+    )
+
+    with patch.object(runner_module.Config, "SYMBOLS", ["XAUUSD"]):
+        assert runner._has_new_closed_bar() is True
+        assert runner._has_new_closed_bar() is False
+
+
+def test_startup_bar_time_failure_never_calls_initial_reconcile():
+    runner = MT5StrategyRunner.__new__(MT5StrategyRunner)
+    runner.portfolio = MagicMock()
+
+    class BrokenManager:
+        @property
+        def bar_time(self):
+            raise RuntimeError("broken startup clock")
+
+    runner._data_manager = BrokenManager()
+    runner._compute_targets = MagicMock()
+    runner._reconcile_positions = MagicMock()
+
+    with patch.object(runner_module.Config, "SYMBOLS", ["XAUUSD"]):
+        assert runner._run_initial_reconcile() is False
+
+    runner._compute_targets.assert_not_called()
+    runner._reconcile_positions.assert_not_called()

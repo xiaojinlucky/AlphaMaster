@@ -18,6 +18,10 @@ Output: [N, 30, T], all normalized, no NaN/Inf. (v3.0: 20→30 features)
 import torch
 
 from .registry import FeatureSpec, Registry
+from .target_contract import (
+    SCORING_CONTRACT_VERSION,
+    TARGET_RETURN_HORIZON,
+)
 
 
 class MT5FeatureEngineer:
@@ -1434,11 +1438,20 @@ def _load_active_feature_allowlist() -> set[str] | None:
         return None
     try:
         data = _json.loads(_path.read_text(encoding="utf-8"))
-        names = data.get("active_features") if isinstance(data, dict) else data
-        allow = {str(n) for n in names}
-        return allow or None
     except Exception:
         return None
+    if not isinstance(data, dict):
+        raise RuntimeError("active_features.json 缺少可审计的评分合同")
+    if (
+        data.get("scoring_contract_version") != SCORING_CONTRACT_VERSION
+        or data.get("target_horizon") != TARGET_RETURN_HORIZON
+    ):
+        raise RuntimeError("active_features.json 评分合同不兼容")
+    names = data.get("active_features")
+    if not isinstance(names, list):
+        raise RuntimeError("active_features.json 的 active_features 必须是列表")
+    allow = {str(n) for n in names}
+    return allow or None
 
 
 _ACTIVE_FEATURES = _load_active_feature_allowlist()

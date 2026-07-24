@@ -15,6 +15,7 @@ from model_core.engine import (
     CHECKPOINT_IDENTITY_FIELDS,
     CheckpointIdentityError,
 )
+from model_core.target_contract import SCORING_CONTRACT_VERSION
 from model_core.vocab import FORMULA_VOCAB, VocabVersionMismatchError
 
 
@@ -104,6 +105,7 @@ def test_live_strategy_save_is_atomic_and_preserves_full_training_identity(
     assert strategy["data_start"] == "2020-01-01T00:00:00Z"
     assert strategy["data_end"] == "2026-01-01T00:00:00Z"
     assert strategy["columns"] == source.data_columns
+    assert strategy["scoring_contract_version"] == SCORING_CONTRACT_VERSION
     assert not list((tmp_path / "strategies").glob("*.partial"))
 
 
@@ -138,6 +140,7 @@ def test_checkpoint_round_trip_saves_full_identity_and_isolated_path(
     assert checkpoint.parent == root / "H1" / ("a" * 64)
     payload = torch.load(checkpoint, map_location="cpu", weights_only=True)
     assert {field: payload[field] for field in CHECKPOINT_IDENTITY_FIELDS} == _identity()
+    assert payload["scoring_contract_version"] == SCORING_CONTRACT_VERSION
     assert "_low_entropy_streak" not in payload["training_history"]
 
     target = _engine()
@@ -244,6 +247,23 @@ def test_checkpoint_with_mismatched_vocab_version_is_rejected_before_state_apply
     assert target.opt.loaded == []
 
 
+def test_checkpoint_with_old_scoring_contract_is_rejected_before_state_apply(
+    tmp_path: Path,
+) -> None:
+    checkpoint = tmp_path / "checkpoint.pt"
+    _engine().save_checkpoint(20, str(checkpoint))
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    payload.pop("scoring_contract_version")
+    torch.save(payload, checkpoint)
+    target = _engine()
+
+    with pytest.raises(CheckpointIdentityError, match="评分合同"):
+        target.load_checkpoint(str(checkpoint))
+
+    assert target.model.loaded == []
+    assert target.opt.loaded == []
+
+
 def test_checkpoint_rejects_bool_for_integer_identity_before_state_apply(
     tmp_path: Path,
 ) -> None:
@@ -344,6 +364,7 @@ def test_matching_best_strategy_can_seed_from_scratch(
     matching = {
         **_identity(),
         "vocab_version": FORMULA_VOCAB.version,
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
         "formula": [9],
         "best_score": 99.0,
     }
@@ -358,6 +379,32 @@ def test_matching_best_strategy_can_seed_from_scratch(
 
     assert engine.best_formula == [9]
     assert engine.best_score == 99.0
+
+
+def test_old_scoring_contract_strategy_cannot_seed_from_scratch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    strategies = tmp_path / "strategies"
+    strategies.mkdir()
+    old_scoring = {
+        **_identity(),
+        "vocab_version": FORMULA_VOCAB.version,
+        "formula": [9],
+        "best_score": 99.0,
+    }
+    (strategies / "best_BTCUSDT.json").write_text(
+        json.dumps(old_scoring), encoding="utf-8"
+    )
+    engine = _engine()
+    engine.best_formula = None
+    engine.best_score = -float("inf")
+
+    train_file._seed_best_from_strategy(engine, "BTCUSDT")
+
+    assert engine.best_formula is None
+    assert engine.best_score == -float("inf")
 
 
 def test_mismatched_vocab_strategy_cannot_seed_from_scratch(
@@ -415,5 +462,6 @@ def test_mismatched_vocab_score_cannot_block_current_strategy_save(
 
     saved = json.loads(strategy_path.read_text(encoding="utf-8"))
     assert saved["vocab_version"] == FORMULA_VOCAB.version
+    assert saved["scoring_contract_version"] == SCORING_CONTRACT_VERSION
     assert saved["formula"] == engine.best_formula
     assert saved["best_score"] == engine.best_score

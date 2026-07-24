@@ -3,6 +3,7 @@ import sys, json, torch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+from model_core.target_contract import SCORING_CONTRACT_VERSION
 from model_core.vocab import FORMULA_VOCAB, VOCAB_VERSION
 
 ckpts = sorted(Path('checkpoints').glob('ckpt_metals_comm_step_*.pt'))
@@ -11,6 +12,8 @@ if not ckpts:
 
 latest = ckpts[-1]
 ckpt = torch.load(latest, map_location='cpu', weights_only=False)
+if ckpt.get("scoring_contract_version") != SCORING_CONTRACT_VERSION:
+    raise RuntimeError("checkpoint 评分合同不兼容，拒绝写入正式策略")
 
 formula = ckpt['best_formula']
 score = float(ckpt['best_score'])
@@ -20,6 +23,7 @@ out = {
     "group": "metals_comm",
     "symbol_group": "metals_comm",
     "vocab_version": VOCAB_VERSION,
+    "scoring_contract_version": SCORING_CONTRACT_VERSION,
     "formula": formula,
     "best_score": score,
     "step": step,

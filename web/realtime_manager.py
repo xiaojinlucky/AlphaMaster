@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from config import Config
+from model_core.target_contract import SCORING_CONTRACT_VERSION
 from model_core.vocab import (
     FORMULA_VOCAB,
     VOCAB_VERSION,
@@ -126,10 +127,14 @@ def _load_strategy_meta(path: str) -> dict[str, Any]:
             f"策略 {path} 缺少公式兼容版本；需重新训练/重建后监控"
         )
     FORMULA_VOCAB.verify(artifact_version)
+    scoring_contract = data.get("scoring_contract_version")
+    if scoring_contract != SCORING_CONTRACT_VERSION:
+        raise ValueError(f"策略 {path} 的评分合同不兼容")
     formula = [int(token) for token in (data.get("formula") or [])]
     fingerprint_payload = {
         "formula": formula,
         "vocab_version": artifact_version,
+        "scoring_contract_version": scoring_contract,
         "symbol": data.get("symbol"),
         "timeframe": data.get("timeframe"),
     }
@@ -144,6 +149,7 @@ def _load_strategy_meta(path: str) -> dict[str, Any]:
     return {
         "formula": formula,
         "vocab_version": artifact_version,
+        "scoring_contract_version": scoring_contract,
         "symbol": data.get("symbol"),
         "timeframe": data.get("timeframe"),
         "best_score": data.get("best_score"),
@@ -162,6 +168,7 @@ class WatchTask:
     strategy_fingerprint: str
     formula: list[int]
     vocab_version: str | None
+    scoring_contract_version: str
     strategy_symbol: str | None
     strategy_timeframe: str | None
     best_score: float | None
@@ -195,6 +202,7 @@ class WatchTask:
             "strategy_symbol": self.strategy_symbol,
             "strategy_timeframe": self.strategy_timeframe,
             "best_score": self.best_score,
+            "scoring_contract_version": self.scoring_contract_version,
             "state": self.state,
             "direction": self.direction,
             "strength": self.strength,
@@ -345,6 +353,7 @@ class RealtimeManager:
             strategy_fingerprint=strategy_fingerprint,
             formula=[int(t) for t in meta["formula"]],
             vocab_version=meta.get("vocab_version"),
+            scoring_contract_version=str(meta["scoring_contract_version"]),
             strategy_symbol=meta.get("symbol"),
             strategy_timeframe=meta.get("timeframe"),
             best_score=meta.get("best_score"),

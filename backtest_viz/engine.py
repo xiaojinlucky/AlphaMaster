@@ -13,6 +13,7 @@ from typing import Optional
 import numpy as np
 import torch
 
+from model_core.target_contract import TARGET_RETURN_HORIZON
 from model_core.vm import StackVM
 from strategy_manager.signal import target_to_direction
 
@@ -30,6 +31,8 @@ class Trade:
     exit_bar:    Optional[int]   = None
     exit_time:   Optional[int]   = None
     exit_price:  Optional[float] = None
+    entry_exec_bar: Optional[int] = None  # 实际开仓成交 K 线索引
+    exit_exec_bar:  Optional[int] = None  # 实际平仓/期末估值 K 线索引
     pnl:         float           = 0.0   # 本笔税后 PnL（log return - cost）
     cum_pnl:     float           = 0.0   # 截至本笔结束的累计 PnL
 
@@ -57,6 +60,12 @@ class SymbolResult:
     max_drawdown: float          = 0.0
     avg_hold_bars:float          = 0.0
     profit_loss_ratio: float | None = None  # 盈亏比 = 平均盈利 / 平均亏损
+    market_times:  np.ndarray | None = None  # 含末尾实现价格的完整行情窗口
+    market_open:   np.ndarray | None = None
+    market_high:   np.ndarray | None = None
+    market_low:    np.ndarray | None = None
+    market_close:  np.ndarray | None = None
+    market_volume: np.ndarray | None = None
 
 
 class BacktestEngine:
@@ -135,34 +144,37 @@ class BacktestEngine:
         factor_1d: torch.Tensor,  # [T]
     ) -> SymbolResult:
 
-        T = factor_1d.shape[0]
+        total_steps = factor_1d.shape[0]
+        valid_steps = total_steps - TARGET_RETURN_HORIZON
+        if valid_steps <= 0:
+            raise ValueError("目标收益有效窗口为空，至少需要 3 根 K 线")
 
         # numpy 转换（便于后续图表处理）
-        factor_np   = factor_1d.detach().float().numpy()
+        factor_np = factor_1d[:valid_steps].detach().float().numpy()
         # 连续仓位模式：tanh 直接作为仓位比例，与训练 backtest.py 完全一致
         signal_np   = np.tanh(factor_np)
         position_np = signal_np
 
-        open_np   = raw_dict["open"].float().numpy()
-        high_np   = raw_dict["high"].float().numpy()
-        low_np    = raw_dict["low"].float().numpy()
-        close_np  = raw_dict["close"].float().numpy()
-        volume_np = raw_dict["volume"].float().numpy()
+        open_all = raw_dict["open"].float().numpy()
+        high_np = raw_dict["high"][:valid_steps].float().numpy()
+        low_np = raw_dict["low"][:valid_steps].float().numpy()
+        close_np = raw_dict["close"][:valid_steps].float().numpy()
+        volume_np = raw_dict["volume"][:valid_steps].float().numpy()
 
         if "time" in raw_dict:
-            times_np = raw_dict["time"].long().numpy()
+            times_all = raw_dict["time"].long().numpy()
         else:
-            times_np = np.arange(T, dtype=np.int64)
+            times_all = np.arange(total_steps, dtype=np.int64)
+        times_np = times_all[:valid_steps]
+        open_np = open_all[:valid_steps]
 
         # ── 计算 PnL 序列（与 backtest.py 完全一致）─────────────────
         # target_ret[t] = log(open[t+2] / open[t+1])
-        target_ret = np.zeros(T, dtype=np.float32)
-        if T >= 3:
-            target_ret[: T - 2] = np.log(
-                (open_np[2:] + 1e-12) / (open_np[1:-1] + 1e-12)
-            )
+        target_ret = np.log(
+            (open_all[2:] + 1e-12) / (open_all[1:-1] + 1e-12)
+        ).astype(np.float32, copy=False)
 
-        prev_pos = np.zeros(T, dtype=np.float32)
+        prev_pos = np.zeros(valid_steps, dtype=np.float32)
         prev_pos[1:] = position_np[:-1]
         turnover = np.abs(position_np - prev_pos)
 
@@ -171,7 +183,7 @@ class BacktestEngine:
 
         # ── 提取交易记录 ──────────────────────────────────────────────
         trades = self._extract_trades(
-            symbol, position_np, open_np, times_np, pnl_np
+            symbol, position_np, open_all, times_all, pnl_np
         )
 
         # ── 统计指标 ─────────────────────────────────────────────────
@@ -184,8 +196,16 @@ class BacktestEngine:
         )
         avg_hold      = (
             sum(
-                (t.exit_bar - t.entry_bar)
-                for t in trades if t.exit_bar is not None
+                (
+                    t.exit_exec_bar - t.entry_exec_bar
+                    if (
+                        t.exit_exec_bar is not None
+                        and t.entry_exec_bar is not None
+                    )
+                    else t.exit_bar - t.entry_bar
+                )
+                for t in trades
+                if t.exit_bar is not None
             ) / n_trades
             if n_trades else 0.0
         )
@@ -212,6 +232,12 @@ class BacktestEngine:
             max_drawdown = 0.0,
             avg_hold_bars= avg_hold,
             profit_loss_ratio = pl_ratio,
+            market_times  = times_all,
+            market_open   = open_all,
+            market_high   = raw_dict["high"].float().numpy(),
+            market_low    = raw_dict["low"].float().numpy(),
+            market_close  = raw_dict["close"].float().numpy(),
+            market_volume = raw_dict["volume"].float().numpy(),
         )
 
     # ─────────────────────────────────────────────────────────────────────
@@ -244,12 +270,20 @@ class BacktestEngine:
         entry_bar:   int = 0
 
         def _exec_price(bar: int) -> float:
-            """信号在 bar 产生，执行价为下一根 open（若越界则取最后一根）。"""
-            idx = min(bar + 1, T - 1)
+            """信号在 bar 产生，执行价为下一根 open。"""
+            idx = min(bar + 1, len(open_prices) - 1)
             return float(open_prices[idx])
 
         def _exec_time(bar: int) -> int:
-            idx = min(bar + 1, T - 1)
+            idx = min(bar + 1, len(times) - 1)
+            return int(times[idx])
+
+        def _realization_price(bar: int) -> float:
+            idx = min(bar + TARGET_RETURN_HORIZON, len(open_prices) - 1)
+            return float(open_prices[idx])
+
+        def _realization_time(bar: int) -> int:
+            idx = min(bar + TARGET_RETURN_HORIZON, len(times) - 1)
             return int(times[idx])
 
         for t in range(T):
@@ -269,6 +303,8 @@ class BacktestEngine:
                         exit_bar    = t,
                         exit_time   = _exec_time(t),
                         exit_price  = _exec_price(t),
+                        entry_exec_bar = min(entry_bar + 1, len(open_prices) - 1),
+                        exit_exec_bar  = min(t + 1, len(open_prices) - 1),
                         pnl         = trade_pnl,
                         cum_pnl     = cum_pnl_total,
                     )
@@ -277,7 +313,8 @@ class BacktestEngine:
                 current_dir = new_dir
                 entry_bar   = t
 
-        # 序列末尾强平
+        # 序列末尾按最后一笔收益的实现价估值；为保持与训练回测一致，
+        # 不假设策略在样本末端真实卖出，因此不额外收取平仓成本。
         if current_dir != 0:
             trade_pnl = float(pnl[entry_bar:].sum())
             cum_pnl_total += trade_pnl
@@ -288,8 +325,13 @@ class BacktestEngine:
                 entry_time  = _exec_time(entry_bar),
                 entry_price = _exec_price(entry_bar),
                 exit_bar    = T - 1,
-                exit_time   = _exec_time(T - 1),
-                exit_price  = _exec_price(T - 1),
+                exit_time   = _realization_time(T - 1),
+                exit_price  = _realization_price(T - 1),
+                entry_exec_bar = min(entry_bar + 1, len(open_prices) - 1),
+                exit_exec_bar  = min(
+                    T - 1 + TARGET_RETURN_HORIZON,
+                    len(open_prices) - 1,
+                ),
                 pnl         = trade_pnl,
                 cum_pnl     = cum_pnl_total,
             ))

@@ -16,6 +16,7 @@ data_pipeline/kline_cache.py — 本地 K 线缓存管理器
 """
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Optional
@@ -47,6 +48,40 @@ def _default_cache_dir() -> Path:
         return Path(r"D:\K线数据")
 
 _COLUMNS = ["time", "open", "high", "low", "close", "tick_volume"]
+CACHE_CONTRACT_VERSION = "mt5_closed_bars_pos1_v1"
+
+
+def _cache_contract_path(data_path: Path) -> Path:
+    return data_path.with_suffix(data_path.suffix + ".contract.json")
+
+
+def write_closed_bar_cache_contract(data_path: Path) -> None:
+    _cache_contract_path(data_path).write_text(
+        json.dumps(
+            {
+                "cache_contract_version": CACHE_CONTRACT_VERSION,
+                "mt5_start_pos": 1,
+                "bar_timestamp_semantics": "closed_bar_open_time",
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _has_current_cache_contract(data_path: Path) -> bool:
+    contract_path = _cache_contract_path(data_path)
+    try:
+        payload = json.loads(contract_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(payload, dict)
+        and payload.get("cache_contract_version") == CACHE_CONTRACT_VERSION
+        and payload.get("mt5_start_pos") == 1
+        and payload.get("bar_timestamp_semantics")
+        == "closed_bar_open_time"
+    )
 
 
 class KlineCache:
@@ -89,6 +124,17 @@ class KlineCache:
             或 None（本地无数据且无 MT5 连接时）。
         """
         path = self._cache_path(symbol)
+
+        if path.exists() and not _has_current_cache_contract(path):
+            if mt5_connected and _MT5_AVAILABLE:
+                logger.warning(
+                    f"[Cache] {symbol}: 旧缓存无已收盘合同，强制全量重建"
+                )
+                return self._full_download(symbol)
+            logger.error(
+                f"[Cache] {symbol}: 旧缓存无已收盘合同，离线模式拒绝读取"
+            )
+            return None
 
         if force_refresh or not path.exists():
             if mt5_connected and _MT5_AVAILABLE:
@@ -165,7 +211,8 @@ class KlineCache:
             return None
         logger.info(f"[Cache] {symbol}: 全量下载（{self.bars_count} bars）...")
         t0 = time.time()
-        rates = mt5.copy_rates_from_pos(symbol, self.timeframe, 0, self.bars_count)
+        # start_pos=1：排除仍在形成的当前 K 线，只持久化已收盘数据。
+        rates = mt5.copy_rates_from_pos(symbol, self.timeframe, 1, self.bars_count)
         if rates is None or len(rates) == 0:
             logger.warning(f"[Cache] {symbol}: MT5 返回空数据")
             return None
@@ -175,6 +222,7 @@ class KlineCache:
         })
         path = self._cache_path(symbol)
         df.to_parquet(path, index=False)
+        write_closed_bar_cache_contract(path)
         elapsed = time.time() - t0
         logger.info(
             f"[Cache] {symbol}: {len(df)} bars 已保存 → {path.name}  ({elapsed:.1f}s)"
@@ -187,12 +235,12 @@ class KlineCache:
         local_df:  pd.DataFrame,
         last_time: int,
     ) -> pd.DataFrame:
-        """拉取 last_time 之后的新 bar，追加写入本地。"""
+        """拉取最近已收盘 bar，同时间戳覆盖后再追加。"""
         if not _MT5_AVAILABLE or mt5 is None:
             return local_df
 
         # 拉最近 200 根 bar（足够覆盖增量）
-        rates = mt5.copy_rates_from_pos(symbol, self.timeframe, 0, 200)
+        rates = mt5.copy_rates_from_pos(symbol, self.timeframe, 1, 200)
         if rates is None or len(rates) == 0:
             return local_df
 
@@ -200,15 +248,21 @@ class KlineCache:
             "time": "int64", "open": "float32", "high": "float32",
             "low": "float32", "close": "float32", "tick_volume": "int64",
         })
-        # 只取比 last_time 更新的 bar
-        new_rows = new_df[new_df["time"] > last_time]
-        if new_rows.empty:
-            logger.debug(f"[Cache] {symbol}: 已是最新，无增量")
-            return local_df
-
-        merged = pd.concat([local_df, new_rows], ignore_index=True)
-        merged = merged.drop_duplicates("time").sort_values("time").reset_index(drop=True)
+        # 远端最新时间是当前可证明的已收盘边界。历史版本可能把 pos=0 半根
+        # K 写在本地尾部，必须先裁掉所有晚于此边界的本地行。
+        latest_closed_time = int(new_df["time"].max())
+        local_closed = local_df[local_df["time"] <= latest_closed_time]
+        merged = pd.concat([local_closed, new_df], ignore_index=True)
+        merged = (
+            merged.drop_duplicates("time", keep="last")
+            .sort_values("time")
+            .reset_index(drop=True)
+        )
         path = self._cache_path(symbol)
         merged.to_parquet(path, index=False)
-        logger.info(f"[Cache] {symbol}: +{len(new_rows)} 新 bar，共 {len(merged)} bars")
+        write_closed_bar_cache_contract(path)
+        added = max(0, len(merged) - len(local_closed))
+        logger.info(
+            f"[Cache] {symbol}: +{added} 新 bar，同时间戳已更新，共 {len(merged)} bars"
+        )
         return merged

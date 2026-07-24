@@ -63,6 +63,7 @@ def prepared_run(tmp_path_factory, monkeypatch: pytest.MonkeyPatch) -> tuple[Pat
         "periods_per_year": 6240,
         "minimum_bars": worker.GENERIC_MINIMUM_BARS,
         "git_commit": COMMIT,
+        "scoring_contract_version": worker.SCORING_CONTRACT_VERSION,
         "training_parameters": {"train_steps": 10, "from_scratch": True},
         "requested_resources": {
             "partition": "cpu",
@@ -221,6 +222,37 @@ def test_data_hash_mismatch_fails_without_starting_training(prepared_run) -> Non
     assert code == 1
     assert result["status"] == "FAILED"
     assert "SHA-256" in result["error_message"]
+    assert called is False
+
+
+def test_missing_scoring_contract_fails_without_starting_training(
+    prepared_run,
+) -> None:
+    run_dir, python, manifest = prepared_run
+    manifest.pop("scoring_contract_version")
+    manifest_path = run_dir / "input" / "run_manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    (run_dir / "input" / "run_manifest.sha256").write_text(
+        _sha(manifest_path) + "\n",
+        encoding="ascii",
+    )
+    called = False
+
+    def fake_run(args, **kwargs):
+        nonlocal called
+        called = True
+        return subprocess.CompletedProcess(args, 0)
+
+    code, result = worker.run_worker(
+        RUN_ID,
+        runner=fake_run,
+        environ=_slurm_env(),
+        cwd=run_dir,
+        python_executable=python,
+    )
+
+    assert code == 1
+    assert "scoring_contract_version" in str(result["error_message"])
     assert called is False
 
 

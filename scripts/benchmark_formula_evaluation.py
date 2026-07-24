@@ -24,6 +24,7 @@ from model_core.engine import (
     _build_walk_forward_folds,
     _repetition_penalty,
 )
+from model_core.target_contract import valid_target_length
 from strategy_manager.signal import compute_target_positions_stateless
 
 
@@ -79,7 +80,10 @@ def _evaluate_one(
             "validation": torch.tensor(-5.0, device=features.device),
             "factor": None,
         }
-    if factor.std() < 1e-4:
+    valid_steps = valid_target_length(target_returns.shape[1])
+    factor_valid = factor[:, :valid_steps]
+    target_valid = target_returns[:, :valid_steps]
+    if factor_valid.std() < 1e-4:
         return {
             "index": index,
             "status": "constant",
@@ -101,9 +105,9 @@ def _evaluate_one(
                     fold["val_start"],
                     fold["val_end"],
                 )
-                train_ic, _ = AlphaEngine._compute_ic(
-                    factor[:, fold["train_start"] : fold["train_end"]],
-                    target_returns[:, fold["train_start"] : fold["train_end"]],
+                train_ic, _ = AlphaEngine._compute_ic_aligned(
+                    factor_valid[:, fold["train_start"] : fold["train_end"]],
+                    target_valid[:, fold["train_start"] : fold["train_end"]],
                 )
                 train_scores.append(
                     ModelConfig.REWARD_ALPHA
@@ -114,7 +118,10 @@ def _evaluate_one(
             validation = torch.stack(validation_scores).mean()
         else:
             reward, _ = engine.bt.evaluate(factor, {}, target_returns)
-            full_ic, _ = AlphaEngine._compute_ic(factor, target_returns)
+            full_ic, _ = AlphaEngine._compute_ic_aligned(
+                factor_valid,
+                target_valid,
+            )
             reward = AlphaEngine._apply_ic_gate(
                 ModelConfig.REWARD_ALPHA * reward,
                 full_ic,
@@ -126,7 +133,7 @@ def _evaluate_one(
         "status": "ok",
         "reward": reward,
         "validation": validation,
-        "factor": factor,
+        "factor": factor_valid,
     }
 
 
@@ -368,14 +375,15 @@ def main() -> int:
     )
     features = manager.feat_tensor.to(ModelConfig.DEVICE)
     target_returns = manager.target_ret.to(ModelConfig.DEVICE)
+    valid_steps = valid_target_length(int(target_returns.shape[1]))
     folds = _build_walk_forward_folds(
-        int(target_returns.shape[1]),
+        valid_steps,
         engine.n_folds,
         gap=ModelConfig.WF_GAP,
     )
     use_walk_forward = len(folds) > 1 and not (
         folds[0]["train_start"] == 0
-        and folds[0]["train_end"] == int(target_returns.shape[1])
+        and folds[0]["train_end"] == valid_steps
     )
 
     new_count = ModelConfig.BATCH_SIZE - max(

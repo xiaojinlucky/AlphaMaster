@@ -16,6 +16,10 @@ from config import Config
 from data_pipeline.a_share_data import ASHARE_SPECS_BY_TIMEFRAME
 from data_pipeline.dataset_contracts import TRAINING_SOURCE_IDS, source_family
 from model_core.config import ModelConfig
+from model_core.target_contract import (
+    SCORING_CONTRACT_VERSION,
+    ScoringContractMismatchError,
+)
 from model_core.vocab import FORMULA_VOCAB, VocabVersionMismatchError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -82,6 +86,8 @@ def get_published_bundle(symbol: str) -> dict[str, Any] | None:
             not isinstance(payload, dict)
             or payload.get("format") != PUBLISHED_BUNDLE_FORMAT
             or payload.get("symbol") != symbol
+            or payload.get("scoring_contract_version")
+            != SCORING_CONTRACT_VERSION
             or not re.fullmatch(r"run_[A-Za-z0-9_-]+", str(payload.get("run_id") or ""))
         ):
             return None
@@ -171,6 +177,11 @@ def get_published_bundle(symbol: str) -> dict[str, Any] | None:
             )
         ):
             return None
+        if (
+            strategy_payload.get("scoring_contract_version")
+            != SCORING_CONTRACT_VERSION
+        ):
+            return None
     except (OSError, ValueError, KeyError, json.JSONDecodeError):
         return None
     return {
@@ -254,10 +265,13 @@ def _load_checkpoint_meta(path: Path) -> dict[str, Any]:
     if not isinstance(ckpt, dict):
         raise ValueError(f"checkpoint {path} 顶层不是对象")
     FORMULA_VOCAB.verify(ckpt.get("vocab_version"))
+    if ckpt.get("scoring_contract_version") != SCORING_CONTRACT_VERSION:
+        raise ScoringContractMismatchError(f"checkpoint {path} 评分合同不兼容")
     meta = {
         "step": int(ckpt.get("step", _step_from_name(path))),
         "best_score": ckpt.get("best_score"),
         "best_formula": ckpt.get("best_formula"),
+        "scoring_contract_version": ckpt.get("scoring_contract_version"),
         "training_history": ckpt.get("training_history") or {},
     }
     _ckpt_cache[key] = (mtime, meta)
@@ -290,6 +304,8 @@ def _load_strategy(symbol: str) -> dict[str, Any] | None:
     try:
         FORMULA_VOCAB.verify(payload.get("vocab_version"))
     except VocabVersionMismatchError:
+        return None
+    if payload.get("scoring_contract_version") != SCORING_CONTRACT_VERSION:
         return None
     if bundle:
         payload = dict(payload)
@@ -352,7 +368,14 @@ def get_symbol_progress(symbol: str) -> SymbolProgress:
     file_history: dict[str, Any] | None = None
     if hist_file.exists():
         try:
-            file_history = json.loads(_read_text(hist_file))
+            loaded_history = json.loads(_read_text(hist_file))
+            if (
+                not isinstance(loaded_history, dict)
+                or loaded_history.get("scoring_contract_version")
+                != SCORING_CONTRACT_VERSION
+            ):
+                raise ValueError("训练历史评分合同不兼容")
+            file_history = loaded_history
             steps = file_history.get("step") or []
             if steps:
                 # history 存的是 0 起算的训练步索引，展示与日志 [N/5000] 对齐用 N
@@ -463,6 +486,8 @@ def list_strategies() -> list[dict[str, Any]]:
         try:
             FORMULA_VOCAB.verify(data.get("vocab_version"))
         except VocabVersionMismatchError:
+            continue
+        if data.get("scoring_contract_version") != SCORING_CONTRACT_VERSION:
             continue
         formula = data.get("formula")
         rows.append({

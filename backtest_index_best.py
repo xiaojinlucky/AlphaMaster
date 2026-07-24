@@ -24,6 +24,10 @@ from data_pipeline.data_manager import MT5DataManager
 from data_pipeline.fetcher import MT5DataFetcher
 from model_core.vocab import FORMULA_VOCAB, VOCAB_VERSION
 from model_core.vm import StackVM
+from model_core.target_contract import (
+    SCORING_CONTRACT_VERSION,
+    align_target_return_window,
+)
 from model_core.features import MT5FeatureEngineer
 from strategy_manager.signal import compute_target_positions_stateless
 
@@ -59,12 +63,12 @@ def calc_mdd(cum_pnl):
 
 
 def calc_ic(factor, target_ret):
-    """时序 IC：factor[t] vs target_ret[t+1]，逐品种再取均值。"""
+    """时序 IC：factor[t] vs target_ret[t]，逐品种再取均值。"""
     N, T = factor.shape
     ic_list = []
     for n in range(N):
-        x = factor[n, :-1]
-        y = target_ret[n, 1:]
+        x = factor[n]
+        y = target_ret[n]
         xm = x - x.mean()
         ym = y - y.mean()
         sx = np.sqrt((xm**2).mean())
@@ -95,6 +99,7 @@ def backtest_one(formula, feat, raw_dict, target_ret, cost_rate=COST_RATE_INDEX)
     if factor is None:
         return None
 
+    factor, target_ret = align_target_return_window(factor, target_ret)
     N, T = factor.shape
     factor_np = factor.detach().numpy()
     target_np = target_ret.detach().numpy()
@@ -254,6 +259,9 @@ def main():
     if data.get("vocab_version", "unknown") != VOCAB_VERSION:
         print(f"❌ 词表版本不匹配: {data.get('vocab_version')} != {VOCAB_VERSION}")
         return
+    if data.get("scoring_contract_version") != SCORING_CONTRACT_VERSION:
+        print("❌ 评分合同不兼容，旧成绩仅可作诊断")
+        return
 
     formula = data["formula"]
     best_score = data.get("best_score", 0.0)
@@ -374,6 +382,7 @@ def main():
 
     # ── 保存报告
     report = {
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
         "formula":        formula,
         "readable":       result["readable"],
         "best_score":     best_score,

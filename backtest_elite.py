@@ -16,6 +16,7 @@ from data_pipeline.data_manager import MT5DataManager
 from data_pipeline.fetcher import MT5DataFetcher
 from model_core.vocab import FORMULA_VOCAB, VOCAB_VERSION
 from model_core.vm import StackVM
+from model_core.target_contract import align_target_return_window
 from model_core.features import MT5FeatureEngineer
 from strategy_manager.signal import compute_target_positions_stateless
 
@@ -46,12 +47,12 @@ def calc_mdd(cum_pnl):
 
 
 def calc_ic(factor, target_ret):
-    """时序 IC：factor[t] vs target_ret[t+1]，逐品种再取均值。"""
+    """时序 IC：factor[t] vs target_ret[t]，逐品种再取均值。"""
     N, T = factor.shape
     ic_list = []
     for n in range(N):
-        x = factor[n, :-1]
-        y = target_ret[n, 1:]
+        x = factor[n]
+        y = target_ret[n]
         xm = x - x.mean()
         ym = y - y.mean()
         sx = np.sqrt((xm**2).mean())
@@ -70,6 +71,7 @@ def backtest_one(formula, feat, raw_dict, target_ret, cost_rate=0.0001):
     if factor is None:
         return None
 
+    factor, target_ret = align_target_return_window(factor, target_ret)
     N, T = factor.shape
     factor_np = factor.detach().numpy()
     target_np = target_ret.detach().numpy()

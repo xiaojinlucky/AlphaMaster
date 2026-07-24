@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import secrets
@@ -30,6 +31,7 @@ from data_pipeline.a_share_akshare import AKSHARE_SLICE_TRAINING
 from data_pipeline.dataset_contracts import AKSHARE_HFQ_SOURCE_ID, source_family
 from data_pipeline.parquet_manager import ParquetDataManager, inspect_parquet_file
 from model_core.config import ModelConfig
+from model_core.target_contract import SCORING_CONTRACT_VERSION
 from web.file_dialog import pick_parquet_file, pick_strategy_file
 from web.progress import (
     get_symbol_progress,
@@ -482,11 +484,14 @@ def _browse_strategy_file() -> dict[str, Any]:
 
 def _inspect_strategy_or_http(path: str) -> dict[str, Any]:
     try:
-        return inspect_strategy_file(path)
+        info = inspect_strategy_file(path)
     except FileNotFoundError as e:
         raise HTTPException(404, str(e)) from e
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+    if info.get("valid") is False or not info.get("score_compatible"):
+        raise HTTPException(400, info.get("message") or "策略评分合同不兼容")
+    return info
 
 
 def _resolve_train_symbol(symbol: str | None = None) -> str | None:
@@ -1230,9 +1235,15 @@ def _load_backtest_report() -> dict[str, Any] | None:
     if not report_path.exists():
         return None
     try:
-        return json.loads(report_path.read_text(encoding="utf-8"))
+        report = json.loads(report_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
+    if (
+        not isinstance(report, dict)
+        or report.get("scoring_contract_version") != SCORING_CONTRACT_VERSION
+    ):
+        return None
+    return report
 
 
 def _backtest_focus_symbol(symbol: str | None = None) -> str | None:
@@ -1278,26 +1289,40 @@ def _filter_report_for_symbol(report: dict[str, Any], symbol: str) -> dict[str, 
 
 
 def _list_backtest_charts(symbol: str | None = None) -> list[dict[str, str]]:
-    """列出回测输出目录下的图表；单品种模式只返回该品种相关文件。"""
-    if not BACKTEST_OUTPUT_DIR.exists():
+    """只列出当前报告按文件名和 SHA-256 明确绑定的 PNG。"""
+    report = _load_backtest_report()
+    if report is None:
         return []
-
-    if symbol:
-        charts: list[dict[str, str]] = []
-        equity = BACKTEST_OUTPUT_DIR / "portfolio_equity.png"
-        if equity.exists():
-            charts.append(
-                {"name": equity.name, "label": f"{symbol} 资金曲线", "kind": "equity"}
-            )
-        return charts
-
-    charts = []
-    portfolio = BACKTEST_OUTPUT_DIR / "portfolio_equity.png"
-    if portfolio.exists():
-        charts.append({"name": "portfolio_equity.png", "label": "组合资金曲线", "kind": "portfolio"})
-    for path in sorted(BACKTEST_OUTPUT_DIR.glob("equity_*.png")):
-        sym = path.stem.replace("equity_", "", 1)
-        charts.append({"name": path.name, "label": f"{sym} 资金曲线", "kind": "symbol"})
+    charts: list[dict[str, str]] = []
+    for artifact in report.get("chart_artifacts") or []:
+        if not isinstance(artifact, dict):
+            continue
+        name = str(artifact.get("name") or "")
+        expected = str(artifact.get("sha256") or "")
+        if (
+            not re.fullmatch(r"[A-Za-z0-9_.-]+\.png", name, re.IGNORECASE)
+            or not re.fullmatch(r"[0-9a-f]{64}", expected)
+        ):
+            continue
+        path = (BACKTEST_OUTPUT_DIR / name).resolve()
+        try:
+            path.relative_to(BACKTEST_OUTPUT_DIR.resolve())
+            content = path.read_bytes()
+        except (ValueError, OSError):
+            continue
+        if hashlib.sha256(content).hexdigest() != expected:
+            continue
+        charts.append(
+            {
+                "name": name,
+                "label": (
+                    f"{symbol} 资金曲线"
+                    if symbol
+                    else str(artifact.get("label") or name)
+                ),
+                "kind": str(artifact.get("kind") or "equity"),
+            }
+        )
     return charts
 
 
@@ -1432,13 +1457,33 @@ def api_backtest_equity(symbol: str | None = None) -> dict[str, Any]:
     """资金曲线原始数据（供前端渲染交互式 HTML 图表）。"""
     import json
 
-    path = BACKTEST_OUTPUT_DIR / "equity_curve.json"
     focus = _backtest_focus_symbol(symbol)
-    if not path.exists():
+    report = _load_backtest_report()
+    artifact = report.get("equity_artifact") if report else None
+    if not isinstance(artifact, dict):
+        return {"available": False, "focus_symbol": focus, "data": None}
+    name = str(artifact.get("name") or "")
+    expected = str(artifact.get("sha256") or "")
+    if (
+        name != "equity_curve.json"
+        or not re.fullmatch(r"[0-9a-f]{64}", expected)
+    ):
+        return {"available": False, "focus_symbol": focus, "data": None}
+    path = BACKTEST_OUTPUT_DIR / name
+    try:
+        content = path.read_bytes()
+    except (json.JSONDecodeError, OSError):
+        return {"available": False, "focus_symbol": focus, "data": None}
+    if hashlib.sha256(content).hexdigest() != expected:
         return {"available": False, "focus_symbol": focus, "data": None}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        return {"available": False, "focus_symbol": focus, "data": None}
+    if (
+        not isinstance(data, dict)
+        or data.get("scoring_contract_version") != SCORING_CONTRACT_VERSION
+    ):
         return {"available": False, "focus_symbol": focus, "data": None}
 
     # 单品种模式：只保留聚焦品种，去掉无关序列
@@ -1457,14 +1502,30 @@ def api_backtest_chart(name: str):
     # 防止路径穿越：仅允许输出目录内的 png 文件
     if "/" in name or "\\" in name or ".." in name or not name.lower().endswith(".png"):
         raise HTTPException(400, "非法文件名")
+    report = _load_backtest_report()
+    artifact = next(
+        (
+            row
+            for row in (report.get("chart_artifacts") if report else []) or []
+            if isinstance(row, dict) and row.get("name") == name
+        ),
+        None,
+    )
+    expected = str(artifact.get("sha256") or "") if artifact else ""
+    if not re.fullmatch(r"[0-9a-f]{64}", expected):
+        raise HTTPException(404, "图表未绑定到当前评分合同报告")
     path = (BACKTEST_OUTPUT_DIR / name).resolve()
     try:
         path.relative_to(BACKTEST_OUTPUT_DIR.resolve())
     except ValueError:
         raise HTTPException(400, "非法路径") from None
-    if not path.exists():
-        raise HTTPException(404, "图表不存在")
-    return FileResponse(path, media_type="image/png")
+    try:
+        content = path.read_bytes()
+    except OSError:
+        raise HTTPException(404, "图表不存在") from None
+    if hashlib.sha256(content).hexdigest() != expected:
+        raise HTTPException(404, "图表哈希与当前评分合同报告不一致")
+    return Response(content=content, media_type="image/png")
 
 
 # ─────────────────────────────────────────────────────────────────────

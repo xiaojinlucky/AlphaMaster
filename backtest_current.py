@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import Config
 from data_pipeline.data_manager import MT5DataManager
 from data_pipeline.fetcher import MT5DataFetcher
+from model_core.target_contract import SCORING_CONTRACT_VERSION
 from model_core.vocab import FORMULA_VOCAB, VOCAB_VERSION
 from model_core.features import MT5FeatureEngineer
 from backtest_elite import backtest_one, decode, calc_sharpe, calc_sortino, calc_mdd, calc_ic
@@ -38,6 +39,9 @@ def load_formula(path: Path) -> tuple[list[int], str, float] | None:
     data = json.load(open(path))
     if data.get("vocab_version", "unknown") != VOCAB_VERSION:
         print(f"  [跳过] {path.name}: vocab 版本不符")
+        return None
+    if data.get("scoring_contract_version") != SCORING_CONTRACT_VERSION:
+        print(f"  [跳过] {path.name}: 评分合同不符")
         return None
     return data["formula"], decode(data["formula"]), data.get("best_score", 0.0)
 
@@ -266,6 +270,7 @@ def main():
 
     # ── 8. JSON 报告 ────────────────────────────────────────────────
     report = {
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
         "symbols": FOREX_SYMS,
         "T_bars": T,
         "factors": [],

@@ -142,6 +142,9 @@ class FakeClient:
             "vocab_version": (
                 self.checkpoint_version or manager_module.VOCAB_VERSION
             ),
+            "scoring_contract_version": (
+                manager_module.SCORING_CONTRACT_VERSION
+            ),
             "symbol": run_manifest["symbol"],
             "step": run_manifest["training_parameters"]["train_steps"],
             "best_score": 0.5,
@@ -158,6 +161,10 @@ class FakeClient:
         }
         if self.checkpoint_problem == "missing_version":
             checkpoint_payload.pop("vocab_version")
+        elif self.checkpoint_problem == "missing_scoring_contract":
+            checkpoint_payload.pop("scoring_contract_version")
+        elif self.checkpoint_problem == "wrong_scoring_contract":
+            checkpoint_payload["scoring_contract_version"] = "old-contract"
         elif self.checkpoint_problem == "identity_mismatch":
             checkpoint_payload["dataset_id"] = "sha256:" + "0" * 64
         if self.checkpoint_problem == "corrupt":
@@ -169,6 +176,9 @@ class FakeClient:
             json.dumps(
                 {
                     "vocab_version": manager_module.VOCAB_VERSION,
+                    "scoring_contract_version": (
+                        manager_module.SCORING_CONTRACT_VERSION
+                    ),
                     "symbol": run_manifest["symbol"],
                     "timeframe": run_manifest["timeframe"],
                     "data_file": f"/remote/input/{run_manifest['data_filename']}",
@@ -188,7 +198,16 @@ class FakeClient:
             ),
             encoding="utf-8",
         )
-        history.write_text("{}", encoding="utf-8")
+        history.write_text(
+            json.dumps(
+                {
+                    "scoring_contract_version": (
+                        manager_module.SCORING_CONTRACT_VERSION
+                    )
+                }
+            ),
+            encoding="utf-8",
+        )
         extra_checkpoint = None
         if self.checkpoint_problem == "extra_checkpoint":
             extra_checkpoint = local_artifact_root / "checkpoints" / "unvalidated_extra.pt"
@@ -233,6 +252,7 @@ class FakeClient:
             "local_source",
             "periods_per_year",
             "minimum_bars",
+            "scoring_contract_version",
             "source_files",
             "training_parameters",
             "requested_resources",
@@ -381,6 +401,9 @@ def test_progress_reads_long_nested_checkpoint_via_file_handle(tmp_path: Path) -
             torch.save(
                 {
                     "vocab_version": manager_module.VOCAB_VERSION,
+                    "scoring_contract_version": (
+                        manager_module.SCORING_CONTRACT_VERSION
+                    ),
                     "step": 10,
                     "training_history": {},
                 },
@@ -925,6 +948,8 @@ def test_explicit_wrong_strategy_run_id_never_reaches_ready_or_publish(
     [
         ("vprevious0000", None),
         (None, "missing_version"),
+        (None, "missing_scoring_contract"),
+        (None, "wrong_scoring_contract"),
         (None, "identity_mismatch"),
         (None, "corrupt"),
         (None, "extra_checkpoint"),
@@ -932,6 +957,8 @@ def test_explicit_wrong_strategy_run_id_never_reaches_ready_or_publish(
     ids=(
         "previous-version",
         "missing-version",
+        "missing-scoring-contract",
+        "wrong-scoring-contract",
         "identity-mismatch",
         "corrupt",
         "extra-checkpoint",
@@ -1020,6 +1047,7 @@ def test_published_bundle_tampering_fails_closed_for_all_slurm_readers(
         ("local_source", "unknown"),
         ("periods_per_year", 968),
         ("minimum_bars", 1),
+        ("scoring_contract_version", "old-contract"),
     ],
 )
 def test_published_bundle_identity_tampering_fails_closed(

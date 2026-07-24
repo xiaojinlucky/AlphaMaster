@@ -29,6 +29,7 @@ except ImportError:
     sys.exit(1)
 
 from config import Config
+from data_pipeline.kline_cache import write_closed_bar_cache_contract
 
 CACHE_DIR  = Path(Config.KLINE_CACHE_DIR)
 TIMEFRAME  = mt5.TIMEFRAME_H1
@@ -59,7 +60,12 @@ def download_symbol(symbol: str) -> int:
     # MT5 大请求后有限速，加重试机制
     rates = None
     for attempt in range(5):
-        rates = mt5.copy_rates_from_pos(symbol, TIMEFRAME, 0, MAX_BARS_PER_REQUEST)
+        rates = mt5.copy_rates_from_pos(
+            symbol,
+            TIMEFRAME,
+            1,
+            MAX_BARS_PER_REQUEST,
+        )
         if rates is not None and len(rates) > 0:
             break
         err = mt5.last_error()
@@ -84,6 +90,7 @@ def download_symbol(symbol: str) -> int:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, index=False)
+    write_closed_bar_cache_contract(path)
 
     date_start = datetime.utcfromtimestamp(df["time"].iloc[0]).strftime("%Y-%m-%d")
     date_end   = datetime.utcfromtimestamp(df["time"].iloc[-1]).strftime("%Y-%m-%d")

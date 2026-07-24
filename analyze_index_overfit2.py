@@ -10,6 +10,10 @@ from data_pipeline.data_manager import MT5DataManager
 from data_pipeline.fetcher import MT5DataFetcher
 from model_core.vocab import FORMULA_VOCAB, VOCAB_VERSION
 from model_core.vm import StackVM
+from model_core.target_contract import (
+    SCORING_CONTRACT_VERSION,
+    align_target_return_window,
+)
 from model_core.features import MT5FeatureEngineer
 from strategy_manager.signal import compute_target_positions_stateless
 
@@ -17,6 +21,10 @@ _H1_PER_YEAR = 6240
 
 # Load index strategy
 data = json.load(open("strategies/best_index.json"))
+if data.get("vocab_version") != VOCAB_VERSION:
+    raise RuntimeError("best_index.json 词表版本与当前运行时不一致")
+if data.get("scoring_contract_version") != SCORING_CONTRACT_VERSION:
+    raise RuntimeError("best_index.json 评分合同不兼容，不能生成当前合同回测")
 formula = data["formula"]
 print(f"Formula: {formula}")
 print(f"Decode: ", end="")
@@ -45,6 +53,7 @@ with MT5DataFetcher(offline=True) as fetcher:
     # Run factor
     vm = StackVM()
     factor = vm.execute(formula, feat)
+    factor, target_ret = align_target_return_window(factor, target_ret)
     factor_np = factor.detach().numpy()
     
     # Compute positions and PnL
@@ -63,6 +72,7 @@ with MT5DataFetcher(offline=True) as fetcher:
     
     # Split into 8 equal segments
     n_seg = 8
+    T = factor.shape[1]
     seg_len = T // n_seg
     print(f"\n=== {n_seg}-SEGMENT BREAKDOWN ===")
     print(f"{'Seg':>4s} {'Bars':>6s} {'Period':>22s} {'Return':>9s} {'Sharpe':>8s} {'MDD':>8s} {'WinRate':>8s} {'AvgPos':>7s}")

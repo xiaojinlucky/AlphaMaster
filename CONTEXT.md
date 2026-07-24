@@ -8,6 +8,39 @@
 
 ## 2026-07-24 A50 龙头基线与持续训练
 
+### 2026-07-25 评分时间合同修复候选
+
+- 已把目标收益统一为
+  `target_ret[t] = log(open[t+2] / open[t+1])`，因子、仓位和收益按同索引
+  `t` 配对；训练评分、回测、成本、换手、相关性和有效性评估统一裁掉原始
+  序列末尾两根不可实现收益。
+- 新的 score-bearing 产物必须携带
+  `open_t1_t2_same_index_tail2_v1` 评分合同。合同已贯穿 Slurm run/result
+  manifest、worker、checkpoint、策略、训练历史、发布指针、训练包、Web
+  展示/导出、回测和实时信号；旧合同产物只能保留作诊断，不能进入新合同
+  排名或生产信号。
+- 为不打断现役旧批次，本轮修复已迁入 `codex/p0-scoring-contract` 隔离
+  分支和独立 worktree；现役 `main` 工作目录恢复为干净的
+  `99ea362281a606fa2a9885d21d7a4d16b2c56542`，训练源码 SHA-256 重新精确
+  匹配冻结值
+  `02350ba4e3c696461f2be9f042cb00912568442b3f9986151a79621f571eeb8d`。
+  没有停止、取消、重提或重启 Web/Slurm。新合同代码在受控合并和重启前
+  不会进入现役进程。
+- 当前 24 个受影响测试文件合计 413 项通过、0 项失败；完整 unit 为
+  920 项通过、7 项失败。7 项均为本轮修改前已存在的陈旧算子/词表数量、
+  20/65 特征维度断言和固定历史墙钟测试，本轮新增链路没有失败。
+- 生产扫描与 Runner 现在绑定同一有序多公式集合、公式集合 SHA-256、信号
+  阈值、固定手数、成本率、年化频率和“方向不变时保持入场尺寸”状态机。
+  缺扫描、空扫描、策略被替换、非法 token、部分公式/品种失败、品种路径
+  穿越、持仓读取失败和未知入场 exposure 均失败关闭；dry-run 在统一交易
+  边界只放行明确只读方法，未知调用默认拦截。
+- 正式 MT5 数据只请求 `start_pos=1` 的已收盘 K 线；缓存允许同时间戳最终
+  OHLC 覆盖，并用 `mt5_closed_bars_pos1_v1` sidecar 隔离旧缓存：在线旧
+  合同强制全量重建，离线拒绝。启动和循环调仓都要求完整品种、正 int64、
+  严格向前的已收盘时间戳。
+- 时间链与墨菲链两路独立 Agent 最终复验均为 PASS。没有连接、停止、重提
+  或重启 Web/Slurm；现役 `main` 仍保持冻结源码。
+
 ### 2026-07-24 大 A 量化生态调研与对抗审查
 
 - 已完成一轮“先广泛、再深入”的大 A 量化模型训练与回测生态调研，正式报告见 `docs/A_SHARE_QUANT_ECOSYSTEM_RESEARCH_20260724.md`。覆盖 GitHub 源码/测试/Issue、Reddit、B站、微信公开文章、QMT/VeighNa/聚宽/BigQuant 社区和商业平台官方资料；小红书、抖音完整正文与评论区仍受登录阻断，已明确列为补证，不能声称已读。
@@ -17,7 +50,7 @@
 - 首轮只读审查和文档整理没有停止、重提、取消或修改现役 Slurm 作业，也没有改动训练、回测和执行代码。
 - 后续隔离实验已落地到 `experiments/a_share_execution_diff/` 和 `experiments/a_share_research_layer_diff/`，完整结果见 `docs/A_SHARE_QUANT_EXPERIMENTS_20260724.md`。所有第三方源码、虚拟环境和运行结果只在 `scratch/`，没有进入生产依赖。本轮实验命令和代码路径没有调用 SSH、Slurm 或 Web API；现役作业没有被取消、重提或覆盖。
 - 固定一手费用样本中，AlphaMaster 与手算、AKQuant 完全一致；RQAlpha 默认股票费用实现对齐佣金倍率后仍少 0.02 元过户费。研究层运行样本只确认 AlphaMaster 的目标收益构造函数和 vn.py 正常历史区间，同时复现 vn.py 的重叠重复、空字典绕过和全空报错；Qlib 只完成发布包与最新快照的源码合同检查，不是完整运行证据。
-- 隔离反例与源码审查发现四处 P0：`AlphaEngine._compute_ic` 与 `MT5Backtest._ts_ic_stability` 都额外右移一根；IC、PnL 和换手成本路径没有裁掉目标收益末尾两个补零；`model_core.evaluator.score_all(..., horizon=1)` 与 `EffectivenessEvaluator(target_horizon=1)` 都默认只裁 1 根，`prune_features.py` 调用模块级 `score_all` 时也未显式传 2。当前目标收益需要裁 2 根。当前只记录和复现，尚未修改生产评分逻辑。现役 Slurm 批次使用冻结的旧源码，只能保留为旧语义诊断基线；未来修复必须使用新源码身份启动新批次，不能混用结果。
+- 隔离反例与源码审查发现四处 P0：`AlphaEngine._compute_ic` 与 `MT5Backtest._ts_ic_stability` 都额外右移一根；IC、PnL 和换手成本路径没有裁掉目标收益末尾两个补零；`model_core.evaluator.score_all(..., horizon=1)` 与 `EffectivenessEvaluator(target_horizon=1)` 都默认只裁 1 根，`prune_features.py` 调用模块级 `score_all` 时也未显式传 2。上述问题已在 2026-07-25 的隔离修复候选中改正；现役 Slurm 批次仍使用冻结的旧源码，只能保留为旧语义诊断基线，新旧结果禁止混排。
 
 ### 2026-07-24 最新续接状态
 

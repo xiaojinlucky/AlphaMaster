@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import portfolio_manager.pipeline_adapter as adapter_module
+from model_core.target_contract import SCORING_CONTRACT_VERSION
 from portfolio_manager.pipeline_adapter import (
     CALIBRATION_FORMAT,
     load_pipeline_signal,
@@ -295,6 +296,7 @@ def _write_verified_run(tmp_path: Path) -> Path:
         "timeframe": "D1",
         "data_sha256": training_data_sha256,
         "vocab_version": "v-test",
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
         "formula": [1, 2],
     }
     strategy_path = post_dir / "published_strategy.json"
@@ -303,6 +305,7 @@ def _write_verified_run(tmp_path: Path) -> Path:
         {
             "formula": [1, 2],
             "vocab_version": "v-test",
+            "scoring_contract_version": SCORING_CONTRACT_VERSION,
             "symbol": symbol,
             "timeframe": "D1",
         }

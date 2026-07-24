@@ -32,6 +32,7 @@ from config import Config
 from data_pipeline.parquet_manager import ParquetDataManager
 from data_pipeline.dataset_contracts import source_family
 from backtest_viz import BacktestEngine
+from model_core.target_contract import SCORING_CONTRACT_VERSION
 from model_core.vocab import (
     FORMULA_VOCAB,
     VOCAB_VERSION,
@@ -86,6 +87,8 @@ def load_strategy(path: Path, *, raw_bytes: bytes | None = None) -> dict | None:
             f"策略 {path} 缺少公式兼容版本；需重新训练/重建后回测"
         )
     FORMULA_VOCAB.verify(artifact_version)
+    if data.get("scoring_contract_version") != SCORING_CONTRACT_VERSION:
+        raise ValueError(f"策略 {path} 的评分合同不兼容，需重新训练")
     return data
 
 
@@ -640,6 +643,7 @@ def export_equity_json(
         labels = [str(int(i)) for i in idx]
 
     out: dict = {
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
         "labels": labels,
         "n_points": int(len(idx)),
         "total_bars": int(T),
@@ -690,6 +694,14 @@ def export_equity_json(
         json.dump(out, f, ensure_ascii=False)
     print(f"  资金曲线数据已保存 → {path}")
     return str(path)
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
@@ -1004,29 +1016,44 @@ def main():
 
     # ── 6. 资金曲线图 ─────────────────────────────────────────────────
     Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+    chart_artifacts: list[dict[str, str]] = []
+    equity_artifact: dict[str, str] | None = None
     if results_map:
         times_np = (
             times_all[0, score_start_index:].numpy()
             if times_all is not None
             else None
         )
-        plot_equity_curves(
+        chart_path = Path(plot_equity_curves(
             results_map,
             OUTPUT_DIR,
             times_np,
             periods_per_year=periods_per_year,
+        ))
+        chart_artifacts.append(
+            {
+                "name": chart_path.name,
+                "sha256": _file_sha256(chart_path),
+                "label": "组合资金曲线",
+                "kind": "portfolio",
+            }
         )
-        export_equity_json(
+        equity_path = Path(export_equity_json(
             results_map,
             OUTPUT_DIR,
             times_np,
             periods_per_year=periods_per_year,
-        )
+        ))
+        equity_artifact = {
+            "name": equity_path.name,
+            "sha256": _file_sha256(equity_path),
+        }
 
     # ── 7. 资金曲线图已在步骤 6 生成；跳过 K 线/逐笔交易图以加快回测 ─────
 
     # ── 8. 保存 JSON 报告 ─────────────────────────────────────────────
     report = {
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
         "mode": "single" if single_mode else "multi_factor",
         "symbol": pm.symbol,
         "timeframe": pm.timeframe,
@@ -1047,6 +1074,8 @@ def main():
         ),
         "evaluation_data": evaluation_contract["evaluation_data"],
         "cost_rates": cost_rates,
+        "chart_artifacts": chart_artifacts,
+        "equity_artifact": equity_artifact,
         "symbols": {},
         "portfolio": {},
     }

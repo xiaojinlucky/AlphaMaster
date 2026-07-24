@@ -20,6 +20,7 @@ from web.feishu_notify import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEST_VOCAB_VERSION = "test-vocab-version"
+TEST_SCORING_CONTRACT = "test-scoring-contract"
 
 
 def _load_realtime_module(monkeypatch: pytest.MonkeyPatch):
@@ -38,6 +39,8 @@ def _load_realtime_module(monkeypatch: pytest.MonkeyPatch):
     vocab_stub.FORMULA_VOCAB = TestFormulaVocab()
     vocab_stub.VOCAB_VERSION = TEST_VOCAB_VERSION
     vocab_stub.VocabVersionMismatchError = TestVocabMismatchError
+    target_contract_stub = types.ModuleType("model_core.target_contract")
+    target_contract_stub.SCORING_CONTRACT_VERSION = TEST_SCORING_CONTRACT
 
     live_signal_stub = types.ModuleType("strategy_manager.live_signal")
     live_signal_stub.evaluate_signal = lambda *_args, **_kwargs: {}
@@ -55,6 +58,11 @@ def _load_realtime_module(monkeypatch: pytest.MonkeyPatch):
     config_stub.Config = TestConfig
 
     monkeypatch.setitem(sys.modules, "model_core.vocab", vocab_stub)
+    monkeypatch.setitem(
+        sys.modules,
+        "model_core.target_contract",
+        target_contract_stub,
+    )
     monkeypatch.setitem(sys.modules, "strategy_manager.live_signal", live_signal_stub)
     monkeypatch.setitem(sys.modules, "config", config_stub)
 
@@ -78,6 +86,7 @@ def _strategy_file(tmp_path: Path) -> Path:
             {
                 "formula": [0],
                 "vocab_version": TEST_VOCAB_VERSION,
+                "scoring_contract_version": TEST_SCORING_CONTRACT,
                 "symbol": "600519",
                 "timeframe": "15m",
                 "best_score": 1.0,

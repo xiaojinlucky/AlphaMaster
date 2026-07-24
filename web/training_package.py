@@ -21,6 +21,7 @@ import torch
 
 from data_pipeline.dataset_contracts import DATA_SOURCE_IDS
 from model_core.alphagpt import AlphaGPT
+from model_core.target_contract import SCORING_CONTRACT_VERSION
 from model_core.vocab import FORMULA_VOCAB
 from web.progress import (
     PROJECT_ROOT,
@@ -203,6 +204,8 @@ def _validate_checkpoint_file(
         ckpt = torch.load(handle, map_location="cpu", weights_only=True)
     if not isinstance(ckpt, dict):
         raise ValueError(f"检查点 {path.name} 不是合法字典")
+    if ckpt.get("scoring_contract_version") != SCORING_CONTRACT_VERSION:
+        raise ValueError(f"检查点 {path.name} 的评分合同不兼容")
     artifact_version = ckpt.get("vocab_version")
     if artifact_version is None:
         raise ValueError(
@@ -232,6 +235,7 @@ def _validate_checkpoint_file(
         "local_source": ckpt.get("local_source"),
         "periods_per_year": ckpt.get("periods_per_year"),
         "minimum_bars": ckpt.get("minimum_bars"),
+        "scoring_contract_version": ckpt.get("scoring_contract_version"),
     }
     if require_data_identity:
         missing = [field for field in _CHECKPOINT_IDENTITY_FIELDS if field not in ckpt]
@@ -383,6 +387,11 @@ def _validate_data_identity(
             expected = manifest.get(key)
             if type(claimed) is not type(expected) or claimed != expected:
                 raise ValueError(f"{payload_name}的 {key} 与 manifest 不一致")
+        if (
+            payload.get("scoring_contract_version")
+            != manifest.get("scoring_contract_version")
+        ):
+            raise ValueError(f"{payload_name}的评分合同与 manifest 不一致")
     if strategy is not None:
         if strategy.get("formula") != checkpoint.get("best_formula"):
             raise ValueError("训练策略 formula 与 checkpoint.best_formula 不一致")
@@ -405,6 +414,8 @@ def _validate_strategy_bytes(
     if artifact_version is None:
         raise ValueError("训练策略缺少 vocab_version")
     FORMULA_VOCAB.verify(artifact_version)
+    if strategy.get("scoring_contract_version") != SCORING_CONTRACT_VERSION:
+        raise ValueError("训练策略评分合同不兼容")
     formula = strategy.get("formula")
     if (
         not isinstance(formula, list)
@@ -450,6 +461,8 @@ def _validate_history_bytes(content: bytes, manifest: dict[str, Any]) -> None:
     history = _load_json_bytes(content, "训练历史")
     if not isinstance(history, dict):
         raise ValueError("训练历史必须是 JSON 对象")
+    if history.get("scoring_contract_version") != SCORING_CONTRACT_VERSION:
+        raise ValueError("训练历史评分合同不兼容")
     steps = history.get("step")
     if steps is None:
         return
@@ -497,6 +510,7 @@ def build_training_export_zip(symbol: str) -> tuple[bytes, str]:
         "format": _PACKAGE_FORMAT,
         "symbol": symbol,
         "step": step,
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
         "checkpoint": checkpoint_relative,
         "exported_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -683,6 +697,8 @@ def _validate_import_manifest(
         raise ValueError("旧版训练包没有强制大小/哈希清单，已拒绝导入；请重新导出")
     if package_format != _PACKAGE_FORMAT:
         raise ValueError("不支持的训练包格式")
+    if payload.get("scoring_contract_version") != SCORING_CONTRACT_VERSION:
+        raise ValueError("训练包评分合同不兼容")
 
     symbol = _validate_symbol(payload.get("symbol"))
     if expected_symbol and symbol != expected_symbol:
