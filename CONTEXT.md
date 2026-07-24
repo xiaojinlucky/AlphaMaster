@@ -12,9 +12,12 @@
 
 - 已完成一轮“先广泛、再深入”的大 A 量化模型训练与回测生态调研，正式报告见 `docs/A_SHARE_QUANT_ECOSYSTEM_RESEARCH_20260724.md`。覆盖 GitHub 源码/测试/Issue、Reddit、B站、微信公开文章、QMT/VeighNa/聚宽/BigQuant 社区和商业平台官方资料；小红书、抖音完整正文与评论区仍受登录阻断，已明确列为补证，不能声称已读。
 - 三路独立 Agent 分别从开发者、使用者和评估者角度完成反方审查。结论是不引入第二套生产主链：保留 AlphaMaster 现有 Slurm 身份链、密封评估和 A 股虚拟执行；AKQuant/RQAlpha 只作隔离差分与黄金测试，Qlib/vn.py alpha 只吸收研究层，QuantStats/Alphalens/skfolio 分别限定在展示、因子诊断和组合基准。
-- 当前 P0 是历史时点股票池、时点有效的 ST/板块/涨跌停/停牌状态、信号—标签—成交时钟、selection 与 sealed test 分离，以及训练代理回测和最终 A 股执行回放的明确分层。P1 是公司行动、时点费用、多交易日停牌订单、恢复等价性、全局试验账本和报告差分。
+- 当前 P0 是历史时点股票池、时点有效的 ST/板块/涨跌停/停牌状态、信号—标签—成交时钟、目标收益末尾补零裁剪、因子有效性评分的 horizon、selection 与 sealed test 分离，以及训练代理回测和最终 A 股执行回放的明确分层。P1 是公司行动、时点费用、多交易日停牌订单、恢复等价性、全局试验账本和报告差分。
 - 用户明确系统只用于个人研究，非商业限制不作为候选降级理由；但用户授权不能替代许可证。MIT/Apache/BSD 代码需保留通知，无许可证项目只阅读、观察行为或独立实现，不复制或改写原代码。
-- 本轮只读审查和文档整理没有停止、重提、取消或修改现役 Slurm 作业，也没有改动训练、回测和执行代码。
+- 首轮只读审查和文档整理没有停止、重提、取消或修改现役 Slurm 作业，也没有改动训练、回测和执行代码。
+- 后续隔离实验已落地到 `experiments/a_share_execution_diff/` 和 `experiments/a_share_research_layer_diff/`，完整结果见 `docs/A_SHARE_QUANT_EXPERIMENTS_20260724.md`。所有第三方源码、虚拟环境和运行结果只在 `scratch/`，没有进入生产依赖。本轮实验命令和代码路径没有调用 SSH、Slurm 或 Web API；现役作业没有被取消、重提或覆盖。
+- 固定一手费用样本中，AlphaMaster 与手算、AKQuant 完全一致；RQAlpha 默认股票费用实现对齐佣金倍率后仍少 0.02 元过户费。研究层运行样本只确认 AlphaMaster 的目标收益构造函数和 vn.py 正常历史区间，同时复现 vn.py 的重叠重复、空字典绕过和全空报错；Qlib 只完成发布包与最新快照的源码合同检查，不是完整运行证据。
+- 隔离反例与源码审查发现四处 P0：`AlphaEngine._compute_ic` 与 `MT5Backtest._ts_ic_stability` 都额外右移一根；IC、PnL 和换手成本路径没有裁掉目标收益末尾两个补零；`model_core.evaluator.score_all(..., horizon=1)` 与 `EffectivenessEvaluator(target_horizon=1)` 都默认只裁 1 根，`prune_features.py` 调用模块级 `score_all` 时也未显式传 2。当前目标收益需要裁 2 根。当前只记录和复现，尚未修改生产评分逻辑。现役 Slurm 批次使用冻结的旧源码，只能保留为旧语义诊断基线；未来修复必须使用新源码身份启动新批次，不能混用结果。
 
 ### 2026-07-24 最新续接状态
 
@@ -97,7 +100,7 @@
 - 2026-07-20 已修复并随 `67e81f3` 推送：多品种时间交集不足时仅做 `ffill()`，统一裁掉没有历史报价的前段；裁剪后不足 `MIN_BARS` 会失败关闭。定向单元 11 通过、时间轴属性 1 通过，独立六维审查 `PASS`。
 - 2026-07-20 已修复：`model_core/backtest.py::_turnover_quality()` 不再对 `tanh` 连续仓位执行 `int(p)`，改按正负方向区间计数；同向加减仓保持一个持仓区间，空仓进场、平仓后再进场和方向翻转才新增区间。该 F02 语义是本 fork 的有意修复，后续选择性上游同步不得覆盖它。定向回归与回测契约测试共 42 项通过；项目 `.venv` 仍受 PyTorch `c10.dll` 的 `WinError 1114` 影响，结果来自隔离测试环境。
 - 高优先待审查：训练循环反复使用 walk-forward validation 分数更新冠军、精英池和搜索方向，因此这些 validation 折更接近 selection 数据，不应在没有独立密封测试证据时直接称为最终样本外成绩。
-- 待合成序列确认：PnL 使用 `position[t] * target_ret[t]`，但 IC 使用 `factor[t]` 对齐 `target_ret[t+1]`；必须证明两者预测窗口是否一致。
+- 2026-07-24 合成序列已确认：真实目标函数构造 `target_ret[t] = log(open[t+2]/open[t+1])`；当前 IC 额外右移并受尾部补零污染。成交、PnL 乘法与目标构造仍是分段证据，完整端到端时钟回归待生产修复时补齐。
 
 ## 本机数据状态
 

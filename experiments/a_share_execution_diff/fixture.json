@@ -1,0 +1,19 @@
+{
+  "contract_version": "a-share-execution-diff-v1",
+  "case_id": "one_lot_round_trip",
+  "symbol": "000001",
+  "signal_session": "2026-07-21",
+  "buy_session": "2026-07-22",
+  "sell_session": "2026-07-23",
+  "initial_cash": "100000",
+  "price": "10",
+  "shares": 100,
+  "lot_size": 100,
+  "fee_schedule": {
+    "commission_rate": "0.0003",
+    "minimum_commission": "5",
+    "stamp_duty_rate": "0.0005",
+    "transfer_fee_rate": "0.00001",
+    "slippage_rate": "0"
+  }
+}

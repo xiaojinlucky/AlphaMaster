@@ -109,12 +109,25 @@ AlphaMaster/
 ├── strategy_manager/    # 信号与仓位状态逻辑；真实 trader 已移除
 ├── execution/           # MT5 实时报价兼容层，不含下单适配器
 ├── backtest_viz/        # 回测引擎与图表
+├── experiments/         # 隔离差分实验；不进入生产运行时
 ├── strategies/          # best_{symbol}.json 策略文件
 ├── checkpoints/         # 训练检查点
 ├── run_web.py           # 启动 Web 控制台
 ├── train_file.py        # CLI：从单个 Parquet 训练
 └── requirements.txt
 ```
+
+### 隔离研究实验
+
+大 A 候选框架的固定样本差分位于
+[`experiments/a_share_execution_diff`](experiments/a_share_execution_diff/README.md)
+和
+[`experiments/a_share_research_layer_diff`](experiments/a_share_research_layer_diff/README.md)。
+统一的全新目录运行入口是
+[`experiments/run_a_share_diff_suite.py`](experiments/run_a_share_diff_suite.py)。
+这些实验只验证明确合同，不替换生产回测；结果、边界和已发现的评分时钟/
+尾部裁剪 P0 见
+[`docs/A_SHARE_QUANT_EXPERIMENTS_20260724.md`](docs/A_SHARE_QUANT_EXPERIMENTS_20260724.md)。
 
 ---
 
