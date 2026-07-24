@@ -115,6 +115,12 @@ class TrainingBatchController:
                         item,
                         "批次尚未冻结训练源码 SHA-256",
                     )
+                expected_git_commit = batch.runtime_git_commit
+                if expected_git_commit is None:
+                    return self._fail(
+                        item,
+                        "批次尚未冻结服务器运行提交",
+                    )
                 current_source_sha256 = (
                     self.training_manager.current_source_sha256()
                 )
@@ -135,6 +141,7 @@ class TrainingBatchController:
                     from_scratch=True,
                     planned_run_id=item.planned_run_id,
                     expected_source_sha256=expected_source_sha256,
+                    expected_git_commit=expected_git_commit,
                     train_steps=item.train_steps,
                     cpus_per_task=item.cpus_per_task,
                     memory=item.memory,

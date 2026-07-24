@@ -85,6 +85,7 @@ def _decision(
         signals,
         universe=universe,
         current_weights=current_weights or {},
+        account_snapshot_sha256="a" * 64,
         policy=policy,
         previous_decision_ts=previous_decision_ts,
     )
@@ -219,6 +220,7 @@ def test_real_a50_contract_rejects_four_ready_symbols() -> None:
         build_csi_a50_portfolio_decision(
             four_signals,
             current_weights={},
+            account_snapshot_sha256="a" * 64,
             policy=POLICY,
         )
 
@@ -234,6 +236,7 @@ def test_verified_a50_entry_accepts_exact_fifty_signal_contract() -> None:
     decision = build_csi_a50_portfolio_decision(
         signals,
         current_weights={},
+        account_snapshot_sha256="a" * 64,
         policy=policy,
     )
 
@@ -264,6 +267,7 @@ def test_verified_a50_entry_rejects_consistently_wrong_signal_contract(
         build_csi_a50_portfolio_decision(
             signals,
             current_weights={},
+            account_snapshot_sha256="a" * 64,
             policy=replace(POLICY, top_k=5, dropout_rank=10),
         )
 

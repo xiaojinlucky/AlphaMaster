@@ -72,6 +72,7 @@ def _decision(bar_ts: int, *, model_suffix: str = ""):
         signals,
         universe=UNIVERSE,
         current_weights={},
+        account_snapshot_sha256="a" * 64,
         policy=POLICY,
     )
 

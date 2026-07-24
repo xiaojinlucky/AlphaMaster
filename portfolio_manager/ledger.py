@@ -32,6 +32,7 @@ _TOP_LEVEL_KEYS = frozenset(
         "session_date",
         "timeframe",
         "market_source",
+        "account_snapshot_sha256",
         "current_weights",
         "selected_symbols",
         "target_weights",
@@ -255,6 +256,10 @@ def _validate_decision_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("session_date 必须是 YYYY-MM-DD")
     _strict_text("timeframe", payload["timeframe"])
     _strict_text("market_source", payload["market_source"])
+    _strict_sha256(
+        "account_snapshot_sha256",
+        payload["account_snapshot_sha256"],
+    )
 
     current_weights = _strict_weights(
         "current_weights",

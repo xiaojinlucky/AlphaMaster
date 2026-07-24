@@ -77,6 +77,8 @@ LOCAL_RUNS_ROOT = Path(
 ).expanduser().resolve()
 PUBLISHED_BUNDLE_FORMAT = "alphamaster_published_bundle_v1"
 RUN_ID_RE = re.compile(r"^run_\d{8}T\d{6}Z_[0-9a-f]{8}$")
+SQUEUE_EXPIRED_JOB_ERROR = "slurm_load_jobs error: Invalid job id specified"
+RESULT_MANIFEST_NOT_READY_ERROR = "result manifest不存在"
 RECOVERY_UNKNOWN = "RECOVERY_UNKNOWN"
 ACTIVE_REMOTE_STATES = {
     RECOVERY_UNKNOWN,
@@ -192,6 +194,11 @@ def _git_commit() -> str:
     if proc.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", value):
         raise RuntimeError("无法确认本机源码提交")
     return value
+
+
+def current_git_commit() -> str:
+    """当前本机控制层对应的 Git 提交。"""
+    return _git_commit()
 
 
 def _source_files() -> list[dict[str, Any]]:
@@ -508,12 +515,24 @@ class SlurmTrainingManager:
     def current_source_sha256(self) -> str:
         return current_training_source_sha256()
 
+    def current_git_commit(self) -> str:
+        return current_git_commit()
+
     @staticmethod
     def _normalize_source_sha256(value: object) -> str:
         normalized = str(value or "").strip().lower()
         if re.fullmatch(r"[0-9a-f]{64}", normalized) is None:
             raise RuntimeError(
                 "expected_source_sha256 必须是 64 位 SHA-256"
+            )
+        return normalized
+
+    @staticmethod
+    def _normalize_git_commit(value: object) -> str:
+        normalized = str(value or "").strip().lower()
+        if re.fullmatch(r"[0-9a-f]{40}", normalized) is None:
+            raise RuntimeError(
+                "expected_git_commit 必须是 40 位 Git 提交"
             )
         return normalized
 
@@ -878,6 +897,7 @@ class SlurmTrainingManager:
         timeframe: str,
         training_parameters: dict[str, Any],
         requested_resources: dict[str, Any],
+        git_commit: str,
     ) -> dict[str, Any]:
         data = self._load_data_manifest(data_file)
         if data.get("symbol") != symbol or data.get("timeframe") != timeframe:
@@ -898,7 +918,7 @@ class SlurmTrainingManager:
             "dataset_id": data.get("dataset_id") or f"sha256:{data['data_sha256']}",
             "periods_per_year": int(data["periods_per_year"]),
             "minimum_bars": data.get("minimum_bars"),
-            "git_commit": _git_commit(),
+            "git_commit": git_commit,
             "source_files": _source_files(),
             "training_parameters": dict(training_parameters),
             "requested_resources": requested_resources,
@@ -919,6 +939,7 @@ class SlurmTrainingManager:
         memory: str | None = None,
         time_limit: str | None = None,
         expected_source_sha256: str | None = None,
+        expected_git_commit: str | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             self._refresh_state()
@@ -936,6 +957,11 @@ class SlurmTrainingManager:
                 self._resolve_expected_source_sha256(
                     expected_source_sha256
                 )
+            )
+            resolved_git_commit = (
+                _git_commit()
+                if expected_git_commit is None
+                else self._normalize_git_commit(expected_git_commit)
             )
             path = Path(data_file).resolve()
             (
@@ -965,6 +991,15 @@ class SlurmTrainingManager:
                     ):
                         raise RuntimeError(
                             "planned_run_id 已绑定不同的训练源码身份"
+                        )
+                    stored_git_commit = self._job.get("git_commit")
+                    if (
+                        stored_git_commit is not None
+                        and self._normalize_git_commit(stored_git_commit)
+                        != resolved_git_commit
+                    ):
+                        raise RuntimeError(
+                            "planned_run_id 已绑定不同的运行提交"
                         )
                     expected_parameters = self._job.get("training_parameters") or {}
                     expected_resources = self._job.get("requested_resources") or {}
@@ -1009,6 +1044,7 @@ class SlurmTrainingManager:
                 timeframe=timeframe,
                 training_parameters=training_parameters,
                 requested_resources=requested_resources,
+                git_commit=resolved_git_commit,
             )
             if (
                 _source_files_sha256(manifest.get("source_files"))
@@ -1250,6 +1286,13 @@ class SlurmTrainingManager:
         except SlurmTransportError as exc:
             self._record_retryable_error(exc)
         except SlurmClientError as exc:
+            if SQUEUE_EXPIRED_JOB_ERROR in str(exc):
+                # squeue 会在作业离开活动队列一段时间后对旧 job_id 返回此错误。
+                # 远端 result 接口仍会按 run/job 绑定校验结果 manifest；只有完整
+                # 下载并通过本机哈希与身份复核后才会进入 READY。
+                self._set_state("COMPLETED")
+                self._download()
+                return
             # 查询失败只代表本轮没有取得可信观测，不能证明远端作业失败。
             # 只有成功返回的 Slurm 明确终态才有权结束当前 run。
             self._record_retryable_error(exc)
@@ -1284,6 +1327,13 @@ class SlurmTrainingManager:
             self._set_state("READY")
         except SlurmTransportError as exc:
             self._record_retryable_error(exc)
+        except SlurmClientError as exc:
+            if RESULT_MANIFEST_NOT_READY_ERROR in str(exc):
+                # Slurm 已结束与共享文件系统发布 result manifest 之间可能有短暂窗口。
+                # 保持 DOWNLOADING，下一轮继续读取同一 run/job，绝不重新提交。
+                self._record_retryable_error(exc)
+                return
+            self._set_state("FAILED", error=f"结果下载或校验失败: {exc}")
         except Exception as exc:
             self._set_state("FAILED", error=f"结果下载或校验失败: {exc}")
 

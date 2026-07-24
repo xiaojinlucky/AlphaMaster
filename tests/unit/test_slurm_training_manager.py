@@ -784,6 +784,36 @@ def test_start_rejects_expected_source_drift_before_remote_prepare(
     assert not (runs / "current.json").exists()
 
 
+def test_start_freezes_explicit_runtime_git_commit(
+    isolated_project: Path,
+    tmp_path: Path,
+) -> None:
+    client = FakeClient()
+    runs = tmp_path / "runs"
+    manager = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=runs,
+    )
+    expected_commit = "c" * 40
+
+    started = manager.start(
+        str(_dataset(tmp_path)),
+        "XAUUSD",
+        "H1",
+        expected_git_commit=expected_commit,
+    )
+
+    manifest = json.loads(
+        (
+            runs
+            / started["run_id"]
+            / "run_manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert started["git_commit"] == expected_commit
+    assert manifest["git_commit"] == expected_commit
+
+
 def test_ready_publishes_one_run_bundle_and_replaces_old_higher_score_strategy(
     isolated_project: Path,
     tmp_path: Path,
@@ -1620,6 +1650,72 @@ def test_temporary_slurm_client_error_never_proves_remote_failure(
     assert status["job"]["remote_state"] == "PENDING"
     assert status["remote_status_stale"] is True
     assert status["job"]["last_poll_error"] == "temporary sacct failure"
+
+
+def test_expired_squeue_job_recovers_from_bound_result_manifest(
+    isolated_project: Path,
+    tmp_path: Path,
+) -> None:
+    client = FakeClient()
+    manager = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=tmp_path / "runs",
+    )
+    manager.start(str(_dataset(tmp_path)), "XAUUSD", "H1")
+
+    client.status = lambda *_args, **_kwargs: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        manager_module.SlurmClientError(
+            '{"ok": false, "error": '
+            '"slurm_load_jobs error: Invalid job id specified"}'
+        )
+    )
+    status = manager.status()
+
+    assert status["active"] is False
+    assert status["job"]["remote_state"] == "READY"
+    assert client.download_calls == 1
+
+
+def test_expired_squeue_job_retries_until_result_manifest_is_visible(
+    isolated_project: Path,
+    tmp_path: Path,
+) -> None:
+    client = FakeClient()
+    manager = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=tmp_path / "runs",
+    )
+    manager.start(str(_dataset(tmp_path)), "XAUUSD", "H1")
+    submitted = tuple(client.submitted)
+    client.status = lambda *_args, **_kwargs: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        manager_module.SlurmClientError(
+            '{"ok": false, "error": '
+            '"slurm_load_jobs error: Invalid job id specified"}'
+        )
+    )
+    real_download = client.download_result
+    attempts = 0
+
+    def delayed_download(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            client.download_calls += 1
+            raise manager_module.SlurmClientError("result manifest不存在")
+        return real_download(**kwargs)
+
+    client.download_result = delayed_download  # type: ignore[method-assign]
+
+    waiting = manager.status()
+    ready = manager.status()
+
+    assert waiting["active"] is True
+    assert waiting["job"]["remote_state"] == "DOWNLOADING"
+    assert waiting["job"]["last_poll_error"] == "result manifest不存在"
+    assert ready["active"] is False
+    assert ready["job"]["remote_state"] == "READY"
+    assert client.download_calls == 2
+    assert tuple(client.submitted) == submitted
 
 
 def test_raw_nonterminal_slurm_state_overrides_stale_failed_normalization(

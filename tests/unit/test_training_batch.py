@@ -23,6 +23,7 @@ from web.training_queue import (
 RUN_ONE = "run_20260724T010000Z_11111111"
 RUN_TWO = "run_20260724T010001Z_22222222"
 SOURCE_SHA256 = "f" * 64
+RUNTIME_GIT_COMMIT = "a" * 40
 
 
 class FakeTrainingManager:
@@ -52,6 +53,9 @@ class FakeTrainingManager:
     def current_source_sha256(self) -> str:
         return self.source_sha256
 
+    def current_git_commit(self) -> str:
+        return RUNTIME_GIT_COMMIT
+
     def run_source_sha256(self, _run_id: str) -> str:
         return SOURCE_SHA256
 
@@ -79,6 +83,7 @@ def _batch(queue: TrainingQueue, tmp_path: Path) -> str:
         idempotency_key="a50-v1",
         contract_sha256="a" * 64,
         source_sha256=SOURCE_SHA256,
+        runtime_git_commit=RUNTIME_GIT_COMMIT,
         items=[
             BatchItemSpec(
                 symbol="600519",
@@ -167,6 +172,10 @@ def test_batch_runs_training_then_postprocessing_then_next_item(tmp_path) -> Non
     assert training.starts[0]["memory"] == "32G"
     assert training.starts[0]["time_limit"] == "00:30:00"
     assert training.starts[0]["expected_source_sha256"] == SOURCE_SHA256
+    assert (
+        training.starts[0]["expected_git_commit"]
+        == RUNTIME_GIT_COMMIT
+    )
 
     training.payload["active"] = False
     training.payload["job"]["remote_state"] = READY

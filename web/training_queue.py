@@ -40,6 +40,7 @@ NEXT_ITEM_STATUS = {
 }
 
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+_GIT_COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _MEMORY_RE = re.compile(r"^[1-9][0-9]*(?:K|M|G|T)$")
 _TIME_LIMIT_RE = re.compile(r"^(?:[0-9]+-)?[0-9]{2}:[0-9]{2}:[0-9]{2}$")
@@ -95,6 +96,7 @@ class BatchRecord:
     status: str
     contract_sha256: str
     source_sha256: str | None
+    runtime_git_commit: str | None
     request_sha256: str
     item_count: int
     created_at: float
@@ -186,6 +188,7 @@ class TrainingQueue:
                         CHECK (status IN {BATCH_STATUSES}),
                     contract_sha256 TEXT NOT NULL,
                     source_sha256 TEXT,
+                    runtime_git_commit TEXT,
                     request_sha256 TEXT NOT NULL,
                     item_count INTEGER NOT NULL
                         CHECK (item_count BETWEEN 1 AND {MAX_BATCH_ITEMS}),
@@ -253,6 +256,10 @@ class TrainingQueue:
                 conn.execute(
                     "ALTER TABLE batches ADD COLUMN source_sha256 TEXT"
                 )
+            if "runtime_git_commit" not in batch_columns:
+                conn.execute(
+                    "ALTER TABLE batches ADD COLUMN runtime_git_commit TEXT"
+                )
 
     @staticmethod
     def _normalize_text(value: object, field: str) -> str:
@@ -266,6 +273,15 @@ class TrainingQueue:
         normalized = TrainingQueue._normalize_text(value, field)
         if not _IDENTIFIER_RE.fullmatch(normalized):
             raise QueueValidationError(f"{field} 格式非法")
+        return normalized
+
+    @staticmethod
+    def _normalize_git_commit(value: object) -> str:
+        normalized = str(value or "").strip().lower()
+        if _GIT_COMMIT_RE.fullmatch(normalized) is None:
+            raise QueueValidationError(
+                "runtime_git_commit 必须是 40 位 Git 提交"
+            )
         return normalized
 
     @staticmethod
@@ -389,11 +405,13 @@ class TrainingQueue:
     def _request_sha256(
         contract_sha256: str,
         source_sha256: str,
+        runtime_git_commit: str | None,
         items: Sequence[_FrozenItem],
     ) -> str:
         payload = {
             "contract_sha256": contract_sha256,
             "source_sha256": source_sha256,
+            "runtime_git_commit": runtime_git_commit,
             "items": [
                 {
                     "ordinal": item.ordinal,
@@ -468,6 +486,7 @@ class TrainingQueue:
         idempotency_key: str,
         contract_sha256: str,
         source_sha256: str,
+        runtime_git_commit: str | None = None,
         items: Sequence[BatchItemSpec],
         batch_id: str | None = None,
     ) -> CreateBatchResult:
@@ -483,10 +502,16 @@ class TrainingQueue:
             source_sha256,
             "source_sha256",
         )
+        runtime_commit = (
+            self._normalize_git_commit(runtime_git_commit)
+            if runtime_git_commit is not None
+            else None
+        )
         frozen_items = self._freeze_items(items)
         request_hash = self._request_sha256(
             contract_hash,
             source_hash,
+            runtime_commit,
             frozen_items,
         )
 
@@ -538,9 +563,9 @@ class TrainingQueue:
                     """
                     INSERT INTO batches (
                         batch_id, idempotency_key, status, contract_sha256,
-                        source_sha256, request_sha256, item_count,
-                        created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        source_sha256, runtime_git_commit, request_sha256,
+                        item_count, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         resolved_batch_id,
@@ -548,6 +573,7 @@ class TrainingQueue:
                         QUEUED,
                         contract_hash,
                         source_hash,
+                        runtime_commit,
                         request_hash,
                         len(frozen_items),
                         now,
@@ -657,6 +683,11 @@ class TrainingQueue:
             request_hash = self._request_sha256(
                 str(row["contract_sha256"]),
                 source_hash,
+                (
+                    str(row["runtime_git_commit"])
+                    if row["runtime_git_commit"] is not None
+                    else None
+                ),
                 frozen_items,
             )
             now = time.time()

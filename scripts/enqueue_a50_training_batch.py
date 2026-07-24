@@ -26,7 +26,10 @@ from web.training_queue import (
     TrainingQueue,
     TrainingQueueError,
 )
-from web.slurm_training_manager import current_training_source_sha256
+from web.slurm_training_manager import (
+    current_git_commit,
+    current_training_source_sha256,
+)
 
 
 _MEMORY_RE = re.compile(r"^[1-9][0-9]*(?:K|M|G|T)$")
@@ -175,6 +178,7 @@ def enqueue_a50_batch(
         idempotency_key=plan.idempotency_key,
         contract_sha256=plan.contract_sha256,
         source_sha256=plan.source_sha256,
+        runtime_git_commit=current_git_commit(),
         items=plan.items,
         batch_id=plan.batch_id,
     )

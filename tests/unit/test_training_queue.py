@@ -27,6 +27,7 @@ from web.training_queue import (
 
 CONTRACT_SHA256 = "c" * 64
 SOURCE_SHA256 = "f" * 64
+RUNTIME_GIT_COMMIT = "a" * 40
 
 
 def _write_data(path: Path, content: bytes) -> str:
@@ -92,12 +93,14 @@ def test_create_batch_is_idempotent_and_freezes_identity(tmp_path) -> None:
         idempotency_key="leaders-v1",
         contract_sha256=CONTRACT_SHA256,
         source_sha256=SOURCE_SHA256,
+        runtime_git_commit=RUNTIME_GIT_COMMIT,
         items=[spec],
     )
     repeated = queue.create_batch(
         idempotency_key="leaders-v1",
         contract_sha256=CONTRACT_SHA256,
         source_sha256=SOURCE_SHA256,
+        runtime_git_commit=RUNTIME_GIT_COMMIT,
         items=[spec],
     )
 
@@ -105,6 +108,7 @@ def test_create_batch_is_idempotent_and_freezes_identity(tmp_path) -> None:
     assert repeated.created is False
     assert repeated.batch.batch_id == first.batch.batch_id
     assert repeated.batch.source_sha256 == SOURCE_SHA256
+    assert repeated.batch.runtime_git_commit == RUNTIME_GIT_COMMIT
     item = queue.list_items(first.batch.batch_id)[0]
     assert item.status == QUEUED
     assert item.data_sha256 == data_sha256
@@ -120,6 +124,7 @@ def test_create_batch_is_idempotent_and_freezes_identity(tmp_path) -> None:
             idempotency_key="leaders-v1",
             contract_sha256="d" * 64,
             source_sha256=SOURCE_SHA256,
+            runtime_git_commit=RUNTIME_GIT_COMMIT,
             items=[spec],
         )
 
@@ -136,6 +141,7 @@ def test_create_batch_is_idempotent_and_freezes_identity(tmp_path) -> None:
             idempotency_key="leaders-v1",
             contract_sha256=CONTRACT_SHA256,
             source_sha256=SOURCE_SHA256,
+            runtime_git_commit=RUNTIME_GIT_COMMIT,
             items=[changed_budget],
         )
     with pytest.raises(IdempotencyConflictError):
@@ -143,6 +149,15 @@ def test_create_batch_is_idempotent_and_freezes_identity(tmp_path) -> None:
             idempotency_key="leaders-v1",
             contract_sha256=CONTRACT_SHA256,
             source_sha256="e" * 64,
+            runtime_git_commit=RUNTIME_GIT_COMMIT,
+            items=[spec],
+        )
+    with pytest.raises(IdempotencyConflictError):
+        queue.create_batch(
+            idempotency_key="leaders-v1",
+            contract_sha256=CONTRACT_SHA256,
+            source_sha256=SOURCE_SHA256,
+            runtime_git_commit="b" * 40,
             items=[spec],
         )
 

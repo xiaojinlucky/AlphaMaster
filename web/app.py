@@ -217,6 +217,7 @@ class BatchTrainingItemRequest(BaseModel):
 class CreateTrainingBatchRequest(BaseModel):
     idempotency_key: str
     contract_sha256: str
+    runtime_git_commit: str | None = None
     items: list[BatchTrainingItemRequest]
 
 
@@ -1056,6 +1057,7 @@ def api_training_batches() -> dict[str, Any]:
                 "status": batch.status,
                 "contract_sha256": batch.contract_sha256,
                 "source_sha256": batch.source_sha256,
+                "runtime_git_commit": batch.runtime_git_commit,
                 "item_count": batch.item_count,
                 "created_at": batch.created_at,
                 "updated_at": batch.updated_at,
@@ -1116,6 +1118,10 @@ def api_training_batch_create(
             idempotency_key=req.idempotency_key,
             contract_sha256=req.contract_sha256,
             source_sha256=training_manager.current_source_sha256(),
+            runtime_git_commit=(
+                req.runtime_git_commit
+                or training_manager.current_git_commit()
+            ),
             items=specs,
         )
     except IdempotencyConflictError as exc:

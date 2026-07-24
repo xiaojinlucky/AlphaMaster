@@ -97,6 +97,7 @@ class PortfolioDecision:
     session_date: str
     timeframe: str
     market_source: str
+    account_snapshot_sha256: str
     current_weights: tuple[tuple[str, float], ...]
     selected_symbols: tuple[str, ...]
     target_weights: tuple[tuple[str, float], ...]
@@ -115,6 +116,7 @@ class PortfolioDecision:
             "session_date": self.session_date,
             "timeframe": self.timeframe,
             "market_source": self.market_source,
+            "account_snapshot_sha256": self.account_snapshot_sha256,
             "current_weights": dict(self.current_weights),
             "selected_symbols": list(self.selected_symbols),
             "target_weights": dict(self.target_weights),
@@ -255,6 +257,7 @@ def _build_portfolio_decision(
     *,
     universe: UniverseContract,
     current_weights: Mapping[str, float],
+    account_snapshot_sha256: str,
     policy: PortfolioPolicy,
     previous_decision_ts: int | None = None,
 ) -> PortfolioDecision:
@@ -343,6 +346,10 @@ def _build_portfolio_decision(
             raise ValueError(f"组合决策时间未前进: {bar_ts} <= {previous_ts}")
 
     current = _validate_current_weights(current_weights, expected_set)
+    account_snapshot = _checked_sha256(
+        "account_snapshot_sha256",
+        account_snapshot_sha256,
+    )
     minimum_history = _checked_integer(
         "minimum_history",
         policy.minimum_history,
@@ -467,6 +474,7 @@ def _build_portfolio_decision(
         "session_date": session_date,
         "timeframe": timeframe,
         "market_source": market_source,
+        "account_snapshot_sha256": account_snapshot,
         "current_weights": dict(current_tuple),
         "selected_symbols": list(selected_tuple),
         "target_weights": dict(target_weights),
@@ -484,6 +492,7 @@ def _build_portfolio_decision(
         session_date=session_date,
         timeframe=timeframe,
         market_source=market_source,
+        account_snapshot_sha256=account_snapshot,
         current_weights=current_tuple,
         selected_symbols=selected_tuple,
         target_weights=target_weights,
@@ -499,6 +508,7 @@ def build_csi_a50_portfolio_decision(
     signals: Iterable[ModelSignalSnapshot],
     *,
     current_weights: Mapping[str, float],
+    account_snapshot_sha256: str,
     policy: PortfolioPolicy,
     previous_decision_ts: int | None = None,
 ) -> PortfolioDecision:
@@ -516,6 +526,7 @@ def build_csi_a50_portfolio_decision(
         rows,
         universe=universe,
         current_weights=current_weights,
+        account_snapshot_sha256=account_snapshot_sha256,
         policy=policy,
         previous_decision_ts=previous_decision_ts,
     )
