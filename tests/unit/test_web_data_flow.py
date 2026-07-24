@@ -9,9 +9,11 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
+from fastapi import HTTPException
 
 import web.app as app_module
 from data_pipeline.legacy_mt5_registry import build_single_file_registration_plan
+from model_core.target_contract import SCORING_CONTRACT_VERSION
 from model_core.vocab import VOCAB_VERSION
 
 
@@ -39,9 +41,164 @@ def _write_parquet(path: Path, *, start: int = 1_700_000_000, rows: int = 3000) 
     frame.to_parquet(path, index=False)
 
 
+def test_strategy_browse_rejects_old_scoring_contract_without_persisting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "best_XAUUSD.json"
+    path.write_text(
+        json.dumps(
+            {
+                "vocab_version": VOCAB_VERSION,
+                "scoring_contract_version": "previous_contract",
+                "symbol": "XAUUSD",
+                "formula": [1, 2, 3],
+                "best_score": 9.99,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(app_module, "pick_strategy_file", lambda: str(path))
+    monkeypatch.setattr(
+        app_module,
+        "save_settings",
+        lambda *_args, **_kwargs: pytest.fail("旧评分合同不得保存为最近策略"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        app_module._browse_strategy_file()
+
+    assert exc_info.value.status_code == 400
+    assert "不能正式回测" in str(exc_info.value.detail)
+
+
 @pytest.fixture()
 def client() -> TestClient:
     return TestClient(app_module.app, base_url=BASE_URL, raise_server_exceptions=False)
+
+
+def test_web_hides_previous_contract_backtest_outputs(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(app_module, "BACKTEST_OUTPUT_DIR", tmp_path)
+    (tmp_path / "multi_factor_report.json").write_text(
+        json.dumps(
+            {
+                "scoring_contract_version": "previous_contract",
+                "symbols": {"XAUUSD": {"sharpe": 9.99}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "equity_curve.json").write_text(
+        json.dumps(
+            {
+                "scoring_contract_version": "previous_contract",
+                "symbols": {"XAUUSD": {"equity": [9.99]}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "portfolio_equity.png").write_bytes(b"legacy")
+
+    headers = _control_headers(client)
+    report = client.get(
+        "/api/backtest/report?symbol=XAUUSD",
+        headers=headers,
+    ).json()
+    equity = client.get(
+        "/api/backtest/equity?symbol=XAUUSD",
+        headers=headers,
+    ).json()
+    chart = client.get(
+        "/api/backtest/chart/portfolio_equity.png",
+        headers=headers,
+    )
+
+    assert report["available"] is False
+    assert report["charts"] == []
+    assert equity["available"] is False
+    assert chart.status_code == 404
+
+
+def test_web_serves_only_current_contract_backtest_outputs(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(app_module, "BACKTEST_OUTPUT_DIR", tmp_path)
+    chart_content = b"current"
+    equity_content = json.dumps(
+        {
+            "scoring_contract_version": SCORING_CONTRACT_VERSION,
+            "symbols": {"XAUUSD": {"equity": [0.0, 0.1]}},
+        }
+    ).encode()
+    (tmp_path / "multi_factor_report.json").write_text(
+        json.dumps(
+            {
+                "scoring_contract_version": SCORING_CONTRACT_VERSION,
+                "chart_artifacts": [
+                    {
+                        "name": "portfolio_equity.png",
+                        "sha256": hashlib.sha256(chart_content).hexdigest(),
+                        "label": "组合资金曲线",
+                        "kind": "portfolio",
+                    }
+                ],
+                "equity_artifact": {
+                    "name": "equity_curve.json",
+                    "sha256": hashlib.sha256(equity_content).hexdigest(),
+                },
+                "symbols": {"XAUUSD": {"sharpe": 1.0}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "equity_curve.json").write_bytes(equity_content)
+    (tmp_path / "portfolio_equity.png").write_bytes(chart_content)
+    (tmp_path / "equity_old_contract.png").write_bytes(b"legacy")
+
+    headers = _control_headers(client)
+    report = client.get(
+        "/api/backtest/report?symbol=XAUUSD",
+        headers=headers,
+    ).json()
+    equity = client.get(
+        "/api/backtest/equity?symbol=XAUUSD",
+        headers=headers,
+    ).json()
+    chart = client.get(
+        "/api/backtest/chart/portfolio_equity.png",
+        headers=headers,
+    )
+    stale_chart = client.get(
+        "/api/backtest/chart/equity_old_contract.png",
+        headers=headers,
+    )
+
+    assert report["available"] is True
+    assert [row["name"] for row in report["charts"]] == ["portfolio_equity.png"]
+    assert equity["available"] is True
+    assert chart.status_code == 200
+    assert chart.content == chart_content
+    assert stale_chart.status_code == 404
+
+    (tmp_path / "equity_curve.json").write_bytes(b'{"stale": true}')
+    (tmp_path / "portfolio_equity.png").write_bytes(b"tampered")
+    tampered_equity = client.get(
+        "/api/backtest/equity?symbol=XAUUSD",
+        headers=headers,
+    ).json()
+    tampered_chart = client.get(
+        "/api/backtest/chart/portfolio_equity.png",
+        headers=headers,
+    )
+
+    assert tampered_equity["available"] is False
+    assert tampered_chart.status_code == 404
 
 
 def test_slurm_preflight_marks_bare_file_untrainable(
@@ -263,6 +420,7 @@ def test_backtest_endpoint_accepts_independent_future_dataset(
     strategy_path = tmp_path / "best_NVDA.json"
     strategy = {
         "vocab_version": VOCAB_VERSION,
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
         "symbol": "NVDA",
         "timeframe": "H1",
         "formula": [0],

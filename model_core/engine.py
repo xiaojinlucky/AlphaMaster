@@ -17,6 +17,12 @@ from .config import ModelConfig
 from .alphagpt import AlphaGPT, NewtonSchulzLowRankDecay, StableRankMonitor
 from .vm import StackVM
 from .backtest import MT5Backtest
+from .target_contract import (
+    SCORING_CONTRACT_VERSION,
+    TARGET_RETURN_HORIZON,
+    align_target_return_window,
+    valid_target_length,
+)
 from .vocab import FORMULA_VOCAB, VOCAB_VERSION, VocabVersionMismatchError  # task 12.2
 from utils.training_runtime import require_slurm_training_runtime
 
@@ -148,7 +154,7 @@ def _strategy_file_for_symbol(symbol: str | None) -> str:
 # Walk-Forward 折叠构建
 # ─────────────────────────────────────────────────────────────────────────────
 
-WALK_FORWARD_LABEL_HORIZON = 2
+WALK_FORWARD_LABEL_HORIZON = TARGET_RETURN_HORIZON
 WALK_FORWARD_MIN_WINDOW = 2
 
 
@@ -386,10 +392,22 @@ class AlphaEngine:
     @staticmethod
     def _compute_ic(factor: torch.Tensor, target_ret: torch.Tensor
                     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """时序 IC（每品种内部 factor[t] vs ret[t+1]）的均值与稳定性。
+        """时序 IC（每品种内部 factor[t] vs target_ret[t]）的均值与稳定性。
 
         对 5 品种宇宙，时序 IC 比横截面 IC 统计意义更强。
+        原始目标末尾两个占位值会在计算前统一裁掉。
         """
+        factor, target_ret = align_target_return_window(factor, target_ret)
+        return AlphaEngine._compute_ic_aligned(factor, target_ret)
+
+    @staticmethod
+    def _compute_ic_aligned(
+        factor: torch.Tensor,
+        target_ret: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """计算已经裁好有效窗口的同索引时序 IC。"""
+        if factor.ndim != 2 or target_ret.ndim != 2 or factor.shape != target_ret.shape:
+            raise ValueError("factor 和 target_ret 必须是形状完全一致的 [N, T] 张量")
         N, T = factor.shape
         if T < 2:
             z = torch.zeros(1, device=factor.device)
@@ -397,8 +415,8 @@ class AlphaEngine:
 
         ic_list = []
         for n in range(N):
-            x  = factor[n, :-1]
-            y  = target_ret[n, 1:]
+            x  = factor[n]
+            y  = target_ret[n]
             xm = x - x.mean()
             ym = y - y.mean()
             sx = (xm ** 2).mean().sqrt()
@@ -572,25 +590,30 @@ class AlphaEngine:
             print(f"   最大重启: {ModelConfig.MAX_RESTARTS}  "
                   f"噪声={ModelConfig.RESTART_NOISE}")
 
-        T     = self.data_manager.target_ret.shape[1]
-        folds = _build_walk_forward_folds(T, self.n_folds,
+        T = self.data_manager.target_ret.shape[1]
+        valid_T = valid_target_length(T)
+        folds = _build_walk_forward_folds(valid_T, self.n_folds,
                                           gap=getattr(ModelConfig, 'WF_GAP', 20))
         use_wf = len(folds) > 1 and not (
-            folds[0]["train_start"] == 0 and folds[0]["train_end"] == T
+            folds[0]["train_start"] == 0 and folds[0]["train_end"] == valid_T
         )
         if verbose_header:
             if use_wf:
-                print(f"   滚动验证: {len(folds)} 折  共 {T} 根K线")
+                print(
+                    f"   滚动验证: {len(folds)} 折  "
+                    f"有效 {valid_T}/{T} 根K线"
+                )
                 for k, f in enumerate(folds):
                     print(f"  第{k+1}折: 训练[0,{f['train_end']}) "
                           f"间隔={f['gap']} 验证[{f['val_start']},{f['val_end']})")
             else:
-                print(f"   退化为全量评估（共 {T} 根K线）")
+                print(f"   退化为全量评估（有效 {valid_T}/{T} 根K线）")
 
         # 因果安全：features.py 的 _robust_norm 已改为滚动因果实现
         # 每个 t 的归一化参数只用 [t-w+1..t]，walk-forward 折叠切片无泄露
         feat  = self.data_manager.feat_tensor.to(ModelConfig.DEVICE)
         t_ret = self.data_manager.target_ret.to(ModelConfig.DEVICE)
+        t_ret_valid = t_ret[:, :valid_T]
         bs      = ModelConfig.BATCH_SIZE
         n_elite = max(1, int(bs * ModelConfig.ELITE_REPLAY_FRAC))
         n_new   = bs - n_elite
@@ -731,7 +754,8 @@ class AlphaEngine:
                 if res is None:
                     rewards[i] = val_scores[i] = -5.0
                     none_cnt += 1;  continue
-                if res.std() < 1e-4:
+                res_valid = res[:, :valid_T]
+                if res_valid.std() < 1e-4:
                     rewards[i] = val_scores[i] = -2.0
                     const_cnt += 1;  continue
                 ok_cnt += 1
@@ -746,9 +770,9 @@ class AlphaEngine:
                                 fold["train_start"], fold["train_end"],
                                 fold["val_start"],   fold["val_end"],
                             )
-                            ic_m, _ = AlphaEngine._compute_ic(
-                                res[:, fold["train_start"]:fold["train_end"]],
-                                t_ret[:, fold["train_start"]:fold["train_end"]],
+                            ic_m, _ = AlphaEngine._compute_ic_aligned(
+                                res_valid[:, fold["train_start"]:fold["train_end"]],
+                                t_ret_valid[:, fold["train_start"]:fold["train_end"]],
                             )
                             tr_adj = AlphaEngine._apply_ic_gate(tr_sc, ic_m)
                             fold_tr.append(ModelConfig.REWARD_ALPHA * tr_adj)
@@ -759,13 +783,19 @@ class AlphaEngine:
                         ic_i        = sum(fold_ic) / len(fold_ic)
                     else:
                         train_score, _ = self.bt.evaluate(res, {}, t_ret)
-                        ic_m0, _  = AlphaEngine._compute_ic(res, t_ret)
+                        ic_m0, _ = AlphaEngine._compute_ic_aligned(
+                            res_valid,
+                            t_ret_valid,
+                        )
                         train_score = AlphaEngine._apply_ic_gate(
                             ModelConfig.REWARD_ALPHA * train_score, ic_m0
                         )
                         val_score = train_score
                         ic_i      = ic_m0.item()
-                    ic_full, ic_stab_full = AlphaEngine._compute_ic(res, t_ret)
+                    ic_full, ic_stab_full = AlphaEngine._compute_ic_aligned(
+                        res_valid,
+                        t_ret_valid,
+                    )
 
                 rewards[i]    = train_score
                 val_scores[i] = val_score
@@ -778,8 +808,8 @@ class AlphaEngine:
                 if rp > 0:
                     rewards[i]    -= rp
                     val_scores[i] -= rp
-                rewards[i]    = self._apply_corr_penalty(rewards[i], res)
-                val_scores[i] = self._apply_corr_penalty(val_scores[i], res)
+                rewards[i] = self._apply_corr_penalty(rewards[i], res_valid)
+                val_scores[i] = self._apply_corr_penalty(val_scores[i], res_valid)
 
                 # 用含惩罚的 val_scores[i] 选全局最优
                 final_val = val_scores[i].item()
@@ -797,7 +827,7 @@ class AlphaEngine:
                         pass
                     else:
                         # P3：冠军选择稳健性校验——连续仓位均值 < 5% 的极稀疏公式拒绝登顶
-                        pos_check = compute_target_positions_stateless(res)
+                        pos_check = compute_target_positions_stateless(res_valid)
                         exposure = pos_check.abs().mean().item()  # 连续仓位：均值
                         if exposure < 0.05:
                             # 极稀疏：参与梯度更新但不登顶，但记录日志方便排查
@@ -813,7 +843,7 @@ class AlphaEngine:
                             self._best_snapshot = copy.deepcopy(self.model.state_dict())
                             self._best_update_step = step
                             self._stagnation_steps = 0
-                            self._update_factor_pool(final_val, res)
+                            self._update_factor_pool(final_val, res_valid)
                             # 即时保存：任何时刻进程退出都有最新最优公式（防终端回收丢策略）
                             self._save_strategy_live()
                             tqdm.write(
@@ -1070,8 +1100,12 @@ class AlphaEngine:
                 f"training_history_{self.target_symbol}.json"
                 if self.target_symbol else "training_history.json"
             )
+            history_payload = {
+                "scoring_contract_version": SCORING_CONTRACT_VERSION,
+                **self.training_history,
+            }
             with open(hist_path, "w") as fp:
-                json.dump(self.training_history, fp)
+                json.dump(history_payload, fp)
 
             print(f"\n[完成] {sym_tag}训练结束！")
             print(f"  最优验证分数 : {self.best_score:.4f}")
@@ -1093,8 +1127,11 @@ class AlphaEngine:
         try:
             hist_path = f"training_history_{self.target_symbol}.json"
             payload = {
-                k: v for k, v in self.training_history.items()
-                if k != "_low_entropy_streak"
+                "scoring_contract_version": SCORING_CONTRACT_VERSION,
+                **{
+                    k: v for k, v in self.training_history.items()
+                    if k != "_low_entropy_streak"
+                },
             }
             with open(hist_path, "w", encoding="utf-8") as fp:
                 json.dump(payload, fp)
@@ -1116,6 +1153,7 @@ class AlphaEngine:
 
             strategy_data = {
                 "vocab_version": VOCAB_VERSION,
+                "scoring_contract_version": SCORING_CONTRACT_VERSION,
                 "symbol": self.target_symbol,
                 "formula": self.best_formula,
                 "best_score": self.best_score,
@@ -1206,6 +1244,7 @@ class AlphaEngine:
         ckpt = {
             "step":                 step,
             "vocab_version":        VOCAB_VERSION,   # task 12.2: 版本校验所需
+            "scoring_contract_version": SCORING_CONTRACT_VERSION,
             "model_state_dict":     self.model.state_dict(),
             "optimizer_state_dict": self.opt.state_dict(),
             "best_score":           self.best_score,
@@ -1254,6 +1293,14 @@ class AlphaEngine:
                     f"checkpoint '{path}' 数据身份不匹配: {field} "
                     f"期望 {expected!r}，实际 {actual!r}；拒绝续训"
                 )
+
+        artifact_scoring_contract = ckpt.get("scoring_contract_version")
+        if artifact_scoring_contract != SCORING_CONTRACT_VERSION:
+            raise CheckpointIdentityError(
+                f"checkpoint '{path}' 的评分合同 "
+                f"{artifact_scoring_contract!r} != "
+                f"{SCORING_CONTRACT_VERSION!r}；拒绝混用旧评分状态"
+            )
 
         # ── Task 12.2：版本校验（R3.7）──────────────────────────────────────
         # 从 checkpoint 读取 vocab_version；若字段缺失（旧版 checkpoint），视为

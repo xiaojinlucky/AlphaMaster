@@ -7,8 +7,6 @@ the 1-ATR dollar move of XAUUSD 0.01 lot is the base risk budget.
 from __future__ import annotations
 
 import argparse
-import json
-import math
 import sys
 import time
 from datetime import datetime
@@ -22,16 +20,22 @@ except ImportError:  # pragma: no cover
     mt5 = None  # type: ignore
 
 from config import Config
+import live_trade as live_trade_config
 from data_pipeline.data_manager import MT5DataManager
 from data_pipeline.fetcher import MT5DataFetcher
 from model_core.features import MT5FeatureEngineer
 from model_core.vm import StackVM
+from strategy_manager.runner import (
+    compute_latest_formula_target,
+    load_symbol_formulas,
+    verify_formula_set_hashes,
+)
 from strategy_manager.risk import MT5RiskEngine
+from strategy_manager.portfolio import MT5PortfolioManager, Position
 
 
-def _symbols() -> list[str]:
-    # Keep this aligned with live_trade.py defaults after XAGUSD was disabled.
-    return ["XAUUSD", "US100.cash", "US2000.cash", "US30.cash", "US500.cash"]
+def _symbols(symbol_override: list[str] | None = None) -> list[str]:
+    return live_trade_config.resolve_live_symbols(symbol_override)
 
 
 def _atr(raw: dict, symbols: list[str], symbol: str, period: int = 14) -> float:
@@ -66,35 +70,57 @@ def _position_map() -> dict[str, list]:
     return by_symbol
 
 
-def _load_formula(symbol: str) -> list[int] | None:
-    path = Path("strategies") / f"best_{symbol}.json"
-    if not path.exists():
+def _monitor_exposure(
+    signal: float,
+    live_side: str,
+    recorded: Position | None,
+) -> float | None:
+    """持仓时沿用 Runner 入场 exposure；空仓时展示当前拟入场 exposure。"""
+    if live_side == "FLAT":
+        return abs(signal)
+    if (
+        recorded is None
+        or recorded.target_exposure is None
+        or not 0.0 < float(recorded.target_exposure) <= 1.0
+    ):
         return None
-    data = json.loads(path.read_text(encoding="utf-8"))
-    formula = data.get("formula") or data.get("formula_tokens")
-    return [int(t) for t in formula] if formula else None
+    return float(recorded.target_exposure)
 
 
-def _current_targets(mgr: MT5DataManager) -> dict[str, float]:
+def _current_targets(
+    mgr: MT5DataManager,
+    expected_formula_set_sha256: dict[str, str] | None = None,
+    min_trade_exposure: float | None = None,
+) -> dict[str, float]:
     vm = StackVM()
     feat_all = MT5FeatureEngineer.compute_features(mgr.raw_dict)
+    formulas_by_symbol = load_symbol_formulas(mgr.symbols)
+    if expected_formula_set_sha256 is not None:
+        verify_formula_set_hashes(
+            formulas_by_symbol,
+            expected_formula_set_sha256,
+        )
     targets: dict[str, float] = {}
-    min_exp = float(getattr(Config, "MIN_TRADE_EXPOSURE", 0.05))
+    min_exp = (
+        float(getattr(Config, "MIN_TRADE_EXPOSURE", 0.05))
+        if min_trade_exposure is None
+        else float(min_trade_exposure)
+    )
     for idx, symbol in enumerate(mgr.symbols):
-        formula = _load_formula(symbol)
-        if formula is None:
-            targets[symbol] = 0.0
-            continue
-        raw = vm.execute(formula, feat_all[idx:idx + 1])
-        if raw is None:
-            targets[symbol] = 0.0
-            continue
-        signal = float(math.tanh(float(raw[0, -1].item())))
-        targets[symbol] = 0.0 if abs(signal) < min_exp else signal
+        targets[symbol] = compute_latest_formula_target(
+            vm,
+            formulas_by_symbol[symbol],
+            feat_all[idx:idx + 1],
+            symbol=symbol,
+            min_exposure=min_exp,
+        )
     return targets
 
 
-def check_once(offline: bool = False) -> int:
+def check_once(
+    offline: bool = False,
+    symbols_override: list[str] | None = None,
+) -> int:
     if mt5 is None:
         print("ALERT MetaTrader5 package is unavailable", flush=True)
         return 2
@@ -103,15 +129,17 @@ def check_once(offline: bool = False) -> int:
         print(f"ALERT mt5.initialize failed: {mt5.last_error()}", flush=True)
         return 2
 
-    Config.SYMBOLS = _symbols()
+    plan = live_trade_config.resolve_live_strategy_plan(symbols_override)
+    Config.SYMBOLS = list(plan.symbols)
     risk = MT5RiskEngine()
+    portfolio = MT5PortfolioManager()
 
     try:
         with MT5DataFetcher(offline=offline) as fetcher:
             if not offline:
                 fetcher.connect()
-            mgr = MT5DataManager(fetcher)
-            mgr.load()
+            mgr = MT5DataManager(fetcher, require_all_symbols=True)
+            mgr.load(list(plan.symbols))
 
         # MT5DataFetcher closes the terminal connection on context exit.
         # Reconnect before reading symbol specs and live positions.
@@ -121,7 +149,11 @@ def check_once(offline: bool = False) -> int:
 
         symbols = mgr.symbols
         raw = mgr.raw_dict
-        targets = _current_targets(mgr)
+        targets = _current_targets(
+            mgr,
+            plan.expected_formula_set_sha256,
+            plan.min_trade_exposure,
+        )
         ref_symbol = getattr(Config, "VOL_TARGET_REFERENCE_SYMBOL", "XAUUSD")
         ref_lot = float(getattr(Config, "VOL_TARGET_REFERENCE_LOT", 0.01))
         ref_atr = _atr(raw, symbols, ref_symbol)
@@ -139,9 +171,21 @@ def check_once(offline: bool = False) -> int:
             value = risk.value_per_price_unit(symbol)
             weight = _weight(symbol)
             signal = targets.get(symbol, 0.0)
-            exposure = abs(signal)
+            live = positions.get(symbol, [])
+            live_lot = sum(float(p.volume) for p in live)
+            side = "FLAT"
+            if live:
+                net = sum(
+                    float(p.volume) if p.type == 0 else -float(p.volume)
+                    for p in live
+                )
+                side = "BUY" if net > 0 else ("SELL" if net < 0 else "MIX")
+            recorded = portfolio.positions.get(symbol)
+            exposure = _monitor_exposure(signal, side, recorded)
             fixed = (getattr(Config, "FIXED_LOT_BY_SYMBOL", {}) or {}).get(symbol)
-            if fixed is not None and exposure > 0:
+            if exposure is None:
+                expected = 0.0
+            elif fixed is not None and exposure > 0:
                 expected = float(fixed)
             elif exposure <= 0:
                 expected = 0.0
@@ -155,12 +199,6 @@ def check_once(offline: bool = False) -> int:
                     sharpe_weight=weight,
                 )
 
-            live = positions.get(symbol, [])
-            live_lot = sum(float(p.volume) for p in live)
-            side = "FLAT"
-            if live:
-                net = sum(float(p.volume) if p.type == 0 else -float(p.volume) for p in live)
-                side = "BUY" if net > 0 else ("SELL" if net < 0 else "MIX")
             pos_usd = live_lot * atr * value
             exp_usd = expected * atr * value
             ratio = pos_usd / max(exp_usd, 1e-9) if exp_usd > 0 else 0.0
@@ -176,7 +214,16 @@ def check_once(offline: bool = False) -> int:
                 print(f"ALERT {symbol} live risk exceeds expected: {ratio:.2f}", flush=True)
             if expected == 0 and live_lot > 0:
                 alerts += 1
-                print(f"ALERT {symbol} has position while target is flat", flush=True)
+                if exposure is None:
+                    print(
+                        f"ALERT {symbol} live position lacks recorded entry exposure",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"ALERT {symbol} has position while target is flat",
+                        flush=True,
+                    )
             if symbol == "XAGUSD" and live:
                 alerts += 1
                 print("ALERT XAGUSD has live position but should be disabled", flush=True)
@@ -191,14 +238,23 @@ def main() -> None:
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--watch", action="store_true")
     parser.add_argument("--interval", type=int, default=60)
+    parser.add_argument("--symbols", nargs="+")
     args = parser.parse_args()
 
     if not args.watch:
-        raise SystemExit(check_once(offline=args.offline))
+        raise SystemExit(
+            check_once(
+                offline=args.offline,
+                symbols_override=args.symbols,
+            )
+        )
 
     while True:
         try:
-            check_once(offline=args.offline)
+            check_once(
+                offline=args.offline,
+                symbols_override=args.symbols,
+            )
         except Exception as exc:
             print(f"ALERT monitor exception: {exc}", flush=True)
         time.sleep(max(10, args.interval))

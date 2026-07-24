@@ -243,6 +243,9 @@ Slurm 模式固定使用 `cpu` 分区、`normal` QOS 和服务器项目 Python 3
 ## 信号口径（训练 / 回测 / 实时一致）
 
 - 因子经 StackVM 算出标量序列  
+- 目标收益为 `log(open[t+2] / open[t+1])`；`factor[t]` 与
+  `target_ret[t]` 同索引配对，最后两根没有未来收益，不进入评分、成本或
+  回测曲线
 - `position = tanh(factor)` ∈ (-1, 1)  
 - `|position|` 小于阈值时视为无信号（观望）  
 - 实时侧只用**已收盘** K 线，避免盘中抖动与回测不一致  

@@ -22,6 +22,13 @@ from typing import Optional
 
 import torch
 
+from .target_contract import (
+    TARGET_RETURN_HORIZON,
+    align_target_return_window,
+    valid_target_length,
+    validate_target_horizon,
+)
+
 
 # ── 异常类型 ─────────────────────────────────────────────────────────────
 
@@ -105,17 +112,15 @@ def _align_causal(
     严格防止 look-ahead：只使用 ≤t 的 candidate 值配对 target[t]，
     而非 target[t+h]——因为 target[t] 本身就代表 t→t+h 的收益。
     """
-    horizon = max(1, int(horizon))
-    T = target.shape[-1]
-    if T <= horizon:
-        # 无法裁剪，返回空对
-        empty_c = candidate[..., :0]
-        empty_t = target[..., :0]
-        return empty_c, empty_t
-    # 裁掉末端 h 步：candidate 和 target 均取 [0, T-h)
-    cand_aligned = candidate[..., : T - horizon]
-    tgt_aligned = target[..., : T - horizon]
-    return cand_aligned, tgt_aligned
+    if (
+        candidate.ndim == 2
+        and target.ndim == 2
+        and candidate.shape[0] == 1
+        and target.shape[0] > 1
+        and candidate.shape[1] == target.shape[1]
+    ):
+        candidate = candidate.expand(target.shape[0], -1)
+    return align_target_return_window(candidate, target, horizon)
 
 
 def _compute_ic_rankic(
@@ -312,7 +317,7 @@ def score(
     w_rankic: float = 0.6,
     w_mi: float = 0.4,
     eval_window: int = 250,
-    horizon: int = 1,
+    horizon: int = TARGET_RETURN_HORIZON,
 ) -> ScoreResult:
     """对单个候选打分（R4）。
 
@@ -361,7 +366,7 @@ def score_all(
     w_rankic: float = 0.6,
     w_mi: float = 0.4,
     eval_window: int = 250,
-    horizon: int = 1,
+    horizon: int = TARGET_RETURN_HORIZON,
 ) -> list[ScoreResult]:
     """对所有候选打分并做跨候选秩归一，聚合 importance_score（R4.4）。
 
@@ -417,6 +422,7 @@ def prune(
     corr_threshold: float = 0.9,
     conservative: bool = False,
     margin: float = 0.01,
+    horizon: int = TARGET_RETURN_HORIZON,
 ) -> list[ReportRow]:
     """保守双条件相关性剪枝（R5）。
 
@@ -431,6 +437,7 @@ def prune(
             f"corr_threshold={corr_threshold} 越界，必须在 [0.0, 1.0] 内"
         )
 
+    target_horizon = validate_target_horizon(horizon)
     threshold = 0.95 if conservative else corr_threshold
 
     # 按 importance_score 降序 + 确定性 tie-break（名称字母序）
@@ -445,7 +452,10 @@ def prune(
     retained: list[ScoreResult] = []   # 已保留
     rows: list[ReportRow] = []
 
-    name_to_series = series_dict
+    name_to_series = {
+        candidate: series[..., :valid_target_length(series.shape[-1], target_horizon)]
+        for candidate, series in series_dict.items()
+    }
 
     for sr in ordered:
         pruned_by: Optional[str] = None
@@ -491,12 +501,9 @@ def prune(
     return rows
 
 
-def _compute_metric(
+def _compute_metric_aligned(
     candidates_dict: dict[str, torch.Tensor],
     target: torch.Tensor,
-    horizon: int,
-    w_rankic: float,
-    w_mi: float,
 ) -> float:
     """计算候选集合的整体 metric（|IC| 绝对值均值）。
 
@@ -504,13 +511,16 @@ def _compute_metric(
     """
     if not candidates_dict:
         return 0.0
-    import numpy as np
     ic_vals = []
     for name, cand in candidates_dict.items():
-        cand_a, tgt_a = _align_causal(cand, target, horizon)
-        if _is_degenerate(cand_a):
+        if cand.shape != target.shape:
+            raise ValueError(
+                f"候选 {name!r} 与 target 的有效窗口形状不一致："
+                f"{tuple(cand.shape)} != {tuple(target.shape)}"
+            )
+        if _is_degenerate(cand):
             continue
-        ic_mean, ric_mean, ir = _compute_ic_rankic(cand_a, tgt_a)
+        ic_mean, ric_mean, ir = _compute_ic_rankic(cand, target)
         ic_vals.append(abs(ic_mean))
     if not ic_vals:
         return 0.0
@@ -523,7 +533,7 @@ def ablate(
     target: torch.Tensor,
     drop_threshold: float = -0.01,
     n_windows: int = 5,
-    horizon: int = 1,
+    horizon: int = TARGET_RETURN_HORIZON,
     w_rankic: float = 0.6,
     w_mi: float = 0.4,
 ) -> AblationResult:
@@ -540,16 +550,38 @@ def ablate(
             error=f"候选 '{name}' 不在 base_set 中",
         )
 
-    without_set = {k: v for k, v in base_set.items() if k != name}
+    target_horizon = validate_target_horizon(horizon)
+    aligned_base: dict[str, torch.Tensor] = {}
+    aligned_target: torch.Tensor | None = None
+    try:
+        for candidate_name, candidate in base_set.items():
+            candidate_aligned, target_current = _align_causal(
+                candidate,
+                target,
+                target_horizon,
+            )
+            aligned_base[candidate_name] = candidate_aligned
+            if aligned_target is None:
+                aligned_target = target_current
+            elif target_current.shape != aligned_target.shape:
+                raise ValueError("候选的有效目标窗口形状不一致")
+    except Exception as exc:
+        return AblationResult(
+            name=name,
+            marginal_contribution=None,
+            drop_recommendation=False,
+            error=f"完整有效窗口对齐失败: {exc}",
+        )
 
-    T_full = target.shape[-1]
-    if T_full < 2:
+    if aligned_target is None or aligned_target.shape[-1] < 2:
         return AblationResult(
             name=name,
             marginal_contribution=None,
             drop_recommendation=False,
             error="target 序列过短，无法计算 metric",
         )
+    without_set = {k: v for k, v in aligned_base.items() if k != name}
+    T_full = aligned_target.shape[-1]
 
     # 多窗口滑动（降低单次估计方差）
     window_size = max(2, T_full // n_windows)
@@ -563,12 +595,12 @@ def ablate(
         if end - start < 2:
             continue
 
-        tgt_w = target[..., start:end]
-        with_dict = {k: v[..., start:end] for k, v in base_set.items()}
+        tgt_w = aligned_target[..., start:end]
+        with_dict = {k: v[..., start:end] for k, v in aligned_base.items()}
         without_dict = {k: v[..., start:end] for k, v in without_set.items()}
 
         try:
-            m_with = _compute_metric(with_dict, tgt_w, horizon, w_rankic, w_mi)
+            m_with = _compute_metric_aligned(with_dict, tgt_w)
         except Exception as e:
             return AblationResult(
                 name=name,
@@ -578,7 +610,7 @@ def ablate(
             )
 
         try:
-            m_without = _compute_metric(without_dict, tgt_w, horizon, w_rankic, w_mi)
+            m_without = _compute_metric_aligned(without_dict, tgt_w)
         except Exception as e:
             return AblationResult(
                 name=name,
@@ -801,7 +833,7 @@ class EffectivenessEvaluator:
     eval_window : int
         评估窗口大小，默认 250（R4）。
     target_horizon : int
-        前视收益 horizon，用于 _align_causal，默认 1（R4.7）。
+        前视收益 horizon，用于 _align_causal，默认 2（R4.7）。
     """
 
     def __init__(
@@ -814,7 +846,7 @@ class EffectivenessEvaluator:
         w_rankic: float = 0.6,
         w_mi: float = 0.4,
         eval_window: int = 250,
-        target_horizon: int = 1,
+        target_horizon: int = TARGET_RETURN_HORIZON,
     ) -> None:
         if not (0.0 <= corr_threshold <= 1.0):
             raise ConfigError(
@@ -828,7 +860,7 @@ class EffectivenessEvaluator:
         self.w_rankic = w_rankic
         self.w_mi = w_mi
         self.eval_window = eval_window
-        self.target_horizon = target_horizon
+        self.target_horizon = validate_target_horizon(target_horizon)
 
     # ── 打分 ────────────────────────────────────────────────────────────
 
@@ -881,6 +913,7 @@ class EffectivenessEvaluator:
             series_dict=series,
             corr_threshold=self.corr_threshold,
             conservative=self.conservative,
+            horizon=self.target_horizon,
         )
 
     # ── 消融 ────────────────────────────────────────────────────────────

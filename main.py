@@ -30,6 +30,7 @@ from data_pipeline.fetcher import MT5DataFetcher
 from data_pipeline.single_symbol_manager import SingleSymbolDataManager
 from model_core.engine import AlphaEngine
 from model_core.config import ModelConfig
+from model_core.target_contract import SCORING_CONTRACT_VERSION
 from model_core.vocab import VOCAB_VERSION
 
 
@@ -70,6 +71,7 @@ def save_group_strategy(engine: AlphaEngine, group_name: str, symbols: list[str]
     gp = pathlib.Path("strategies") / f"best_group_{group_name}.json"
     gp.write_text(json.dumps({
         "vocab_version": VOCAB_VERSION,
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
         "group":         group_name,
         "symbols":       symbols,
         "formula":       engine.best_formula,
@@ -81,6 +83,7 @@ def save_group_strategy(engine: AlphaEngine, group_name: str, symbols: list[str]
         sp = pathlib.Path("strategies") / f"best_{sym}.json"
         sp.write_text(json.dumps({
             "vocab_version": VOCAB_VERSION,
+            "scoring_contract_version": SCORING_CONTRACT_VERSION,
             "symbol":        sym,
             "group":         group_name,
             "formula":       engine.best_formula,

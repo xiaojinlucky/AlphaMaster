@@ -39,6 +39,7 @@ class Position:
     highest_price: float    # 多头追踪止损用（最高价）
     lowest_price: float     # 空头追踪止损用（最低价）
     is_partial_closed: bool
+    target_exposure: float | None = None
 
 
 class MT5PortfolioManager:
@@ -63,6 +64,7 @@ class MT5PortfolioManager:
         price: float,
         lot: float,
         direction: str,
+        target_exposure: float | None = None,
     ) -> None:
         """记录一个新开仓位。
 
@@ -83,6 +85,7 @@ class MT5PortfolioManager:
             highest_price=price,
             lowest_price=price,
             is_partial_closed=False,
+            target_exposure=target_exposure,
         )
         self.positions[symbol] = pos
         self.save_state()
@@ -196,6 +199,7 @@ class MT5PortfolioManager:
                         highest_price=price,
                         lowest_price=price,
                         is_partial_closed=False,
+                        target_exposure=None,
                     )
                     logger.info(f"[Portfolio] 补录MT5持仓: {sym} {direction}")
         else:

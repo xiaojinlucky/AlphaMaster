@@ -143,6 +143,29 @@ class TestSymbolExcludedWhenBelowMinBars:
 
         assert len(manager.symbols) == 2
 
+    def test_strict_trade_manager_rejects_one_missing_symbol(self):
+        fetch_map = {
+            "XAUUSD": _make_ohlcv_df(200),
+            "US500": _make_ohlcv_df(50),
+        }
+        mock_fetcher = _make_mock_fetcher(fetch_map)
+
+        from data_pipeline.data_manager import MT5DataManager
+        from config import Config
+
+        manager = MT5DataManager(
+            mock_fetcher,
+            require_all_symbols=True,
+        )
+        with (
+            patch.object(Config, "MIN_BARS", _TEST_MIN_BARS),
+            patch.object(Config, "SYMBOLS", ["XAUUSD", "US500"]),
+            pytest.raises(ValueError, match="缺少请求品种.*US500"),
+        ):
+            manager.load()
+
+        assert manager.symbols == []
+
 
 # ── 测试 2：所有品种都不足 100 bars 时抛出 ValueError ─────────────────────────
 

@@ -20,6 +20,10 @@ from config import Config
 from data_pipeline.data_manager import MT5DataManager
 from data_pipeline.fetcher import MT5DataFetcher
 from model_core.vocab import FORMULA_VOCAB, VOCAB_VERSION
+from model_core.target_contract import (
+    SCORING_CONTRACT_VERSION,
+    align_target_return_window,
+)
 from model_core.vm import StackVM
 from strategy_manager.signal import compute_target_positions_stateless
 
@@ -65,8 +69,16 @@ def load_candidate(path: str, formula_key: str = "formula") -> dict | None:
         return None
     data = json.load(p.open(encoding="utf-8"))
     ver = data.get("vocab_version")
-    if ver and ver != VOCAB_VERSION:
+    if ver != VOCAB_VERSION:
         return {"error": f"vocab mismatch {ver} != {VOCAB_VERSION}"}
+    scoring_contract = data.get("scoring_contract_version")
+    if scoring_contract != SCORING_CONTRACT_VERSION:
+        return {
+            "error": (
+                "scoring contract mismatch "
+                f"{scoring_contract} != {SCORING_CONTRACT_VERSION}"
+            )
+        }
     formula = data.get(formula_key) or data.get("formula")
     if not formula:
         return {"error": "no formula"}
@@ -75,6 +87,7 @@ def load_candidate(path: str, formula_key: str = "formula") -> dict | None:
         "best_score": data.get("best_score") or data.get("train_best_score"),
         "status": data.get("status", ""),
         "readable": data.get("formula_readable") or decode_formula(formula),
+        "scoring_contract_version": scoring_contract,
     }
 
 
@@ -83,6 +96,7 @@ def independent_backtest(
     target_ret: torch.Tensor,
     cost_rate: float,
 ) -> dict:
+    factor, target_ret = align_target_return_window(factor, target_ret)
     pos = compute_target_positions_stateless(factor)
     prev = torch.zeros_like(pos)
     prev[:, 1:] = pos[:, :-1]
@@ -275,6 +289,7 @@ def run_one(name: str, meta: dict, fetcher: MT5DataFetcher) -> dict | None:
         bt["formula"] = loaded["formula"]
         bt["readable"] = loaded["readable"]
         bt["train_score"] = loaded.get("best_score")
+        bt["scoring_contract_version"] = SCORING_CONTRACT_VERSION
 
         print(f"\n  组合: ann={bt['ann_ret']*100:+.2f}%  Sharpe={bt['sharpe']:+.3f}  "
               f"Sortino={bt['sortino']:+.3f}  MDD={bt['mdd']*100:.2f}%  "
@@ -387,7 +402,11 @@ def main():
                 {kk: vv for kk, vv in s.items() if kk not in ("walk_forward", "cost_stress", "per_symbol", "issues")}
                 for s in v["solo"]
             ]
-    out.write_text(json.dumps(serial, indent=2, ensure_ascii=False), encoding="utf-8")
+    report = {
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
+        "strategies": serial,
+    }
+    out.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"\n详细 JSON → {out}")
 
 

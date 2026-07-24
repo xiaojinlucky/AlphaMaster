@@ -85,6 +85,7 @@ def train_single(fetcher, symbol: str, offline: bool):
 def _save_strategy(engine, symbol):
     """保存单品种策略"""
     import json
+    from model_core.target_contract import SCORING_CONTRACT_VERSION
     from model_core.vocab import VOCAB_VERSION
 
     pathlib.Path("strategies").mkdir(exist_ok=True)
@@ -92,6 +93,7 @@ def _save_strategy(engine, symbol):
 
     data = {
         "vocab_version": VOCAB_VERSION,
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
         "symbol": symbol,
         "mode": "single",
         "formula": engine.best_formula,

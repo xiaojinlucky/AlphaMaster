@@ -6,6 +6,10 @@ from pathlib import Path
 
 import pytest
 
+from model_core.target_contract import (
+    SCORING_CONTRACT_VERSION,
+    ScoringContractMismatchError,
+)
 from model_core.vocab import FORMULA_VOCAB
 from web import strategy_file as sf
 from web.settings import save_settings
@@ -49,6 +53,7 @@ def test_inspect_strategy_fills_data_file_from_settings(project: Path) -> None:
                 "formula": [1, 2, 3],
                 "best_score": 1.5,
                 "vocab_version": FORMULA_VOCAB.version,
+                "scoring_contract_version": SCORING_CONTRACT_VERSION,
             }
         ),
         encoding="utf-8",
@@ -74,6 +79,7 @@ def test_sync_best_writes_data_file(project: Path) -> None:
                 "best_score": 1.5,
                 "formula_decoded": "A → B",
                 "vocab_version": FORMULA_VOCAB.version,
+                "scoring_contract_version": SCORING_CONTRACT_VERSION,
             }
         ),
         encoding="utf-8",
@@ -91,6 +97,7 @@ def _complete_strategy() -> dict:
     digest = "a" * 64
     return {
         "vocab_version": FORMULA_VOCAB.version,
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
         "symbol": "XAUUSD",
         "timeframe": "H1",
         "formula": [1, 2, 3],
@@ -121,6 +128,26 @@ def test_complete_strategy_identity_is_registered_for_backtest(project: Path) ->
     info = sf.inspect_strategy_file(str(path))
 
     assert info["identity_registration"] == "registered"
+
+
+@pytest.mark.parametrize("version", [None, "previous_contract"], ids=("missing", "previous"))
+def test_inspect_marks_previous_scoring_contract_as_diagnostic_only(
+    project: Path,
+    version: str | None,
+) -> None:
+    path = project / "strategies" / "best_XAUUSD.json"
+    strategy = _complete_strategy()
+    if version is None:
+        strategy.pop("scoring_contract_version")
+    else:
+        strategy["scoring_contract_version"] = version
+    path.write_text(json.dumps(strategy), encoding="utf-8")
+
+    info = sf.inspect_strategy_file(str(path))
+
+    assert info["score_compatible"] is False
+    assert info["valid"] is False
+    assert "不能正式回测" in info["message"]
 
 
 @pytest.mark.parametrize("field", ["columns", "data_start", "data_end", "data_rows"])
@@ -211,3 +238,73 @@ def test_backtest_manager_rejects_previous_version_before_starting_process(
         )
 
     assert manager.status()["job"] is None
+
+
+@pytest.mark.parametrize("version", [None, "previous_contract"], ids=("missing", "previous"))
+def test_backtest_manager_rejects_previous_scoring_contract_before_process(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    version: str | None,
+) -> None:
+    import web.backtest_manager as backtest_mod
+
+    strategy_path = project / "strategies" / "best_XAUUSD.json"
+    strategy = _complete_strategy()
+    if version is None:
+        strategy.pop("scoring_contract_version")
+    else:
+        strategy["scoring_contract_version"] = version
+    strategy_path.write_text(json.dumps(strategy), encoding="utf-8")
+    data_path = project / "XAUUSD_H1.parquet"
+    data_path.write_bytes(b"PAR1")
+
+    def unexpected_popen(*_args, **_kwargs):
+        pytest.fail("旧评分合同不得创建回测子进程")
+
+    monkeypatch.setattr(backtest_mod.subprocess, "Popen", unexpected_popen)
+    manager = backtest_mod.BacktestManager()
+
+    with pytest.raises(ValueError, match="不能正式回测"):
+        manager.start(
+            strategy_file=str(strategy_path),
+            data_file=str(data_path),
+        )
+
+    assert manager.status()["job"] is None
+
+
+def test_sync_skips_previous_contract_checkpoint(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old_path = project / "old.pt"
+    current_path = project / "current.pt"
+    monkeypatch.setattr(sf, "checkpoint_glob", lambda _symbol: [old_path, current_path])
+
+    def fake_meta(path: Path) -> dict:
+        if path == old_path:
+            raise ScoringContractMismatchError("旧评分合同")
+        return {
+            "best_score": 2.0,
+            "best_formula": [1, 2, 3],
+            "step": 7,
+            "scoring_contract_version": SCORING_CONTRACT_VERSION,
+        }
+
+    monkeypatch.setattr(sf, "_load_checkpoint_meta", fake_meta)
+
+    info = sf.sync_best_strategy_for_symbol("XAUUSD")
+
+    assert info is not None
+    assert info["best_score"] == pytest.approx(2.0)
+
+
+def test_sync_does_not_fall_back_to_only_previous_contract_strategy(
+    project: Path,
+) -> None:
+    path = project / "strategies" / "best_XAUUSD.json"
+    strategy = _complete_strategy()
+    strategy["scoring_contract_version"] = "previous_contract"
+    path.write_text(json.dumps(strategy), encoding="utf-8")
+
+    assert sf.sync_best_strategy_for_symbol("XAUUSD") is None

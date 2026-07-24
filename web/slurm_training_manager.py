@@ -40,6 +40,7 @@ from data_pipeline.dataset_contracts import (
     resolve_okx_source_id,
 )
 from model_core.config import ModelConfig
+from model_core.target_contract import SCORING_CONTRACT_VERSION
 from model_core.vocab import FORMULA_VOCAB, VOCAB_VERSION
 from utils.train_logging import strip_ansi
 from web.slurm_training_client import (
@@ -919,6 +920,7 @@ class SlurmTrainingManager:
             "periods_per_year": int(data["periods_per_year"]),
             "minimum_bars": data.get("minimum_bars"),
             "git_commit": git_commit,
+            "scoring_contract_version": SCORING_CONTRACT_VERSION,
             "source_files": _source_files(),
             "training_parameters": dict(training_parameters),
             "requested_resources": requested_resources,
@@ -1368,6 +1370,7 @@ class SlurmTrainingManager:
             "periods_per_year",
             "minimum_bars",
             "git_commit",
+            "scoring_contract_version",
             "source_files",
             "training_parameters",
             "requested_resources",
@@ -1447,6 +1450,13 @@ class SlurmTrainingManager:
                 raise RuntimeError(
                     f"回传 checkpoint 公式执行版本不匹配: {relative}"
                 )
+            if (
+                checkpoint.get("scoring_contract_version")
+                != SCORING_CONTRACT_VERSION
+            ):
+                raise RuntimeError(
+                    f"回传 checkpoint 评分合同不匹配: {relative}"
+                )
             for field, expected_value in checkpoint_identity.items():
                 actual_value = checkpoint.get(field)
                 if (
@@ -1457,6 +1467,18 @@ class SlurmTrainingManager:
                         f"回传 checkpoint 的 {field} 与 run 身份不匹配: "
                         f"{relative}"
                     )
+
+        history_path = artifact_root.joinpath(*histories[0].split("/"))
+        try:
+            history = json.loads(history_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError("回传训练历史不是合法 UTF-8 JSON") from exc
+        if (
+            not isinstance(history, dict)
+            or history.get("scoring_contract_version")
+            != SCORING_CONTRACT_VERSION
+        ):
+            raise RuntimeError("回传训练历史评分合同不匹配")
 
         strategy_path = artifact_root.joinpath(*strategies[0].split("/"))
         try:
@@ -1482,6 +1504,8 @@ class SlurmTrainingManager:
             strategy.get("symbol") != expected["symbol"]
             or strategy.get("timeframe") != expected["timeframe"]
             or strategy.get("vocab_version") != VOCAB_VERSION
+            or strategy.get("scoring_contract_version")
+            != SCORING_CONTRACT_VERSION
             or strategy.get("train_steps") != expected["training_parameters"]["train_steps"]
             or strategy.get("periods_per_year") != expected["periods_per_year"]
             or strategy.get("minimum_bars") != expected.get("minimum_bars")
@@ -1538,6 +1562,7 @@ class SlurmTrainingManager:
             "format": PUBLISHED_BUNDLE_FORMAT,
             "run_id": self._job["run_id"],
             "symbol": symbol,
+            "scoring_contract_version": SCORING_CONTRACT_VERSION,
             "timeframe": manifest["timeframe"],
             "dataset_id": manifest["dataset_id"],
             "local_source": manifest["local_source"],

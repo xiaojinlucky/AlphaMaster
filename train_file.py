@@ -26,6 +26,7 @@ from data_pipeline.parquet_manager import ParquetDataManager, inspect_parquet_fi
 from model_core.config import ModelConfig
 import model_core.engine as _engine_module
 from model_core.engine import AlphaEngine
+from model_core.target_contract import SCORING_CONTRACT_VERSION
 from model_core.vocab import VOCAB_VERSION
 from utils.training_runtime import require_slurm_training_runtime
 
@@ -334,6 +335,9 @@ def _seed_best_from_strategy(engine: AlphaEngine, symbol: str) -> None:
     if data.get("vocab_version") != VOCAB_VERSION:
         print("  [重新训练] 已有最优策略的公式执行版本不同，不作为本次分数下限")
         return
+    if data.get("scoring_contract_version") != SCORING_CONTRACT_VERSION:
+        print("  [重新训练] 已有最优策略的评分合同不同，不作为本次分数下限")
+        return
     if not _same_strategy_identity(data, engine):
         print("  [重新训练] 已有最优策略的数据身份不同，不作为本次分数下限")
         return
@@ -371,6 +375,7 @@ def _save_strategy(
             old_score = old.get("best_score")
             if (
                 old.get("vocab_version") == VOCAB_VERSION
+                and old.get("scoring_contract_version") == SCORING_CONTRACT_VERSION
                 and _same_strategy_identity(old, engine)
                 and old_score is not None
                 and float(old_score) > float(engine.best_score)
@@ -408,6 +413,7 @@ def _save_strategy(
             pass
     data = {
         "vocab_version": VOCAB_VERSION,
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
         "symbol": symbol,
         "timeframe": timeframe,
         "data_file": str(Path(data_file).resolve()),

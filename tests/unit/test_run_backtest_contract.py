@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 
@@ -13,7 +14,9 @@ from run_backtest import (
     _validate_sealed_report_cli,
     _validate_strategy_data_contract,
     _write_sealed_report_atomic,
+    export_equity_json,
 )
+from model_core.target_contract import SCORING_CONTRACT_VERSION
 
 
 _DIGEST = "a" * 64
@@ -54,6 +57,28 @@ def _strategy() -> dict:
         "data_end": "2024-04-29T13:13:20Z",
         "columns": ["time", "open", "high", "low", "close", "tick_volume"],
     }
+
+
+def test_equity_json_declares_current_scoring_contract(tmp_path: Path) -> None:
+    pnl = np.array([0.01, -0.005, 0.002], dtype=np.float64)
+    export_equity_json(
+        {
+            "XAUUSD": {
+                "pnl": pnl,
+                "cum_pnl": np.cumsum(pnl),
+                "sharpe": 1.0,
+                "sortino": 1.2,
+                "total_return": float(pnl.sum()),
+                "profit_loss_ratio": 2.0,
+            }
+        },
+        str(tmp_path),
+        rolling_window=2,
+    )
+
+    payload = json.loads((tmp_path / "equity_curve.json").read_text(encoding="utf-8"))
+
+    assert payload["scoring_contract_version"] == SCORING_CONTRACT_VERSION
 
 
 def test_matching_strategy_data_contract_is_accepted() -> None:

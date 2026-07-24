@@ -17,6 +17,7 @@ import pytest
 import torch
 
 from model_core.alphagpt import AlphaGPT
+from model_core.target_contract import SCORING_CONTRACT_VERSION
 from model_core.vocab import FORMULA_VOCAB, VocabVersionMismatchError
 import web.training_package as package_module
 
@@ -47,6 +48,7 @@ def _checkpoint_bytes(*, symbol: str = SYMBOL, step: int = STEP) -> bytes:
     torch.save(
         {
             "vocab_version": FORMULA_VOCAB.version,
+            "scoring_contract_version": SCORING_CONTRACT_VERSION,
             "symbol": symbol,
             "timeframe": "H1",
             "dataset_id": f"sha256:{DATA_HASH}",
@@ -78,6 +80,7 @@ def _strategy_bytes(
 ) -> bytes:
     payload: dict[str, Any] = {
         "vocab_version": FORMULA_VOCAB.version,
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
         "symbol": SYMBOL,
         "formula": [0],
         "best_score": 0.5,
@@ -95,7 +98,12 @@ def _strategy_bytes(
 
 
 def _history_bytes() -> bytes:
-    return json.dumps({"step": list(range(STEP))}).encode("utf-8")
+    return json.dumps(
+        {
+            "scoring_contract_version": SCORING_CONTRACT_VERSION,
+            "step": list(range(STEP)),
+        }
+    ).encode("utf-8")
 
 
 def _manifest(
@@ -108,6 +116,7 @@ def _manifest(
         "format": package_format,
         "symbol": SYMBOL,
         "step": STEP,
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
         "checkpoint": CHECKPOINT,
         "files": list(payloads),
         "artifacts": [
@@ -448,6 +457,52 @@ def test_rejects_checkpoint_with_mismatched_vocab_version_before_publish(
         package_module.import_training_package(
             _secure_package(checkpoint=buffer.getvalue()),
             "mismatched-vocab-version.zip",
+            SYMBOL,
+        )
+
+    _assert_existing_unchanged(snapshot)
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    ["manifest", "checkpoint", "strategy", "history"],
+)
+def test_rejects_missing_scoring_contract_before_atomic_publish(
+    isolated_project: Path,
+    artifact: str,
+) -> None:
+    snapshot = _seed_existing(isolated_project)
+    checkpoint = torch.load(
+        io.BytesIO(_checkpoint_bytes()),
+        map_location="cpu",
+        weights_only=True,
+    )
+    strategy = json.loads(_strategy_bytes())
+    history = json.loads(_history_bytes())
+
+    checkpoint.pop("scoring_contract_version", None)
+    checkpoint_buffer = io.BytesIO()
+    torch.save(checkpoint, checkpoint_buffer)
+    strategy.pop("scoring_contract_version", None)
+    history.pop("scoring_contract_version", None)
+
+    kwargs: dict[str, Any] = {}
+    if artifact == "checkpoint":
+        kwargs["checkpoint"] = checkpoint_buffer.getvalue()
+    elif artifact == "strategy":
+        kwargs["strategy"] = json.dumps(strategy).encode("utf-8")
+    elif artifact == "history":
+        kwargs["history"] = json.dumps(history).encode("utf-8")
+    elif artifact == "manifest":
+        kwargs["mutate_manifest"] = lambda manifest: manifest.pop(
+            "scoring_contract_version",
+            None,
+        )
+
+    with pytest.raises(ValueError, match="评分合同"):
+        package_module.import_training_package(
+            _secure_package(**kwargs),
+            f"missing-{artifact}-contract.zip",
             SYMBOL,
         )
 

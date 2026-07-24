@@ -23,9 +23,17 @@ from torch import Tensor
 
 from strategy_manager.signal import compute_target_positions_stateless
 from .config import ModelConfig
+from .target_contract import align_target_return_window
 
 _H1_PERIODS_PER_YEAR = 6240
 _SORTINO_CLIP        = 20.0
+
+
+def _turnover_from_flat(position: Tensor) -> Tensor:
+    """独立评分窗口从空仓开始，首个非零仓位计入建仓成本。"""
+    prev_pos = torch.zeros_like(position)
+    prev_pos[:, 1:] = position[:, :-1]
+    return torch.abs(position - prev_pos)
 
 
 class MT5Backtest:
@@ -73,9 +81,10 @@ class MT5Backtest:
     # ──────────────────────────────────────────────────────────────────────
 
     def _ts_ic_stability(self, factors: Tensor, target_ret: Tensor) -> float:
-        """时序 IC 稳定性：每个品种内部 factor[t] 与 ret[t+1] 的相关性均值。
+        """时序 IC 稳定性：每个品种内部 factor[t] 与 target_ret[t] 的相关性均值。
 
         比横截面 IC 更适合 5 品种宇宙（横截面 N=5 统计意义弱）。
+        调用方必须传入已经裁掉目标尾部占位值的有效窗口。
 
         Returns:
             float，约 [-1, 1]，正值代表因子有预测力。
@@ -86,8 +95,8 @@ class MT5Backtest:
 
         ic_list = []
         for n in range(N):
-            x = factors[n, :-1]
-            y = target_ret[n, 1:]
+            x = factors[n]
+            y = target_ret[n]
             xm = x - x.mean()
             ym = y - y.mean()
             sx = (xm ** 2).mean().sqrt()
@@ -328,15 +337,32 @@ class MT5Backtest:
           - OOS Sortino <= 0：乘以 0.1~0.5 惩罚，强制冠军必须在验证段盈利
           - OOS Sortino > 0：乘以最多 1.2 奖励
         """
+        factors, target_ret = align_target_return_window(factors, target_ret)
+        valid_steps = factors.shape[1]
+        bounds = (train_start, train_end, val_start, val_end)
+        if any(isinstance(value, bool) or not isinstance(value, int) for value in bounds):
+            raise ValueError("walk-forward 边界必须全部是整数")
+        if not (
+            0 <= train_start < train_end <= valid_steps
+            and train_end < val_start < val_end <= valid_steps
+        ):
+            raise ValueError(
+                "walk-forward 边界必须落在目标收益有效窗口内，"
+                f"有效长度={valid_steps}，实际={bounds}"
+            )
         position = compute_target_positions_stateless(factors)  # neutral band
-
-        prev_pos = torch.roll(position, 1, dims=1)
-        prev_pos[:, 0] = 0.0
-        turnover = torch.abs(position - prev_pos)
-        pnl      = position * target_ret - turnover * self.cost_rate
-
-        pnl_train = pnl[:, train_start:train_end]
-        pnl_val   = pnl[:, val_start:val_end]
+        position_train = position[:, train_start:train_end]
+        position_val = position[:, val_start:val_end]
+        turnover_train = _turnover_from_flat(position_train)
+        turnover_val = _turnover_from_flat(position_val)
+        pnl_train = (
+            position_train * target_ret[:, train_start:train_end]
+            - turnover_train * self.cost_rate
+        )
+        pnl_val = (
+            position_val * target_ret[:, val_start:val_end]
+            - turnover_val * self.cost_rate
+        )
 
         # 训练段：多目标 + 换手率惩罚
         train_bars = train_end - train_start
@@ -344,9 +370,9 @@ class MT5Backtest:
             factors[:, train_start:train_end],
             target_ret[:, train_start:train_end],
             pnl_train,
-            position[:, train_start:train_end],
+            position_train,
             eval_bars=train_bars,
-        ) + self._turnover_penalty(turnover[:, train_start:train_end])
+        ) + self._turnover_penalty(turnover_train)
 
         # 验证段：多目标 × OOS Sortino 门控
         val_bars = val_end - val_start
@@ -354,7 +380,7 @@ class MT5Backtest:
             factors[:, val_start:val_end],
             target_ret[:, val_start:val_end],
             pnl_val,
-            position[:, val_start:val_end],
+            position_val,
             eval_bars=val_bars,
         )
         oos_sor = self._sortino(pnl_val).item()
@@ -543,24 +569,33 @@ class MT5Backtest:
         target_ret: Tensor,
     ) -> tuple[Tensor, float]:
         """评估一组 Alpha 因子（含 OOS 80/20 门控）。"""
-        position = compute_target_positions_stateless(factors)
+        factors, target_ret = align_target_return_window(factors, target_ret)
+        T = factors.shape[1]
+        if T < 2:
+            raise ValueError("目标收益有效窗口至少需要 2 根 K 线")
 
-        prev_pos = torch.roll(position, 1, dims=1)
-        prev_pos[:, 0] = 0.0
-        turnover = torch.abs(position - prev_pos)
-        pnl      = position * target_ret - turnover * self.cost_rate
-
-        T     = factors.shape[1]
         split = int(math.floor(T * 0.8))
+        position = compute_target_positions_stateless(factors)
+        position_train = position[:, :split]
+        position_oos = position[:, split:]
+        turnover_train = _turnover_from_flat(position_train)
+        turnover_oos = _turnover_from_flat(position_oos)
+        pnl_train = (
+            position_train * target_ret[:, :split]
+            - turnover_train * self.cost_rate
+        )
+        pnl_oos = (
+            position_oos * target_ret[:, split:]
+            - turnover_oos * self.cost_rate
+        )
 
         score = self._multi_objective(
             factors[:, :split], target_ret[:, :split],
-            pnl[:, :split], position[:, :split],
+            pnl_train, position_train,
             eval_bars=split,
-        ) + self._turnover_penalty(turnover[:, :split])
+        ) + self._turnover_penalty(turnover_train)
 
         # OOS 门控（最后 20%）
-        pnl_oos = pnl[:, split:]
         oos_sor = self._sortino(pnl_oos).item()
         if oos_sor <= 0:
             mult = max(0.1, 0.5 + oos_sor * 0.4)

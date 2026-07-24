@@ -305,12 +305,16 @@ def test_ic_arithmetic_consistency(N: int, T: int) -> None:
     Property 9: IC Calculation Arithmetic Consistency
 
     _compute_ic now computes time-series IC (per-symbol):
-    for each symbol n, IC_n = Pearson_corr(factor[n, :-1], target_ret[n, 1:])
+    for each symbol n, IC_n = Pearson_corr(
+        factor[n, :-TARGET_RETURN_HORIZON],
+        target_ret[n, :-TARGET_RETURN_HORIZON],
+    )
     ic_mean = mean across symbols of IC_n values.
 
     **Validates: Requirements T1.3, T1.4**
     """
     from model_core.engine import AlphaEngine
+    from model_core.target_contract import TARGET_RETURN_HORIZON
 
     torch.manual_seed(0)
     factor     = torch.randn(N, T)
@@ -318,11 +322,11 @@ def test_ic_arithmetic_consistency(N: int, T: int) -> None:
 
     ic_mean, ic_stability = AlphaEngine._compute_ic(factor, target_ret)
 
-    # Manual time-series IC: per symbol, factor[n,:-1] vs target_ret[n,1:]
+    # Manual time-series IC: 同索引配对，并裁掉目标末尾两个占位值。
     ic_list = []
     for n in range(N):
-        x = factor[n, :-1]
-        y = target_ret[n, 1:]
+        x = factor[n, :-TARGET_RETURN_HORIZON]
+        y = target_ret[n, :-TARGET_RETURN_HORIZON]
         sx = x.std(unbiased=False)
         sy = y.std(unbiased=False)
         if sx.item() < 1e-6 or sy.item() < 1e-6:

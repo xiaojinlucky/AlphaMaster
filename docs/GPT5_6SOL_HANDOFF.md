@@ -86,7 +86,7 @@ Windows 选择 Parquet
 - `RESOLVED-20260720-DATA-ALIGN`：用户确认后已修复并随 `67e81f3` 推送旧 MT5 多品种回退中的未来首报价回填；严格交集保持不变，回退仅 `ffill()` 并裁掉没有历史报价的共同前段，裁后不足 `MIN_BARS` 失败关闭。定向测试和独立六维审查均通过。
 - `P1-CANDIDATE-TURNOVER`：`_turnover_quality()` 对 `tanh` 连续仓位执行 `int(p)`，已确认会把绝大多数仓位误判为 0。
 - `P0-CANDIDATE-SELECTION`：walk-forward validation 被每个训练 step 反复用于冠军、精英池和搜索方向，属于 selection 反馈；尚未证明存在策略冻结后才访问的密封最终测试。
-- `P1-CANDIDATE-HORIZON`：PnL 使用 `position[t] * target_ret[t]`，IC 使用 `factor[t]` 对齐 `target_ret[t+1]`；必须用合成序列证明唯一 horizon 后再决定是否修改。
+- `P1-CANDIDATE-HORIZON`（2026-07-25 已在隔离修复候选中解决）：合成序列已证明唯一合同为 `factor[t]`、`position[t]` 与 `target_ret[t]` 同索引，并统一裁掉末尾两根不可实现收益；证据见 `docs/VALIDATION_EVIDENCE.md` 4.4。
 - 当前 `9000` 步与 `00:30:00` Slurm 时限明显不相容；正式训练预算未冻结。
 - 12 CPU 没有与 8 CPU 同口径的稳定性能结论。
 - 旧 MT5 668 文件批量计划尚未 apply。

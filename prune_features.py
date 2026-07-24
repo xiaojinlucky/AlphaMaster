@@ -31,6 +31,10 @@ from data_pipeline.data_manager import MT5DataManager
 from data_pipeline.fetcher import MT5DataFetcher
 from model_core.features import _FEATURE_DEFS
 from model_core.evaluator import score_all, prune
+from model_core.target_contract import (
+    SCORING_CONTRACT_VERSION,
+    TARGET_RETURN_HORIZON,
+)
 
 OUTPUT = Path(__file__).parent / "active_features.json"
 
@@ -75,7 +79,12 @@ def main():
 
     # ── 3. 打分 ───────────────────────────────────────────────────────
     print(f"\n对 {len(candidates)} 个特征打分（IC / RankIC / MI）...")
-    scores = score_all(candidates, target, categories=categories)
+    scores = score_all(
+        candidates,
+        target,
+        categories=categories,
+        horizon=TARGET_RETURN_HORIZON,
+    )
     scores_sorted = sorted(scores, key=lambda s: (
         -s.importance_score if s.importance_score == s.importance_score else 1,
     ))
@@ -90,7 +99,13 @@ def main():
 
     # ── 4. 相关性剪枝 ─────────────────────────────────────────────────
     print(f"\n相关性剪枝（corr>{args.corr} 且分差>{args.margin}）...")
-    rows = prune(scores, candidates, corr_threshold=args.corr, margin=args.margin)
+    rows = prune(
+        scores,
+        candidates,
+        corr_threshold=args.corr,
+        margin=args.margin,
+        horizon=TARGET_RETURN_HORIZON,
+    )
     retained = [r for r in rows if r.retention_status == "retained"]
     pruned   = [r for r in rows if r.retention_status == "pruned"]
     print(f"  相关性剪枝后保留 {len(retained)} 个，剪掉 {len(pruned)} 个")
@@ -118,6 +133,8 @@ def main():
 
     # ── 6. 写出 active_features.json ─────────────────────────────────
     payload = {
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
+        "target_horizon": TARGET_RETURN_HORIZON,
         "active_features": ordered_names,
         "meta": {
             "source": "prune_features.py",

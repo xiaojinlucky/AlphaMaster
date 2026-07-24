@@ -12,10 +12,14 @@ strategy_manager/runner.py — MT5 策略主循环控制器（回测对标版）
 from __future__ import annotations
 
 import json
+import hashlib
+import math
 import os
+import re
 import sys
 import time
 from numbers import Real
+from pathlib import Path
 
 import torch
 from loguru import logger
@@ -83,6 +87,8 @@ except ImportError:
         def close_all_positions(self, symbol, magic=None, *, filter_magic=True):
             self._unavailable("close_all_positions()")
 from model_core.vm import StackVM
+from model_core.target_contract import SCORING_CONTRACT_VERSION
+from model_core.vocab import FORMULA_VOCAB, VocabVersionMismatchError
 from strategy_manager.portfolio import MT5PortfolioManager
 from strategy_manager.risk import MT5RiskEngine
 from strategy_manager.signal import (
@@ -93,6 +99,345 @@ from strategy_manager.signal import (
 )
 
 _LOOP_INTERVAL: int = 60
+RUNNER_POSITION_CONTRACT_VERSION = "direction_entry_size_hold_v1"
+_SYMBOL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+def validate_strategy_symbol(symbol: object) -> str:
+    """校验券商品种名，禁止把它解释成策略文件路径。"""
+    if not isinstance(symbol, str) or _SYMBOL_PATTERN.fullmatch(symbol) is None:
+        raise ValueError(f"非法交易品种名: {symbol!r}")
+    if ".." in symbol:
+        raise ValueError(f"交易品种名不得包含 '..': {symbol!r}")
+    return symbol
+
+
+def _strategy_path_within(root: Path, *parts: str) -> Path:
+    """解析策略路径，并确认普通路径或符号链接都没有逃出根目录。"""
+    boundary = root.resolve()
+    candidate = root.joinpath(*parts).resolve()
+    try:
+        candidate.relative_to(boundary)
+    except ValueError as exc:
+        raise ValueError(f"策略路径逃出根目录: {candidate}") from exc
+    return candidate
+
+
+def _validate_formula_tokens(value: object) -> list[int]:
+    """严格校验公式 token 类型、范围与逆波兰表达式栈结构。"""
+    if not isinstance(value, list) or not value:
+        raise ValueError("公式必须是非空 list")
+
+    formula: list[int] = []
+    stack_depth = 0
+    arity_map = StackVM().arity_map
+    for index, token in enumerate(value):
+        if type(token) is not int:
+            raise ValueError(
+                f"formula[{index}] 必须是 int，实际为 {type(token).__name__}"
+            )
+        if not 0 <= token < FORMULA_VOCAB.size:
+            raise ValueError(
+                f"formula[{index}]={token} 超出词表范围 [0, {FORMULA_VOCAB.size})"
+            )
+        if token < FORMULA_VOCAB.operator_offset:
+            stack_depth += 1
+        else:
+            arity = arity_map[token]
+            if stack_depth < arity:
+                raise ValueError(
+                    f"formula[{index}] 算子缺少操作数：需要 {arity}，"
+                    f"当前栈深 {stack_depth}"
+                )
+            stack_depth = stack_depth - arity + 1
+        formula.append(token)
+
+    if stack_depth != 1:
+        raise ValueError(f"公式结束时栈深必须为 1，实际为 {stack_depth}")
+    return formula
+
+
+def _load_contract_formula(path: Path) -> list[int] | None:
+    """读取可用于真实信号的公式；版本、合同或分数不合格时拒绝。"""
+    if not path.exists():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if not isinstance(data, dict):
+            raise ValueError("策略顶层不是对象")
+        FORMULA_VOCAB.verify(data.get("vocab_version"))
+        if data.get("scoring_contract_version") != SCORING_CONTRACT_VERSION:
+            raise ValueError("评分合同不兼容")
+        raw_formula = (
+            data["formula"]
+            if "formula" in data
+            else data.get("formula_tokens")
+        )
+        formula = _validate_formula_tokens(raw_formula)
+        score = data.get("best_score")
+        if score is None:
+            score = data.get("train_best_score")
+        if (
+            isinstance(score, bool)
+            or not isinstance(score, Real)
+            or not math.isfinite(float(score))
+            or float(score) <= 0.0
+        ):
+            raise ValueError(f"best_score={score!r} 不是严格正有限数")
+        return formula
+    except (json.JSONDecodeError, OSError, TypeError, ValueError, VocabVersionMismatchError) as exc:
+        logger.warning(f"[Runner] {path.name}: 加载失败 {exc}")
+        return None
+
+
+def load_symbol_formulas(
+    symbols: list[str],
+    *,
+    strategies_dir: Path | None = None,
+) -> dict[str, list[list[int]]]:
+    """按 Runner 的真实优先级加载并去重每个品种的全部有效公式。"""
+    if not isinstance(symbols, list) or not symbols:
+        raise ValueError("请求品种必须是非空 list")
+    checked_symbols = [validate_strategy_symbol(symbol) for symbol in symbols]
+    if len(set(checked_symbols)) != len(checked_symbols):
+        raise ValueError("请求品种存在重复")
+
+    root = strategies_dir or Path("strategies")
+    forex_group = {"EURUSD", "USDJPY"}
+    metals_comm_group = {"XAUUSD", "AAVUSD", "COCOA.c"}
+    loaded: dict[str, list[list[int]]] = {}
+
+    for symbol in checked_symbols:
+        formulas: list[list[int]] = []
+        seen: set[tuple[int, ...]] = set()
+
+        def add(path: Path, label: str) -> None:
+            formula = _load_contract_formula(path)
+            if formula is None:
+                return
+            key = tuple(formula)
+            if key in seen:
+                return
+            seen.add(key)
+            formulas.append(formula)
+            logger.info(f"[Runner] {symbol}: 加载公式 [{label}] {formula}")
+
+        add(
+            _strategy_path_within(root, f"best_{symbol}.json"),
+            f"best_{symbol}",
+        )
+        if symbol in forex_group:
+            add(
+                _strategy_path_within(root, "best_forex.json"),
+                "best_forex(v2)",
+            )
+            add(
+                _strategy_path_within(
+                    root,
+                    "archive",
+                    "best_forex_20250705_pre_refactor.json",
+                ),
+                "archive_forex_v1",
+            )
+        if symbol in metals_comm_group:
+            add(
+                _strategy_path_within(root, "best_metals_comm.json"),
+                "best_metals_comm(v2)",
+            )
+
+        if formulas:
+            loaded[symbol] = formulas
+
+    if loaded:
+        missing = [symbol for symbol in checked_symbols if symbol not in loaded]
+        if missing:
+            raise ValueError(
+                "以下请求品种没有有效公式，拒绝部分策略集合启动: "
+                + ", ".join(missing)
+            )
+        return loaded
+
+    raise FileNotFoundError(
+        f"请求品种均无有效策略文件: {', '.join(checked_symbols)}"
+    )
+
+
+def formula_set_sha256(formulas: list[list[int]]) -> str:
+    """计算 Runner 有序公式集合的稳定身份。"""
+    validated = [_validate_formula_tokens(formula) for formula in formulas]
+    payload = json.dumps(
+        validated,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def verify_formula_set_hashes(
+    formulas_by_symbol: dict[str, list[list[int]]],
+    expected_hashes: dict[str, str],
+) -> None:
+    """确认内存中即将执行的公式集合与已审核身份完全一致。"""
+    actual_symbols = set(formulas_by_symbol)
+    expected_symbols = set(expected_hashes)
+    if actual_symbols != expected_symbols:
+        missing = sorted(expected_symbols - actual_symbols)
+        extra = sorted(actual_symbols - expected_symbols)
+        raise ValueError(
+            f"公式集合品种不一致: missing={missing}, extra={extra}"
+        )
+    for symbol, formulas in formulas_by_symbol.items():
+        actual = formula_set_sha256(formulas)
+        if actual != expected_hashes[symbol]:
+            raise ValueError(
+                f"{symbol} 当前公式集合与扫描报告不一致，必须重新扫描"
+            )
+
+
+def compute_formula_set_positions(
+    vm: StackVM,
+    formulas: list[list[int]],
+    feature: torch.Tensor,
+    *,
+    symbol: str,
+    min_exposure: float,
+) -> torch.Tensor:
+    """严格执行 Runner 的完整公式集合，返回全时间序列目标仓位。"""
+    if not formulas:
+        raise ValueError(f"{symbol}: 公式集合为空")
+    if not isinstance(feature, torch.Tensor) or feature.ndim != 3:
+        raise ValueError(f"{symbol}: feature 必须是 [N, F, T] 张量")
+    if feature.shape[0] < 1 or feature.shape[-1] < 1:
+        raise ValueError(f"{symbol}: feature 的 N 和 T 必须严格大于 0")
+    if (
+        isinstance(min_exposure, bool)
+        or not isinstance(min_exposure, Real)
+        or not math.isfinite(float(min_exposure))
+        or not 0.0 <= float(min_exposure) <= 1.0
+    ):
+        raise ValueError(f"{symbol}: min_exposure 必须是 [0, 1] 有限数")
+
+    signals: list[torch.Tensor] = []
+    expected_shape = (int(feature.shape[0]), int(feature.shape[-1]))
+    for index, formula in enumerate(formulas):
+        validated = _validate_formula_tokens(formula)
+        raw = vm.execute(validated, feature)
+        if raw is None:
+            raise RuntimeError(f"{symbol} formula[{index}]: StackVM 执行失败")
+        if not isinstance(raw, torch.Tensor) or raw.ndim != 2:
+            raise RuntimeError(
+                f"{symbol} formula[{index}]: StackVM 输出必须是 [N, T] 张量"
+            )
+        if tuple(raw.shape) != expected_shape:
+            raise RuntimeError(
+                f"{symbol} formula[{index}]: StackVM 输出形状 "
+                f"{tuple(raw.shape)} != {expected_shape}"
+            )
+        if not torch.isfinite(raw).all():
+            raise RuntimeError(
+                f"{symbol} formula[{index}]: StackVM 输出含非有限值"
+            )
+        signals.append(torch.tanh(raw))
+
+    target = torch.stack(signals, dim=0).mean(dim=0)
+    if min_exposure > 0:
+        target = torch.where(
+            target.abs() >= min_exposure,
+            target,
+            torch.zeros_like(target),
+        )
+    return target
+
+
+def apply_runner_position_state(
+    target: torch.Tensor,
+    *,
+    min_exposure: float,
+    fixed_exposure: bool,
+) -> torch.Tensor:
+    """把信号转换为 Runner 实际的“方向变化才重开仓”持仓序列。"""
+    if not isinstance(target, torch.Tensor) or target.ndim != 2:
+        raise ValueError("target 必须是 [N, T] 张量")
+    if not torch.isfinite(target).all():
+        raise ValueError("target 含非有限值")
+    if (
+        isinstance(min_exposure, bool)
+        or not isinstance(min_exposure, Real)
+        or not math.isfinite(float(min_exposure))
+        or not 0.0 <= float(min_exposure) <= 1.0
+    ):
+        raise ValueError("min_exposure 必须是 [0, 1] 有限数")
+
+    executed = torch.zeros_like(target)
+    for row in range(target.shape[0]):
+        current_direction = 0
+        current_position = 0.0
+        for column in range(target.shape[1]):
+            value = float(target[row, column].item())
+            desired_direction = (
+                1
+                if value >= min_exposure
+                else (-1 if value <= -min_exposure else 0)
+            )
+            if desired_direction != current_direction:
+                current_direction = desired_direction
+                if desired_direction == 0:
+                    current_position = 0.0
+                elif fixed_exposure:
+                    current_position = float(desired_direction)
+                else:
+                    current_position = value
+            executed[row, column] = current_position
+    return executed
+
+
+def compute_latest_formula_target(
+    vm: StackVM,
+    formulas: list[list[int]],
+    feature: torch.Tensor,
+    *,
+    symbol: str,
+    min_exposure: float,
+) -> float:
+    """执行并平均 Runner 实际采用的多公式最新信号。"""
+    positions = compute_formula_set_positions(
+        vm,
+        formulas,
+        feature,
+        symbol=symbol,
+        min_exposure=min_exposure,
+    )
+    return float(positions[0, -1].item())
+
+
+class _DryRunTraderProxy:
+    """只放行明确的只读/生命周期方法，其余调用默认拦截。"""
+
+    _ALLOWED_CALLS = frozenset(
+        {
+            "connect",
+            "close",
+            "get_account_info",
+            "get_positions",
+        }
+    )
+
+    def __init__(self, trader: object) -> None:
+        self._trader = trader
+
+    def __getattr__(self, name: str):
+        attr = getattr(self._trader, name)
+        if not callable(attr) or name in self._ALLOWED_CALLS:
+            return attr
+
+        def blocked(*args, **kwargs):
+            logger.warning(
+                f"[Runner] DRY RUN：已拦截非只读交易调用 {name}"
+            )
+            return False
+
+        return blocked
 
 
 class MT5StrategyRunner:
@@ -106,133 +451,29 @@ class MT5StrategyRunner:
     - EXIT_MODE 控制风控叠加
     """
 
-    def __init__(self) -> None:
-        from model_core.vocab import VOCAB_VERSION as _CURRENT_VER
-        from pathlib import Path as _Path
-
+    def __init__(
+        self,
+        *,
+        dry_run: bool = False,
+        expected_formula_set_sha256: dict[str, str] | None = None,
+        min_trade_exposure: float | None = None,
+    ) -> None:
         # ── 加载策略：支持每品种多公式（信号取平均合并）──────────────
-        # symbol_formulas_multi: {sym: [[token,...], [token,...], ...]}
-        # 每品种可对应多条公式，信号层取平均后合并为单一仓位方向。
-        self.symbol_formulas_multi: dict[str, list[list[int]]] = {}
-        # 向后兼容：self.symbol_formulas 保留为"每品种第一条公式"（供旧代码引用）
-        self.symbol_formulas: dict[str, list[int]] = {}
-
-        strategies_dir = _Path("strategies")
-        archive_dir    = strategies_dir / "archive"
-
-        def _load_formula(path: "_Path") -> "list[int] | None":
-            """加载单个策略文件，返回 formula token 列表，失败返回 None。"""
-            if not path.exists():
-                return None
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if not isinstance(data, dict):
-                    return None
-                formula = data.get("formula") or data.get("formula_tokens")
-                if not formula:
-                    return None
-                ver = data.get("vocab_version", "unknown")
-                if ver != _CURRENT_VER:
-                    logger.warning(f"[Runner] {path.name}: vocab_version={ver} != {_CURRENT_VER}, skip")
-                    return None
-                score = data.get("best_score") or data.get("train_best_score") or 0.0
-                if score <= 0.0:
-                    logger.warning(f"[Runner] {path.name}: best_score={score:.4f} <= 0, skip (invalid strategy)")
-                    return None
-                return [int(t) for t in formula]
-            except Exception as exc:
-                logger.warning(f"[Runner] {path.name}: 加载失败 {exc}")
-                return None
-
-        # ── 品种分组定义 ─────────────────────────────────────────────
-        forex_group       = ["EURUSD", "USDJPY"]
-        metals_comm_group = ["XAUUSD", "AAVUSD", "COCOA.c"]
-
-        # ── 为每品种收集所有有效公式（支持多条）────────────────────
-        # 查找顺序：
-        #   forex 组：
-        #     1. strategies/best_{sym}.json（per-symbol 主策略）
-        #     2. strategies/best_forex.json（组策略，forex_v2）
-        #     3. strategies/archive/best_forex_*.json（归档，forex_v1）
-        #   metals_comm 组：
-        #     1. strategies/best_{sym}.json（per-symbol 主策略）
-        #     2. strategies/best_metals_comm.json（组策略，metals_comm_v2）
-
-        for sym in Config.SYMBOLS:
-            formulas_for_sym: list[list[int]] = []
-            seen: set[str] = set()  # 去重，避免同一公式加两次
-
-            def _add(f: "list[int] | None", label: str) -> None:
-                if f is None:
-                    return
-                key = str(f)
-                if key in seen:
-                    return
-                seen.add(key)
-                formulas_for_sym.append(f)
-                logger.info(f"[Runner] {sym}: 加载公式 [{label}] {f}")
-
-            # 1. per-symbol 策略文件
-            _add(_load_formula(strategies_dir / f"best_{sym}.json"), f"best_{sym}")
-
-            # 2. forex 组共享策略（forex_v2）
-            if sym in forex_group:
-                _add(_load_formula(strategies_dir / "best_forex.json"), "best_forex(v2)")
-
-            # 3. 归档版本（forex_v1）
-            if sym in forex_group:
-                _add(_load_formula(archive_dir / "best_forex_20250705_pre_refactor.json"),
-                     "archive_forex_v1")
-
-            # 4. metals_comm 组共享策略（metals_comm_v2，旧版）
-            if sym in metals_comm_group:
-                _add(_load_formula(strategies_dir / "best_metals_comm.json"),
-                     "best_metals_comm(v2)")
-
-            if formulas_for_sym:
-                self.symbol_formulas_multi[sym] = formulas_for_sym
-                self.symbol_formulas[sym] = formulas_for_sym[0]  # 向后兼容
-            else:
-                logger.warning(f"[Runner] {sym}: 无有效公式，该品种将保持空仓")
-
-        # ── 若多因子均无，回退到 best_mt5_strategy.json ──────────────
-        if not self.symbol_formulas_multi:
-            strategy_path = Config.STRATEGY_FILE
-            if not os.path.exists(strategy_path):
-                logger.critical(
-                    f"未找到任何策略文件（strategies/best_*.json 或 {strategy_path}）。"
-                    "请先运行 main.py 训练。"
+        try:
+            self.symbol_formulas_multi = load_symbol_formulas(Config.SYMBOLS)
+            if expected_formula_set_sha256 is not None:
+                verify_formula_set_hashes(
+                    self.symbol_formulas_multi,
+                    expected_formula_set_sha256,
                 )
-                sys.exit(1)
-            try:
-                with open(strategy_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-            except (json.JSONDecodeError, OSError) as exc:
-                logger.critical(f"加载策略失败: {exc}")
-                sys.exit(1)
-
-            if isinstance(data, list):
-                logger.critical(
-                    "[Runner] 不支持旧格式策略（vocab v2.0 后特征顺序已变）。"
-                    "请重新训练（python main.py）。"
-                )
-                sys.exit(1)
-            elif isinstance(data, dict) and "formula" in data:
-                ver = data.get("vocab_version", "unknown")
-                if ver != _CURRENT_VER:
-                    logger.critical(
-                        f"[Runner] vocab_version={ver} != {_CURRENT_VER}，请重新训练。"
-                    )
-                    sys.exit(1)
-                formula = [int(t) for t in data["formula"]]
-                for sym in Config.SYMBOLS:
-                    self.symbol_formulas_multi[sym] = [formula]
-                    self.symbol_formulas[sym] = formula
-                logger.info("[Runner] 使用单公式回退模式（所有品种共用）")
-            else:
-                logger.critical("策略文件格式不支持。")
-                sys.exit(1)
+        except (FileNotFoundError, ValueError) as exc:
+            logger.critical(f"{exc}。请先用当前合同重新训练。")
+            sys.exit(1)
+        self.symbol_formulas = {
+            symbol: formulas[0]
+            for symbol, formulas in self.symbol_formulas_multi.items()
+        }
+        self.execution_symbols = tuple(Config.SYMBOLS)
 
         # ── 打印加载汇总 ─────────────────────────────────────────────
         for sym, fmls in self.symbol_formulas_multi.items():
@@ -244,7 +485,19 @@ class MT5StrategyRunner:
         self.vm        = StackVM()
         self.portfolio = MT5PortfolioManager()
         self.risk      = MT5RiskEngine()
-        self.trader    = MT5Trader()
+        trader = MT5Trader()
+        self.trader = _DryRunTraderProxy(trader) if dry_run else trader
+        self.dry_run = dry_run
+        self.min_trade_exposure = (
+            float(getattr(Config, "MIN_TRADE_EXPOSURE", 0.05))
+            if min_trade_exposure is None
+            else float(min_trade_exposure)
+        )
+        if (
+            not math.isfinite(self.min_trade_exposure)
+            or not 0.0 <= self.min_trade_exposure <= 1.0
+        ):
+            raise ValueError("MIN_TRADE_EXPOSURE 必须是 [0, 1] 有限数")
 
         self._fetcher: MT5DataFetcher | None       = None
         self._data_manager: MT5DataManager | None  = None
@@ -288,12 +541,17 @@ class MT5StrategyRunner:
             logger.critical(f"[Runner] Cannot connect MT5 fetcher: {exc}")
             sys.exit(1)
 
-        self._data_manager = MT5DataManager(self._fetcher)
+        self._data_manager = MT5DataManager(
+            self._fetcher,
+            require_all_symbols=True,
+        )
         try:
-            self._data_manager.load()
+            self._data_manager.load(list(self.execution_symbols))
             self._last_refresh = time.time()
         except Exception as exc:
-            logger.error(f"[Runner] Initial data load failed: {exc}")
+            raise RuntimeError(
+                f"[Runner] Initial data load failed: {exc}"
+            ) from exc
 
         logger.info("[Runner] MT5 connections established. Entering main loop.")
 
@@ -302,23 +560,7 @@ class MT5StrategyRunner:
         # 而不是等最多 1 小时才做第一次动作。
         # 同时初始化 _last_bar_time，避免第一个正常循环被误判为 new_bar。
         logger.info("[Runner] 启动后立即执行初始调仓...")
-        try:
-            self.portfolio.sync_from_mt5()
-        except Exception as exc:
-            logger.warning(f"[Runner] 初始 portfolio sync 失败: {exc}")
-        if self._data_manager is not None:
-            try:
-                cur_bar_time = self._data_manager.bar_time
-                self._last_bar_time = cur_bar_time.clone()
-            except Exception:
-                pass
-            init_targets = self._compute_targets()
-            if init_targets is not None:
-                try:
-                    self._reconcile_positions(init_targets)
-                    logger.info("[Runner] 初始调仓完成。")
-                except Exception as exc:
-                    logger.error(f"[Runner] 初始调仓失败: {exc}")
+        self._run_initial_reconcile()
 
         while True:
             loop_start = time.time()
@@ -329,6 +571,7 @@ class MT5StrategyRunner:
                 break
 
             # b. 数据刷新
+            refresh_ok = True
             if time.time() - self._last_refresh >= Config.DATA_REFRESH_INTERVAL:
                 try:
                     self._data_manager.reload()
@@ -336,20 +579,15 @@ class MT5StrategyRunner:
                     logger.info("[Runner] Data refreshed.")
                 except Exception as exc:
                     logger.error(f"[Runner] Data reload failed: {exc}")
+                    refresh_ok = False
 
             # c. 检测新 K 线收盘
-            new_bar = True
-            if Config.REBALANCE_ON_BAR_CLOSE and self._data_manager is not None:
-                try:
-                    cur_bar_time = self._data_manager.bar_time   # [N]
-                    if (self._last_bar_time is not None and
-                            cur_bar_time.shape == self._last_bar_time.shape and
-                            (cur_bar_time == self._last_bar_time).all()):
-                        new_bar = False
-                    else:
-                        self._last_bar_time = cur_bar_time.clone()
-                except Exception as exc:
-                    logger.warning(f"[Runner] bar_time check failed: {exc}")
+            new_bar = False
+            if refresh_ok:
+                if Config.REBALANCE_ON_BAR_CLOSE:
+                    new_bar = self._has_new_closed_bar()
+                else:
+                    new_bar = True
 
             # d. 同步 MT5 仓位
             try:
@@ -408,6 +646,69 @@ class MT5StrategyRunner:
             logger.warning(f"[Runner] Failed to mark stop signal: {exc}")
         return True
 
+    def _has_new_closed_bar(self) -> bool:
+        """只有完整、同形且明确变化的已收盘时间戳才能触发调仓。"""
+        if self._data_manager is None:
+            return False
+        try:
+            current = self._data_manager.bar_time
+            if (
+                not isinstance(current, torch.Tensor)
+                or current.ndim != 1
+                or current.shape[0]
+                != len(
+                    getattr(
+                        self,
+                        "execution_symbols",
+                        tuple(Config.SYMBOLS),
+                    )
+                )
+                or current.dtype != torch.int64
+                or bool((current <= 0).any().item())
+            ):
+                raise ValueError(
+                    "bar_time 必须是完整交易品种集合的严格正 int64 向量"
+                )
+            if self._last_bar_time is None:
+                self._last_bar_time = current.clone()
+                return False
+            if current.shape != self._last_bar_time.shape:
+                raise ValueError("bar_time 与上次快照形状不一致")
+            if bool((current == self._last_bar_time).all().item()):
+                return False
+            if not bool((current > self._last_bar_time).all().item()):
+                raise ValueError("bar_time 必须对全部品种严格向前推进")
+            changed = True
+            if changed:
+                self._last_bar_time = current.clone()
+            return changed
+        except Exception as exc:
+            logger.error(f"[Runner] bar_time 校验失败，本轮禁止调仓: {exc}")
+            return False
+
+    def _run_initial_reconcile(self) -> bool:
+        """建立可信已收盘时钟后才允许启动时第一次调仓。"""
+        try:
+            self.portfolio.sync_from_mt5()
+        except Exception as exc:
+            logger.error(f"[Runner] 初始 portfolio sync 失败: {exc}")
+            return False
+        self._last_bar_time = None
+        self._has_new_closed_bar()
+        if self._last_bar_time is None:
+            logger.error("[Runner] 无法建立已收盘 K 线时钟，跳过初始调仓")
+            return False
+        init_targets = self._compute_targets()
+        if init_targets is None:
+            return False
+        try:
+            self._reconcile_positions(init_targets)
+        except Exception as exc:
+            logger.error(f"[Runner] 初始调仓失败: {exc}")
+            return False
+        logger.info("[Runner] 初始调仓完成。")
+        return True
+
     def _compute_targets(self) -> torch.Tensor | None:
         """为每个品种计算合并后的目标仓位 [-1, +1]，形状 [N]。
 
@@ -439,40 +740,12 @@ class MT5StrategyRunner:
                     continue
 
                 feat_i = feat_all[i:i+1]   # [1, F, T]
-
-                # ── 多公式信号平均 ────────────────────────────────────
-                valid_signals: list[float] = []
-                for fi, formula in enumerate(formulas):
-                    raw_i = self.vm.execute(formula, feat_i)   # [1, T] or None
-                    if raw_i is None:
-                        logger.warning(f"[Runner] {sym} formula[{fi}]: StackVM 返回 None，跳过")
-                        continue
-                    latest_val = raw_i[0, -1].item()   # 最新 bar 因子值（标量）
-                    signal = float(torch.tanh(torch.tensor(latest_val)).item())
-                    valid_signals.append(signal)
-                    logger.debug(f"[Runner] {sym} formula[{fi}]: factor={latest_val:+.4f} → tanh={signal:+.4f}")
-
-                if not valid_signals:
-                    logger.error(f"[Runner] {sym}: 所有公式均失败，保持空仓")
-                    continue
-
-                # 算术平均（两条反向信号相互抵消，同向信号叠加）
-                avg_signal = sum(valid_signals) / len(valid_signals)
-
-                # 应用 MIN_TRADE_EXPOSURE 门槛（与回测一致）
-                from config import Config as _Cfg
-                min_exp = getattr(_Cfg, "MIN_TRADE_EXPOSURE", 0.05)
-                if abs(avg_signal) < min_exp:
-                    avg_signal = 0.0
-
-                targets[i] = avg_signal
-
-                # 详细日志：显示各公式信号和合并结果
-                signals_str = " / ".join(f"{s:+.3f}" for s in valid_signals)
-                direction_str = "多" if avg_signal > 0 else ("空" if avg_signal < 0 else "空仓")
-                logger.info(
-                    f"[Runner] {sym}: 各公式信号=[{signals_str}] → "
-                    f"均值={avg_signal:+.4f} ({direction_str})"
+                targets[i] = compute_latest_formula_target(
+                    self.vm,
+                    formulas,
+                    feat_i,
+                    symbol=sym,
+                    min_exposure=self.min_trade_exposure,
                 )
 
             logger.info(
@@ -502,7 +775,20 @@ class MT5StrategyRunner:
             return
 
         symbols = self._data_manager.symbols
-        n = min(len(symbols), len(targets))
+        expected_symbols = list(
+            getattr(self, "execution_symbols", tuple(symbols))
+        )
+        if symbols != expected_symbols:
+            raise RuntimeError("数据品种集合与冻结交易品种集合不一致")
+        if (
+            not isinstance(targets, torch.Tensor)
+            or targets.ndim != 1
+            or len(targets) != len(symbols)
+            or not torch.isfinite(targets).all()
+        ):
+            raise RuntimeError("目标仓位必须完整覆盖全部交易品种且为有限一维张量")
+        n = len(symbols)
+        live_by_symbol = self._preflight_live_position_contracts(symbols)
 
         for idx in range(n):
             symbol       = symbols[idx]
@@ -511,7 +797,7 @@ class MT5StrategyRunner:
             exposure     = abs(target_value) if target != 0 else 0.0
 
             # 以 MT5 实盘为准；对冲账户下同品种可能多空并存，需先清理
-            live_positions = self.trader.get_positions(symbol, Config.MAGIC_NUMBER)
+            live_positions = live_by_symbol[symbol]
             has_buy = any(getattr(p, "type", 0) == 0 for p in live_positions)
             has_sell = any(getattr(p, "type", 0) == 1 for p in live_positions)
             if has_buy and has_sell:
@@ -552,28 +838,24 @@ class MT5StrategyRunner:
 
             # ── 执行动作 ────────────────────────────────────────────
             if action == OPEN_LONG:
-                if self.trader.get_positions(symbol, Config.MAGIC_NUMBER):
-                    if not self._close_symbol_positions(symbol):
-                        logger.error(f"[Reconcile] {symbol}: 开仓前清理旧仓失败")
-                        continue
                 lot = self._calc_lot(symbol, exposure)
                 if lot <= 0:
                     logger.warning(f"[Reconcile] {symbol}: lot=0, skipping.")
                     continue
                 if self.trader.buy(symbol, lot):
-                    self._record_position_after_open(symbol, "BUY", lot)
+                    self._record_position_after_open(
+                        symbol, "BUY", lot, exposure
+                    )
 
             elif action == OPEN_SHORT:
-                if self.trader.get_positions(symbol, Config.MAGIC_NUMBER):
-                    if not self._close_symbol_positions(symbol):
-                        logger.error(f"[Reconcile] {symbol}: 开仓前清理旧仓失败")
-                        continue
                 lot = self._calc_lot(symbol, exposure)
                 if lot <= 0:
                     logger.warning(f"[Reconcile] {symbol}: lot=0, skipping.")
                     continue
                 if self.trader.open_short(symbol, lot):
-                    self._record_position_after_open(symbol, "SELL", lot)
+                    self._record_position_after_open(
+                        symbol, "SELL", lot, exposure
+                    )
 
             elif action == CLOSE:
                 if self._close_symbol_positions(symbol):
@@ -588,7 +870,9 @@ class MT5StrategyRunner:
                     logger.warning(f"[Reconcile] {symbol}: lot=0, skipping.")
                     continue
                 if self.trader.buy(symbol, lot):
-                    self._record_position_after_open(symbol, "BUY", lot)
+                    self._record_position_after_open(
+                        symbol, "BUY", lot, exposure
+                    )
 
             elif action == REVERSE_TO_SHORT:
                 if not self._close_symbol_positions(symbol):
@@ -599,7 +883,46 @@ class MT5StrategyRunner:
                     logger.warning(f"[Reconcile] {symbol}: lot=0, skipping.")
                     continue
                 if self.trader.open_short(symbol, lot):
-                    self._record_position_after_open(symbol, "SELL", lot)
+                    self._record_position_after_open(
+                        symbol, "SELL", lot, exposure
+                    )
+
+    def _preflight_live_position_contracts(
+        self,
+        symbols: list[str],
+    ) -> dict[str, list]:
+        """在任何订单前冻结实盘持仓，并拒绝未知入场 exposure。"""
+        live_by_symbol: dict[str, list] = {}
+        dry_run = bool(getattr(self, "dry_run", False))
+        for symbol in symbols:
+            fetched = self.trader.get_positions(
+                symbol,
+                Config.MAGIC_NUMBER,
+            )
+            if fetched is None:
+                raise RuntimeError(
+                    f"{symbol}: 无法确认实盘持仓，禁止自动调仓"
+                )
+            live = list(fetched)
+            live_by_symbol[symbol] = live
+            if dry_run or not live:
+                continue
+            recorded = self.portfolio.positions.get(symbol)
+            exposure = (
+                None if recorded is None else recorded.target_exposure
+            )
+            if (
+                exposure is None
+                or isinstance(exposure, bool)
+                or not isinstance(exposure, Real)
+                or not math.isfinite(float(exposure))
+                or not 0.0 < float(exposure) <= 1.0
+            ):
+                raise RuntimeError(
+                    f"{symbol}: 实盘持仓缺少可信 target_exposure，"
+                    "禁止自动调仓，需人工确认"
+                )
+        return live_by_symbol
 
     def _monitor_positions(self) -> None:
         """可选风控层（EXIT_MODE='risk' 或 'hybrid'）。
@@ -714,7 +1037,13 @@ class MT5StrategyRunner:
             self.portfolio.close_position(symbol)
         return ok
 
-    def _record_position_after_open(self, symbol: str, direction: str, lot: float) -> None:
+    def _record_position_after_open(
+        self,
+        symbol: str,
+        direction: str,
+        lot: float,
+        target_exposure: float,
+    ) -> None:
         """开仓后从 MT5 回读 position ticket，避免 ticket=0 导致反手误开新单。"""
         positions = self.trader.get_positions(symbol, Config.MAGIC_NUMBER)
         want_type = 0 if direction == "BUY" else 1
@@ -733,12 +1062,20 @@ class MT5StrategyRunner:
                 price,
                 float(getattr(p, "volume", lot)),
                 direction,
+                target_exposure=target_exposure,
             )
             return
 
         price = self._get_price(symbol) or 0.0
         logger.warning(f"[Runner] {symbol}: 开仓后未读到 MT5 持仓，本地 ticket 暂记为 0")
-        self.portfolio.add_position(symbol, 0, price, lot, direction)
+        self.portfolio.add_position(
+            symbol,
+            0,
+            price,
+            lot,
+            direction,
+            target_exposure=target_exposure,
+        )
 
     def _calc_lot(self, symbol: str, exposure: float = 1.0) -> float:
         """按 XAUUSD 0.01 手的 ATR 美元波动预算计算手数。"""

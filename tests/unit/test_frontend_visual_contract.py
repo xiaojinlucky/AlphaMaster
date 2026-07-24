@@ -224,6 +224,10 @@ def test_data_provenance_and_backtest_evaluation_labels_are_explicit():
     assert 'backtestEvaluationHint(res.evaluation)' in SCRIPT
 
 
+def test_backtest_button_requires_current_scoring_contract():
+    assert "selectedStrategyInfo?.score_compatible === true" in SCRIPT
+
+
 def test_debug_polling_is_disabled_when_debug_mode_is_off():
     assert "if (!debugMode) {" in SCRIPT
     assert "if (!silent && debugMode) await refreshDebugLogs();" in SCRIPT

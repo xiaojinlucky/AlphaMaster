@@ -101,7 +101,8 @@ class MT5DataFetcher:
                            f"returning empty DataFrame for {symbol}.")
             return pd.DataFrame(columns=_COLUMNS)
 
-        rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, count)  # type: ignore[union-attr]
+        # MT5 的 start_pos=0 是仍在形成的当前 K 线；正式信号只消费已收盘 K 线。
+        rates = mt5.copy_rates_from_pos(symbol, timeframe, 1, count)  # type: ignore[union-attr]
 
         if rates is None or len(rates) == 0:
             logger.warning(

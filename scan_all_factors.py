@@ -1,5 +1,5 @@
 """
-scan_all_factors.py — 扫描 strategies/best_{symbol}.json，单品种 solo 回测（只看收益）
+scan_all_factors.py — 扫描 Runner 真实公式集合，逐品种 solo 回测（只看收益）
 
 判定有效：年化收益 > 0（忽略 MDD / Sharpe / WF）
 数据：D:\\K线数据 离线 H1
@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import math
-import re
 import sys
 from pathlib import Path
 
@@ -21,7 +20,18 @@ from data_pipeline.data_manager import MT5DataManager
 from data_pipeline.fetcher import MT5DataFetcher
 from model_core.vocab import VOCAB_VERSION
 from model_core.vm import StackVM
-from strategy_manager.signal import compute_target_positions_stateless
+from model_core.target_contract import (
+    SCORING_CONTRACT_VERSION,
+    align_target_return_window,
+)
+from strategy_manager.runner import (
+    RUNNER_POSITION_CONTRACT_VERSION,
+    apply_runner_position_state,
+    compute_formula_set_positions,
+    formula_set_sha256,
+    load_symbol_formulas,
+    validate_strategy_symbol,
+)
 
 PERIODS_PER_YEAR = 6240
 COST = {
@@ -39,7 +49,26 @@ def _cost(sym: str) -> float:
     return COST["forex"]
 
 
-def solo_backtest(formula: list[int], symbol: str) -> dict:
+def _uses_fixed_lot(symbol: str) -> bool:
+    fixed_map = getattr(Config, "FIXED_LOT_BY_SYMBOL", {}) or {}
+    sym_key = symbol.upper() if "." not in symbol else symbol
+    return symbol in fixed_map or sym_key in fixed_map
+
+
+def factor_scan_execution_contract(symbol: str) -> dict:
+    """生成会改变扫描收益或 Runner 持仓的全部执行假设。"""
+    return {
+        "position_contract_version": RUNNER_POSITION_CONTRACT_VERSION,
+        "min_trade_exposure": float(
+            getattr(Config, "MIN_TRADE_EXPOSURE", 0.05)
+        ),
+        "fixed_exposure": _uses_fixed_lot(symbol),
+        "cost_rate": _cost(symbol),
+        "periods_per_year": PERIODS_PER_YEAR,
+    }
+
+
+def solo_backtest(formulas: list[list[int]], symbol: str) -> dict:
     with MT5DataFetcher(offline=True) as fetcher:
         orig = Config.SYMBOLS[:]
         Config.SYMBOLS = [symbol]
@@ -49,15 +78,28 @@ def solo_backtest(formula: list[int], symbol: str) -> dict:
             if symbol not in mgr.symbols:
                 return {"error": "no data"}
             vm = StackVM()
-            factor = vm.execute(formula, mgr.feat_tensor)
-            if factor is None:
-                return {"error": "vm failed"}
-            pos = compute_target_positions_stateless(factor)
-            prev = torch.zeros_like(pos)
-            prev[:, 1:] = pos[:, :-1]
-            turnover = (pos - prev).abs()
-            cr = _cost(symbol)
-            pnl = (pos * mgr.target_ret - turnover * cr).squeeze(0)
+            contract = factor_scan_execution_contract(symbol)
+            target_position = compute_formula_set_positions(
+                vm,
+                formulas,
+                mgr.feat_tensor,
+                symbol=symbol,
+                min_exposure=contract["min_trade_exposure"],
+            )
+            position = apply_runner_position_state(
+                target_position,
+                min_exposure=contract["min_trade_exposure"],
+                fixed_exposure=contract["fixed_exposure"],
+            )
+            position, target_ret = align_target_return_window(
+                position,
+                mgr.target_ret,
+            )
+            prev = torch.zeros_like(position)
+            prev[:, 1:] = position[:, :-1]
+            turnover = (position - prev).abs()
+            cr = contract["cost_rate"]
+            pnl = (position * target_ret - turnover * cr).squeeze(0)
             T = int(pnl.shape[0])
             ann = float(pnl.mean().item() * PERIODS_PER_YEAR)
             total = float(pnl.sum().item())
@@ -79,54 +121,76 @@ def solo_backtest(formula: list[int], symbol: str) -> dict:
             Config.SYMBOLS = orig
 
 
-def load_best(path: Path) -> dict | None:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if data.get("vocab_version") != VOCAB_VERSION:
-        return None
-    formula = data.get("formula") or data.get("formula_tokens")
-    if not formula:
-        return None
-    sym = data.get("symbol")
-    if not sym:
-        m = re.match(r"best_(.+)\.json", path.name)
-        sym = m.group(1) if m else None
-    if not sym or sym in ("index", "precious_metals", "forex", "metals_comm"):
-        return None
-    return {"symbol": sym, "formula": [int(t) for t in formula], "path": str(path)}
+def discover_formula_sets(
+    strategies_dir: Path,
+) -> dict[str, list[list[int]]]:
+    """按 Runner 优先级解析扫描候选的完整公式集合。"""
+    group_names = {"index", "precious_metals", "forex", "metals_comm"}
+    symbols = sorted(
+        {
+            validate_strategy_symbol(path.stem.removeprefix("best_"))
+            for path in strategies_dir.glob("best_*.json")
+            if path.stem.removeprefix("best_") not in group_names
+        }
+    )
+    if not symbols:
+        return {}
+    return load_symbol_formulas(
+        symbols,
+        strategies_dir=strategies_dir,
+    )
 
 
 def main():
     strategies_dir = Path("strategies")
-    files = sorted(strategies_dir.glob("best_*.json"))
+    formula_sets = discover_formula_sets(strategies_dir)
     rows = []
     print(f"\nFactor Scan (returns-only) | vocab={VOCAB_VERSION} | offline\n")
     print(f"{'品种':<16} {'年化%':>8} {'Sharpe':>8} {'MDD%':>8} {'年数':>6} {'有效':>6}  文件")
     print("-" * 80)
 
-    for path in files:
-        loaded = load_best(path)
-        if not loaded:
-            continue
-        sym = loaded["symbol"]
-        bt = solo_backtest(loaded["formula"], sym)
+    for sym, formulas in formula_sets.items():
+        bt = solo_backtest(formulas, sym)
         if "error" in bt:
             print(f"{sym:<16} ERROR: {bt['error']}")
             continue
         tag = "YES" if bt["valid"] else "NO"
         print(
             f"{sym:<16} {bt['ann_ret']*100:>8.2f} {bt['sharpe']:>8.3f} "
-            f"{bt['mdd']*100:>8.2f} {bt['years']:>6.2f} {tag:>6}  {path.name}"
+            f"{bt['mdd']*100:>8.2f} {bt['years']:>6.2f} {tag:>6}  "
+            f"{len(formulas)} formulas"
         )
-        rows.append({"symbol": sym, "path": path.name, **bt})
+        rows.append(
+            {
+                "symbol": sym,
+                "formula_count": len(formulas),
+                "formula_set_sha256": formula_set_sha256(formulas),
+                "execution_contract": factor_scan_execution_contract(sym),
+                **bt,
+            }
+        )
 
     valid = [r for r in rows if r.get("valid")]
     print(f"\n有效因子（年化>0）: {len(valid)}/{len(rows)}")
     for r in sorted(valid, key=lambda x: -x["ann_ret"]):
-        print(f"  {r['symbol']:<16} ann={r['ann_ret']*100:+.2f}%  {r['path']}")
+        print(
+            f"  {r['symbol']:<16} ann={r['ann_ret']*100:+.2f}%  "
+            f"{r['formula_count']} formulas"
+        )
 
     out = Path("backtest_output/factor_scan.json")
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps({"all": rows, "valid": valid}, indent=2), encoding="utf-8")
+    out.write_text(
+        json.dumps(
+            {
+                "scoring_contract_version": SCORING_CONTRACT_VERSION,
+                "all": rows,
+                "valid": valid,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     print(f"\nJSON → {out}")
 
 

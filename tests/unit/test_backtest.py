@@ -11,6 +11,7 @@ import pytest
 import torch
 
 from model_core.backtest import MT5Backtest
+from model_core.target_contract import TARGET_RETURN_HORIZON
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -117,20 +118,21 @@ def test_high_turnover_penalty():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_split_point_100():
-    """T=100 时，in-sample 分割点应为 80。
+    """T=100 时先裁尾部 2 根，再按有效 98 根切出 in-sample 78 根。
     Requirements: 5.4 (通过检查 OOS 收益来验证分割点)
     """
-    # 前 80 期收益为 +0.1，后 20 期收益为 -0.1
-    # 若分割正确，score 基于前 80 期（正收益），oos 基于后 20 期（负收益）
     bt = MT5Backtest()
     T = 100
     N = 1
+    valid_steps = T - TARGET_RETURN_HORIZON
+    split = math.floor(valid_steps * 0.8)
 
     factors = torch.full((N, T), 10.0)  # position = +1 everywhere
 
     target_ret = torch.zeros(N, T)
-    target_ret[:, :80] = 0.1   # in-sample 高收益
-    target_ret[:, 80:] = -0.1  # out-of-sample 负收益
+    target_ret[:, :split] = 0.1
+    target_ret[:, split:valid_steps] = -0.1
+    target_ret[:, valid_steps:] = 99.0  # 无法实现的尾部占位值必须忽略
 
     score, oos = bt.evaluate(factors, {}, target_ret)
 
@@ -141,18 +143,21 @@ def test_split_point_100():
 
 
 def test_split_point_50():
-    """T=50 时，in-sample 分割点应为 40。
+    """T=50 时先裁尾部 2 根，再按有效 48 根切分。
     Requirements: 5.4
     """
     bt = MT5Backtest()
     T = 50
     N = 1
+    valid_steps = T - TARGET_RETURN_HORIZON
+    split = math.floor(valid_steps * 0.8)
 
     factors = torch.full((N, T), 10.0)  # position = +1 everywhere
 
     target_ret = torch.zeros(N, T)
-    target_ret[:, :40] = 0.1   # in-sample 高收益（前 40 期）
-    target_ret[:, 40:] = -0.1  # out-of-sample 负收益（后 10 期）
+    target_ret[:, :split] = 0.1
+    target_ret[:, split:valid_steps] = -0.1
+    target_ret[:, valid_steps:] = 99.0
 
     score, oos = bt.evaluate(factors, {}, target_ret)
 
@@ -161,12 +166,13 @@ def test_split_point_50():
 
 
 def test_split_point_exact_count():
-    """直接验证分割计数：in-sample = floor(T*0.8)，oos = T - split。
+    """直接验证分割计数基于裁尾后的有效长度。
     Requirements: 5.4
     """
     for T in [10, 50, 100, 123, 200]:
-        expected_split = math.floor(T * 0.8)
-        expected_oos = T - expected_split
+        valid_steps = T - TARGET_RETURN_HORIZON
+        expected_split = math.floor(valid_steps * 0.8)
+        expected_oos = valid_steps - expected_split
 
         bt = MT5Backtest()
         N = 1
@@ -174,7 +180,8 @@ def test_split_point_exact_count():
         # 设计特殊 target_ret：前 split 期 = +1，后 oos 期 = -1
         factors = torch.full((N, T), 10.0)
         target_ret = torch.ones(N, T)
-        target_ret[:, expected_split:] = -1.0
+        target_ret[:, expected_split:valid_steps] = -1.0
+        target_ret[:, valid_steps:] = 99.0
 
         score, oos = bt.evaluate(factors, {}, target_ret)
 

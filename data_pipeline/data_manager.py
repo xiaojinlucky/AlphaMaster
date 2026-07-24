@@ -14,6 +14,7 @@ from loguru import logger
 
 from config import Config
 from data_pipeline.fetcher import MT5DataFetcher
+from model_core.target_contract import TARGET_RETURN_HORIZON
 
 
 class MT5DataManager:
@@ -31,8 +32,15 @@ class MT5DataManager:
                  手动调用 connect() 确保已连接）。
     """
 
-    def __init__(self, fetcher: MT5DataFetcher) -> None:
+    def __init__(
+        self,
+        fetcher: MT5DataFetcher,
+        *,
+        require_all_symbols: bool = False,
+    ) -> None:
         self._fetcher = fetcher
+        self._require_all_symbols = require_all_symbols
+        self._requested_symbols: list[str] | None = None
 
         # 缓存状态
         self._symbols: list[str] = []          # 有效品种列表（>= MIN_BARS）
@@ -55,7 +63,13 @@ class MT5DataManager:
         Raises:
             ValueError: 所有品种均不满足 MIN_BARS 要求时抛出。
         """
-        symbol_list = list(symbols) if symbols is not None else list(Config.SYMBOLS)
+        if symbols is not None:
+            symbol_list = list(symbols)
+            self._requested_symbols = list(symbol_list)
+        elif self._requested_symbols is not None:
+            symbol_list = list(self._requested_symbols)
+        else:
+            symbol_list = list(Config.SYMBOLS)
         logger.info(
             f"Loading data for {len(symbol_list)} symbols: {symbol_list}"
         )
@@ -77,6 +91,12 @@ class MT5DataManager:
                 "No valid symbols loaded: all symbols have fewer than "
                 f"{Config.MIN_BARS} bars."
             )
+        if self._require_all_symbols:
+            missing = [symbol for symbol in symbol_list if symbol not in raw_dfs]
+            if missing:
+                raise ValueError(
+                    "严格交易数据缺少请求品种: " + ", ".join(missing)
+                )
 
         valid_symbols = list(raw_dfs.keys())
         logger.info(
@@ -105,7 +125,7 @@ class MT5DataManager:
         self._symbols = []
         self._raw_dict = None
         self._target_ret = None
-        self.load()
+        self.load(self._requested_symbols)
 
     # ──────────────────────────────────────────────────────────────────────
     # 属性
@@ -175,15 +195,15 @@ class MT5DataManager:
         用于实盘 runner 检测新 K 线收盘：
             if (bar_time != last_bar_time).any(): 触发调仓
 
-        当 raw_dict 中没有 "time" 字段时（老版本 data_manager）返回全零张量。
+        时间戳是“最新已收盘 K 线的开盘时间标识”；收盘保证来自 fetch/cache
+        的 start_pos=1 合同。缺少时间字段时失败关闭。
         """
         self._ensure_loaded()
         raw = self._raw_dict
         if "time" in raw:
             # raw_dict["time"] 形状 [N, T]，取最后一列
             return raw["time"][:, -1].long()
-        n = len(self._symbols)
-        return torch.zeros(n, dtype=torch.int64)
+        raise RuntimeError("正式数据缺少已收盘 K 线时间字段")
 
     @property
     def symbols(self) -> list[str]:
@@ -339,7 +359,7 @@ class MT5DataManager:
         n, t = open_tensor.shape
         target = torch.zeros(n, t, dtype=torch.float32)
 
-        if t >= 3:
+        if t > TARGET_RETURN_HORIZON:
             # open[t+2] 对应索引 2..T-1，open[t+1] 对应索引 1..T-2
             numerator   = open_tensor[:, 2:]    # [N, T-2]
             denominator = open_tensor[:, 1:-1]  # [N, T-2]
@@ -349,7 +369,7 @@ class MT5DataManager:
             safe_denom[safe_denom == 0] = 1.0
 
             log_ret = torch.log(numerator / safe_denom)  # [N, T-2]
-            target[:, :t - 2] = log_ret
+            target[:, :t - TARGET_RETURN_HORIZON] = log_ret
 
         # 最后两个时间步已在初始化时设为 0（torch.zeros）
 

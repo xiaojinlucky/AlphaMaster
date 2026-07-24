@@ -30,6 +30,10 @@ from data_pipeline.fetcher import MT5DataFetcher
 from model_core.features import MT5FeatureEngineer
 from model_core.vocab import FORMULA_VOCAB, VOCAB_VERSION
 from model_core.vm import StackVM
+from model_core.target_contract import (
+    SCORING_CONTRACT_VERSION,
+    align_target_return_window,
+)
 from strategy_manager.signal import compute_target_positions_stateless
 
 _H1_PER_YEAR = 6240
@@ -82,6 +86,8 @@ def load_best(path: Path) -> dict | None:
     data = json.loads(path.read_text(encoding="utf-8"))
     if data.get("vocab_version") != VOCAB_VERSION:
         return None
+    if data.get("scoring_contract_version") != SCORING_CONTRACT_VERSION:
+        return None
     formula = data.get("formula") or data.get("formula_tokens")
     if not formula:
         return None
@@ -117,6 +123,7 @@ def solo_backtest(
     if factor is None:
         return None
 
+    factor, target_ret = align_target_return_window(factor, target_ret)
     pos = compute_target_positions_stateless(factor)
     pos_np = pos.detach().cpu().numpy().squeeze(0)
     target_np = target_ret.detach().cpu().numpy().squeeze(0)
@@ -320,6 +327,8 @@ def run_solo(symbol: str, formula: list[int], fetcher: MT5DataFetcher) -> tuple[
         times_t = mgr.raw_dict.get("time")
         times = times_t[0].detach().cpu().numpy() if times_t is not None else None
         result = solo_backtest(formula, mgr.raw_dict, mgr.target_ret, symbol, cost)
+        if times is not None:
+            times = times[:result["T"]]
         return result, times
     finally:
         Config.SYMBOLS = orig
@@ -392,6 +401,7 @@ def main():
     summary = {
         "generated_at": datetime.now(tz=timezone.utc).isoformat(),
         "vocab_version": VOCAB_VERSION,
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
         "data_mode": "offline" if offline else "mt5",
         "symbols": summary_rows,
         "valid_count": sum(1 for r in summary_rows if r["valid_ann_positive"]),

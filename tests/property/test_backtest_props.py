@@ -13,6 +13,7 @@ import pytest
 from hypothesis import given, settings, strategies as st, assume
 
 from model_core.backtest import MT5Backtest
+from model_core.target_contract import TARGET_RETURN_HORIZON
 
 
 # ── Property 6: 回测 80/20 分割不变量 ────────────────────────────────────────
@@ -25,8 +26,9 @@ from model_core.backtest import MT5Backtest
 )
 def test_property6_backtest_80_20_split(T: int):
     """
-    For any T, MT5Backtest.evaluate() must use exactly floor(T*0.8) steps
-    as in-sample and the remaining steps as out-of-sample.
+    For any T, MT5Backtest.evaluate() must first remove the final target horizon,
+    then use exactly floor(valid_T*0.8) steps as in-sample and the remainder
+    as out-of-sample.
 
     Note: _sortino is now called multiple times internally by _multi_objective,
     so we validate the split via the returned mean_oos instead.
@@ -35,27 +37,26 @@ def test_property6_backtest_80_20_split(T: int):
     """
     backtest = MT5Backtest()
 
-    expected_is  = math.floor(T * 0.8)
-    expected_oos = T - expected_is
+    valid_t = T - TARGET_RETURN_HORIZON
+    expected_is = math.floor(valid_t * 0.8)
+    expected_oos = valid_t - expected_is
 
-    # Capture oos pnl length via wrapping mean
-    captured_oos_len = []
-    original_evaluate = backtest.evaluate
+    captured_sortino_lengths = []
+    original_sortino = backtest._sortino
 
-    def capturing_evaluate(factors, raw_dict, target_ret):
-        t = factors.shape[1]
-        split = math.floor(t * 0.8)
-        captured_oos_len.append(t - split)
-        return original_evaluate(factors, raw_dict, target_ret)
+    def capturing_sortino(pnl, eps=1e-8):
+        captured_sortino_lengths.append(pnl.shape[-1])
+        return original_sortino(pnl, eps)
 
     factors    = torch.ones(1, T)
     target_ret = torch.zeros(1, T)
+    backtest._sortino = capturing_sortino
 
-    capturing_evaluate(factors, {}, target_ret)
+    backtest.evaluate(factors, {}, target_ret)
 
-    assert captured_oos_len[0] == expected_oos, (
+    assert captured_sortino_lengths[-1] == expected_oos, (
         f"T={T}: out-of-sample length expected {expected_oos}, "
-        f"got {captured_oos_len[0]}"
+        f"got {captured_sortino_lengths[-1]}"
     )
 
 

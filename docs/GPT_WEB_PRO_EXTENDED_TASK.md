@@ -192,7 +192,10 @@ target_ret[t] 代表哪一段收益
 PnL 与 IC 是否预测同一 horizon
 ```
 
-当前代码中 PnL 使用 `position[t] * target_ret[t]`，IC 使用 `factor[t]` 与 `target_ret[t+1]`。先用测试证明是错误还是有意合同，不能根据注释直接修改。
+历史代码中 PnL 使用 `position[t] * target_ret[t]`，IC 却使用
+`factor[t]` 与 `target_ret[t+1]`。2026-07-25 的合成反例已证明这是错误；
+隔离修复候选统一为同索引配对并裁掉末尾两根不可实现收益。后续审查必须以
+`docs/VALIDATION_EVIDENCE.md` 4.4 的当前合同为准。
 
 ## 第二优先审查：回测过拟合与 selection 泄漏
 

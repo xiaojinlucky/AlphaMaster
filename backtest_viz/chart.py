@@ -39,6 +39,24 @@ def _ts_to_label(ts: int, fmt: str = "%m-%d %H:%M") -> str:
         return str(ts)
 
 
+def _market_series(result: SymbolResult, name: str) -> np.ndarray:
+    """返回完整行情序列；旧结果对象没有完整行情时退回评分序列。"""
+    market = getattr(result, f"market_{name}", None)
+    return market if market is not None else getattr(result, name)
+
+
+def _entry_execution_bar(trade: Trade, total_bars: int) -> int:
+    raw = trade.entry_exec_bar
+    return min(raw if raw is not None else trade.entry_bar + 1, total_bars - 1)
+
+
+def _exit_execution_bar(trade: Trade, total_bars: int) -> int | None:
+    if trade.exit_bar is None:
+        return None
+    raw = trade.exit_exec_bar
+    return min(raw if raw is not None else trade.exit_bar + 1, total_bars - 1)
+
+
 class BacktestChart:
     """可视化回测图表生成器。
 
@@ -100,7 +118,9 @@ class BacktestChart:
         Returns:
             实际保存路径字符串，未保存时返回 None。
         """
-        T   = len(result.times)
+        market_times = _market_series(result, "times")
+        T = len(market_times)
+        scored_T = len(result.signal)
         # 显示最后 max_bars 个 bar
         start_idx = max(0, T - self.max_bars)
         sl = slice(start_idx, T)
@@ -149,37 +169,42 @@ class BacktestChart:
         )
 
         # ── ② 因子强度 ────────────────────────────────────────────────
-        ax_factor.plot(x, result.signal[sl], color="#7e57c2", linewidth=0.8,
+        score_start = min(start_idx, scored_T)
+        score_end = min(T, scored_T)
+        score_sl = slice(score_start, score_end)
+        score_x = np.arange(score_start, score_end)
+        signal_sl = result.signal[score_sl]
+        ax_factor.plot(score_x, signal_sl, color="#7e57c2", linewidth=0.8,
                        label="signal (tanh)")
         ax_factor.axhline(0, color="gray", linewidth=0.6, linestyle="--")
-        ax_factor.fill_between(x, result.signal[sl], 0,
-                               where=result.signal[sl] > 0,
+        ax_factor.fill_between(score_x, signal_sl, 0,
+                               where=signal_sl > 0,
                                alpha=0.15, color=self._LONG_ENTRY_COLOR)
-        ax_factor.fill_between(x, result.signal[sl], 0,
-                               where=result.signal[sl] < 0,
+        ax_factor.fill_between(score_x, signal_sl, 0,
+                               where=signal_sl < 0,
                                alpha=0.15, color=self._SHORT_ENTRY_COLOR)
         ax_factor.set_ylabel("Signal", fontsize=8)
         ax_factor.legend(fontsize=7, loc="upper left")
         ax_factor.grid(alpha=0.25)
 
         # ── ③ 逐 bar PnL 直方图 ──────────────────────────────────────
-        pnl_sl = result.pnl[sl]
+        pnl_sl = result.pnl[score_sl]
         colors_bar = [
             self._LONG_ENTRY_COLOR if v >= 0 else self._SHORT_ENTRY_COLOR
             for v in pnl_sl
         ]
-        ax_pnl.bar(x, pnl_sl, color=colors_bar, width=0.8, alpha=0.7)
+        ax_pnl.bar(score_x, pnl_sl, color=colors_bar, width=0.8, alpha=0.7)
         ax_pnl.axhline(0, color="gray", linewidth=0.6)
         ax_pnl.set_ylabel("Bar PnL", fontsize=8)
         ax_pnl.grid(alpha=0.25)
 
         # ── ④ 累计 PnL 曲线 ──────────────────────────────────────────
-        cum_sl = result.cum_pnl[sl]
-        ax_cum.plot(x, cum_sl, color="#1565c0", linewidth=1.2, label="Cum PnL")
-        ax_cum.fill_between(x, cum_sl, 0,
+        cum_sl = result.cum_pnl[score_sl]
+        ax_cum.plot(score_x, cum_sl, color="#1565c0", linewidth=1.2, label="Cum PnL")
+        ax_cum.fill_between(score_x, cum_sl, 0,
                             where=cum_sl >= 0, alpha=0.12,
                             color=self._LONG_ENTRY_COLOR)
-        ax_cum.fill_between(x, cum_sl, 0,
+        ax_cum.fill_between(score_x, cum_sl, 0,
                             where=cum_sl < 0, alpha=0.12,
                             color=self._SHORT_ENTRY_COLOR)
         ax_cum.axhline(0, color="gray", linewidth=0.6)
@@ -188,7 +213,7 @@ class BacktestChart:
         ax_cum.grid(alpha=0.25)
 
         # ── X 轴刻度（时间标签）─────────────────────────────────────
-        self._set_time_ticks(ax_cum, result.times[sl], x, n_ticks=10)
+        self._set_time_ticks(ax_cum, market_times[sl], x, n_ticks=10)
         plt.setp(ax_candle.get_xticklabels(), visible=False)
         plt.setp(ax_factor.get_xticklabels(), visible=False)
         plt.setp(ax_pnl.get_xticklabels(), visible=False)
@@ -261,11 +286,12 @@ class BacktestChart:
             )
 
         trade = result.trades[trade_idx]
-        T     = len(result.times)
+        market_times = _market_series(result, "times")
+        T = len(market_times)
 
-        # 实际成交在信号 bar 的下一根（与 target_ret 时间对齐）
-        entry_exec_bar = min(trade.entry_bar + 1, T - 1)
-        exit_exec_bar  = min(trade.exit_bar + 1, T - 1) if trade.exit_bar is not None else None
+        # 普通成交是信号 bar+1；期末估值使用最后一笔收益的实现 bar。
+        entry_exec_bar = _entry_execution_bar(trade, T)
+        exit_exec_bar = _exit_execution_bar(trade, T)
 
         # 计算显示窗口（围绕实际成交 bar 展开）
         win_start = max(0, entry_exec_bar - pre_bars)
@@ -288,9 +314,9 @@ class BacktestChart:
         self._draw_position_background(ax_candle, result, win_start, win_end, x)
 
         # 入场标记（三角）
-        lo = result.low[sl]
-        hi = result.high[sl]
-        cl = result.close[sl]
+        lo = _market_series(result, "low")[sl]
+        hi = _market_series(result, "high")[sl]
+        cl = _market_series(result, "close")[sl]
         offset = (hi.max() - lo.min()) * 0.008
 
         if trade.direction == 1:
@@ -310,8 +336,13 @@ class BacktestChart:
 
         # 出场标记（菱形）
         if exit_xi is not None:
+            exit_y = (
+                trade.exit_price
+                if trade.exit_price is not None
+                else cl[exit_xi]
+            )
             ax_candle.plot(
-                exit_xi, cl[exit_xi],
+                exit_xi, exit_y,
                 marker="D", color=self._EXIT_COLOR,
                 markersize=10, zorder=6, markeredgewidth=1,
                 markeredgecolor="white",
@@ -363,7 +394,18 @@ class BacktestChart:
         # PnL 标注框
         pnl_color = "#1b5e20" if trade.pnl > 0 else "#b71c1c"
         direction_str = "Long ▲" if trade.direction == 1 else "Short ▼"
-        hold_bars = (trade.exit_bar - trade.entry_bar) if trade.exit_bar is not None else 0
+        hold_bars = (
+            trade.exit_exec_bar - trade.entry_exec_bar
+            if (
+                trade.exit_exec_bar is not None
+                and trade.entry_exec_bar is not None
+            )
+            else (
+                trade.exit_bar - trade.entry_bar
+                if trade.exit_bar is not None
+                else 0
+            )
+        )
         entry_time_str = _ts_to_label(trade.entry_time, "%Y-%m-%d %H:%M")
         exit_time_str  = (
             _ts_to_label(trade.exit_time, "%Y-%m-%d %H:%M")
@@ -405,7 +447,7 @@ class BacktestChart:
 
         # ── 累计 PnL 曲线（全局，标注当前交易位置）─────────────────
         cum_all = result.cum_pnl
-        x_all   = np.arange(T)
+        x_all = np.arange(len(cum_all))
         ax_cum.plot(x_all, cum_all, color="#1565c0", linewidth=1.0, label="Cum PnL")
         ax_cum.fill_between(
             x_all, cum_all, 0,
@@ -426,11 +468,16 @@ class BacktestChart:
         ax_cum.set_ylabel("Cum PnL", fontsize=8)
         ax_cum.legend(fontsize=7, loc="upper left")
         ax_cum.grid(alpha=0.25)
-        self._set_time_ticks(ax_cum, result.times, x_all, n_ticks=8)
+        self._set_time_ticks(
+            ax_cum,
+            result.times[:len(cum_all)],
+            x_all,
+            n_ticks=8,
+        )
         ax_cum.tick_params(axis="x", labelsize=7, rotation=30)
 
         # X 轴时间刻度（局部 K 线图）
-        self._set_time_ticks(ax_candle, result.times[sl], x, n_ticks=6)
+        self._set_time_ticks(ax_candle, market_times[sl], x, n_ticks=6)
         ax_candle.tick_params(axis="x", labelsize=7, rotation=20)
 
         # 保存 / 展示
@@ -511,10 +558,14 @@ class BacktestChart:
         x:      np.ndarray,
     ) -> None:
         """绘制蜡烛图（用矩形 + 线段模拟，不依赖 mplfinance）"""
-        op = result.open[sl]
-        hi = result.high[sl]
-        lo = result.low[sl]
-        cl = result.close[sl]
+        market_open = _market_series(result, "open")
+        market_high = _market_series(result, "high")
+        market_low = _market_series(result, "low")
+        market_close = _market_series(result, "close")
+        op = market_open[sl]
+        hi = market_high[sl]
+        lo = market_low[sl]
+        cl = market_close[sl]
 
         bar_w = 0.6
         for i, xi in enumerate(x):
@@ -533,8 +584,8 @@ class BacktestChart:
             ax.add_patch(rect)
 
         ax.set_xlim(x[0] - 1, x[-1] + 1)
-        ax.set_ylim(result.low[sl].min() * 0.9995,
-                    result.high[sl].max() * 1.0005)
+        ax.set_ylim(market_low[sl].min() * 0.9995,
+                    market_high[sl].max() * 1.0005)
 
     def _draw_position_background(
         self,
@@ -549,8 +600,10 @@ class BacktestChart:
         背景从实际成交 bar 开始（信号 bar + 1）。
         """
         for trade in result.trades:
-            entry_exec = min(trade.entry_bar + 1, T - 1)
-            exit_exec  = min(trade.exit_bar + 1, T - 1) if trade.exit_bar is not None else T - 1
+            entry_exec = _entry_execution_bar(trade, T)
+            exit_exec = _exit_execution_bar(trade, T)
+            if exit_exec is None:
+                exit_exec = T - 1
 
             # 转换为 x 轴坐标（相对于 start_idx）
             x_entry = max(entry_exec - start_idx, 0)
@@ -577,18 +630,18 @@ class BacktestChart:
         空头开仓：红色向下三角（▼），标注在 high 上方
         平仓/反手：橙色菱形（◆），标注在 close 附近
         """
-        lo = result.low
-        hi = result.high
-        cl = result.close
+        lo = _market_series(result, "low")
+        hi = _market_series(result, "high")
+        cl = _market_series(result, "close")
         total = T
 
         for trade in result.trades:
             # 实际成交 bar = 信号 bar + 1
-            eb = min(trade.entry_bar + 1, total - 1)
-            xb = min(trade.exit_bar + 1, total - 1) if trade.exit_bar is not None else None
+            eb = _entry_execution_bar(trade, total)
+            xb = _exit_execution_bar(trade, total)
 
             if eb >= start_idx:
-                xi = eb - start_idx
+                xi = eb
                 offset = (hi[eb] - lo[eb]) * 0.3 + (hi[eb] - lo[eb]) * 0.05
                 if trade.direction == 1:
                     ax.plot(xi, lo[eb] - offset,
@@ -602,8 +655,13 @@ class BacktestChart:
                             markeredgecolor="white")
 
             if xb is not None and xb >= start_idx:
-                xi = xb - start_idx
-                ax.plot(xi, cl[xb],
+                xi = xb
+                exit_y = (
+                    trade.exit_price
+                    if trade.exit_price is not None
+                    else cl[xb]
+                )
+                ax.plot(xi, exit_y,
                         marker="D", color=self._EXIT_COLOR,
                         markersize=6, zorder=5, markeredgewidth=0.5,
                         markeredgecolor="white")
@@ -616,8 +674,8 @@ class BacktestChart:
         T:         int,
     ) -> None:
         """在每笔交易标注 PnL 数值（仅盈亏超过阈值时显示，避免文字过密）。"""
-        hi = result.high
-        lo = result.low
+        hi = _market_series(result, "high")
+        lo = _market_series(result, "low")
         price_range = hi.max() - lo.min()
         threshold   = price_range * 0.001
 
@@ -625,7 +683,8 @@ class BacktestChart:
             t for t in result.trades
             if abs(t.pnl) > threshold
             and t.exit_bar is not None
-            and min(t.exit_bar + 1, T - 1) >= start_idx
+            and _exit_execution_bar(t, T) is not None
+            and int(_exit_execution_bar(t, T)) >= start_idx
         ]
         if len(visible) > 20:
             visible = sorted(visible, key=lambda t: abs(t.pnl), reverse=True)[:20]
@@ -634,9 +693,15 @@ class BacktestChart:
             if trade.exit_bar is None:
                 continue
             # 标注在实际成交（出场）的 bar 上
-            xb = min(trade.exit_bar + 1, T - 1)
-            xi    = xb - start_idx
-            price = result.close[xb]
+            xb = _exit_execution_bar(trade, T)
+            if xb is None:
+                continue
+            xi = xb
+            price = (
+                trade.exit_price
+                if trade.exit_price is not None
+                else _market_series(result, "close")[xb]
+            )
             label = f"{trade.pnl:+.4f}"
             color = "#1b5e20" if trade.pnl > 0 else "#b71c1c"
             ax.annotate(

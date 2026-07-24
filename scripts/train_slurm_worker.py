@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from data_pipeline.dataset_contracts import TRAINING_SOURCE_IDS, source_family
+from model_core.target_contract import SCORING_CONTRACT_VERSION
 
 RUN_ID_RE = re.compile(r"^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{8}$")
 JOB_ID_RE = re.compile(r"^[1-9][0-9]{0,18}$")
@@ -208,6 +209,8 @@ def _verify_inputs(run_dir: Path) -> tuple[dict[str, Any], Path, str]:
     run_id = run_dir.name
     if manifest.get("run_id") != run_id:
         raise WorkerError("manifest run_id 不匹配")
+    if manifest.get("scoring_contract_version") != SCORING_CONTRACT_VERSION:
+        raise WorkerError("manifest scoring_contract_version 不匹配")
 
     filename = manifest.get("data_filename")
     if not isinstance(filename, str):
@@ -536,6 +539,9 @@ def run_worker(
         "finished_at": finished_at,
         "exit_code": exit_code,
         "git_commit": manifest.get("git_commit") if manifest else None,
+        "scoring_contract_version": (
+            manifest.get("scoring_contract_version") if manifest else None
+        ),
         "run_manifest_sha256": manifest_hash,
         "source_files": manifest.get("source_files") if manifest else None,
         "symbol": manifest.get("symbol") if manifest else None,

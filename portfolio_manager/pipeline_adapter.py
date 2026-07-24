@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 from data_pipeline.dataset_contracts import (
     AKSHARE_HFQ_SOURCE_ID as TRAINING_SOURCE_ID,
 )
+from model_core.target_contract import SCORING_CONTRACT_VERSION
 from portfolio_manager.controller import ModelSignalSnapshot
 from web.data_sources.sina_hfq_daily import SOURCE_ID as SINA_HFQ_SOURCE_ID
 
@@ -363,8 +364,10 @@ def _strategy_fingerprint(
         or strategy.get("symbol") != symbol
         or strategy.get("timeframe") != training_timeframe
         or strategy.get("data_sha256") != data_sha256
+        or strategy.get("scoring_contract_version")
+        != SCORING_CONTRACT_VERSION
     ):
-        raise ValueError("发布策略与 run、股票、周期或训练数据身份不一致")
+        raise ValueError("发布策略与 run、股票、周期、数据或评分合同不一致")
     formula = strategy.get("formula")
     if (
         not isinstance(formula, list)
@@ -382,6 +385,7 @@ def _strategy_fingerprint(
     body = {
         "formula": [int(token) for token in formula],
         "vocab_version": vocab_version,
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
         "symbol": symbol,
         "timeframe": training_timeframe,
     }

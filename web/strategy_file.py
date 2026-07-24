@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from data_pipeline.parquet_manager import inspect_parquet_file
+from model_core.target_contract import (
+    SCORING_CONTRACT_VERSION,
+    ScoringContractMismatchError,
+)
 from model_core.vocab import (
     FORMULA_VOCAB,
     VOCAB_VERSION,
@@ -164,11 +168,13 @@ def inspect_strategy_file(
         symbol = symbol_from_strategy_path(p)
         best_score = None
         vocab_version = "legacy"
+        scoring_contract_version = None
     elif isinstance(data, dict):
         formula = data.get("formula")
         symbol = data.get("symbol") or symbol_from_strategy_path(p)
         best_score = data.get("best_score")
         vocab_version = data.get("vocab_version")
+        scoring_contract_version = data.get("scoring_contract_version")
     else:
         raise ValueError("策略文件格式无效")
 
@@ -200,6 +206,7 @@ def inspect_strategy_file(
 
     data_file_exists = bool(data_file) and Path(str(data_file)).exists()
 
+    score_compatible = scoring_contract_version == SCORING_CONTRACT_VERSION
     payload = {
         "strategy_file": str(p.resolve()),
         "filename": p.name,
@@ -210,9 +217,15 @@ def inspect_strategy_file(
         "mode": mode,
         "best_score": best_score,
         "vocab_version": vocab_version,
+        "scoring_contract_version": scoring_contract_version,
+        "score_compatible": score_compatible,
         "formula_decoded": formula_decoded,
-        "valid": True,
-        "message": "",
+        "valid": score_compatible,
+        "message": (
+            ""
+            if score_compatible
+            else "历史策略的评分合同与当前版本不兼容，只能留作诊断，不能正式回测"
+        ),
     }
     identity_fields = (
         "local_source",
@@ -274,7 +287,12 @@ def sync_best_strategy_for_symbol(
     published = get_published_bundle(symbol)
     if published:
         payload = _load_strategy(symbol)
-        if not payload or not payload.get("formula"):
+        if (
+            not payload
+            or payload.get("scoring_contract_version")
+            != SCORING_CONTRACT_VERSION
+            or not payload.get("formula")
+        ):
             return None
         payload = _apply_data_file_fallback(dict(payload), data_file_hint=data_file_hint)
         payload["formula_decoded"] = payload.get("formula_decoded") or _decode_formula(
@@ -288,15 +306,27 @@ def sync_best_strategy_for_symbol(
     candidates: list[tuple[float, list[int], int]] = []
 
     strat = _load_strategy(symbol)
-    if strat and strat.get("formula") and strat.get("best_score") is not None:
+    if (
+        strat
+        and strat.get("scoring_contract_version") == SCORING_CONTRACT_VERSION
+        and strat.get("formula")
+        and strat.get("best_score") is not None
+    ):
         step = int(strat.get("train_step") or strat.get("current_step") or 0)
         candidates.append((float(strat["best_score"]), strat["formula"], step))
 
     for ckpt_path in checkpoint_glob(symbol):
-        meta = _load_checkpoint_meta(ckpt_path)
+        try:
+            meta = _load_checkpoint_meta(ckpt_path)
+        except ScoringContractMismatchError:
+            continue
         score = meta.get("best_score")
         formula = meta.get("best_formula")
-        if score is None or not formula:
+        if (
+            meta.get("scoring_contract_version") != SCORING_CONTRACT_VERSION
+            or score is None
+            or not formula
+        ):
             continue
         candidates.append((float(score), formula, int(meta.get("step") or 0)))
 
@@ -309,6 +339,7 @@ def sync_best_strategy_for_symbol(
         if (
             not isinstance(data, dict)
             or data.get("vocab_version") != VOCAB_VERSION
+            or data.get("scoring_contract_version") != SCORING_CONTRACT_VERSION
         ):
             continue
         formula = data.get("formula")
@@ -320,7 +351,8 @@ def sync_best_strategy_for_symbol(
     if not candidates:
         existing = strategy_path_for_symbol(symbol)
         if existing.exists():
-            return inspect_strategy_file(str(existing.resolve()))
+            info = inspect_strategy_file(str(existing.resolve()))
+            return info if info.get("score_compatible") and info.get("valid") else None
         return None
 
     best_score, best_formula, best_step = max(candidates, key=lambda row: row[0])
@@ -328,6 +360,7 @@ def sync_best_strategy_for_symbol(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "vocab_version": VOCAB_VERSION,
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
         "symbol": symbol,
         "formula": best_formula,
         "best_score": best_score,

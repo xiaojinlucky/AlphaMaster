@@ -127,8 +127,10 @@ class IslandAlphaEngine:
         self._update_global_best()
         if self.global_best_formula is not None:
             from .vocab import VOCAB_VERSION
+            from .target_contract import SCORING_CONTRACT_VERSION
             strategy_data = {
                 "vocab_version": VOCAB_VERSION,
+                "scoring_contract_version": SCORING_CONTRACT_VERSION,
                 "formula": self.global_best_formula,
                 "best_score": self.global_best_score,
                 "island_engine": True,

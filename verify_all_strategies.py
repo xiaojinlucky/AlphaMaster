@@ -29,7 +29,11 @@ from config import Config
 from data_pipeline.fetcher import MT5DataFetcher
 from data_pipeline.data_manager import MT5DataManager
 from model_core.vm import StackVM
-from model_core.vocab import FORMULA_VOCAB
+from model_core.target_contract import (
+    SCORING_CONTRACT_VERSION,
+    align_target_return_window,
+)
+from model_core.vocab import FORMULA_VOCAB, VocabVersionMismatchError
 from strategy_manager.signal import compute_target_positions_stateless
 
 # ── 常量 ──────────────────────────────────────────────────────────────
@@ -55,8 +59,23 @@ STRATEGIES = {
 
 
 def load_strategy(path: str) -> dict:
-    with open(path) as f:
-        return json.load(f)
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        return {"error": "strategy root must be an object"}
+    try:
+        FORMULA_VOCAB.verify(data.get("vocab_version"))
+    except VocabVersionMismatchError as exc:
+        return {"error": str(exc)}
+    scoring_contract = data.get("scoring_contract_version")
+    if scoring_contract != SCORING_CONTRACT_VERSION:
+        return {
+            "error": (
+                "scoring contract mismatch "
+                f"{scoring_contract} != {SCORING_CONTRACT_VERSION}"
+            )
+        }
+    return data
 
 
 def compute_factor(formula: list[int], feat_tensor: torch.Tensor, vm: StackVM) -> torch.Tensor:
@@ -67,6 +86,7 @@ def compute_factor(formula: list[int], feat_tensor: torch.Tensor, vm: StackVM) -
 def independent_backtest(factor: torch.Tensor, target_ret: torch.Tensor,
                          cost_rate: float = COST_RATE) -> dict:
     """完全独立的回测，不复用训练框架的任何评分函数。"""
+    factor, target_ret = align_target_return_window(factor, target_ret)
     N, T = factor.shape
 
     # 仓位 = tanh(factor)，应用最小暴露门槛
@@ -307,6 +327,10 @@ def main():
                 continue
 
             strat = load_strategy(sfile)
+            if "error" in strat:
+                print(f"\n[{sname}] SKIP: {strat['error']}")
+                results[sname] = {"error": strat["error"]}
+                continue
             formula = strat.get("formula")
             saved_score = strat.get("best_score", "?")
 
@@ -409,6 +433,8 @@ def main():
             else:
                 print(f"    ✅ 全部检查通过")
 
+            bt["scoring_contract_version"] = SCORING_CONTRACT_VERSION
+            bt["train_score"] = saved_score
             results[sname] = bt
 
     # ── 汇总表 ──────────────────────────────────────────────────────────
@@ -450,8 +476,12 @@ def main():
                 "walk_forward": v["walk_forward"],
                 "cost_stress": v["cost_stress"],
             }
+    report = {
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
+        "strategies": serializable,
+    }
     with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(serializable, f, indent=2, ensure_ascii=False)
+        json.dump(report, f, indent=2, ensure_ascii=False)
     print(f"\n详细结果已保存到 {output_path}")
 
 
