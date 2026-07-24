@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 import torch
 
-import web.slurm_training_manager as manager_module
 import web.progress as progress_module
+import web.slurm_training_manager as manager_module
 import web.training_package as package_module
 from model_core.alphagpt import AlphaGPT
 from scripts import slurm_control as control_module
@@ -43,6 +43,7 @@ def test_training_source_fingerprint_isolated_from_frontend() -> None:
     assert "scripts/train_alphamaster.sbatch" in paths
     assert "web/app.py" not in paths
     assert "web/static/app.js" not in paths
+    assert not any(path.startswith("portfolio_manager/") for path in paths)
     assert not any(path.startswith("tests/") for path in paths)
 
 
@@ -297,7 +298,7 @@ def _dataset(
         }
         if source == "AShareLocal"
         else (
-            (
+
                 {
                     "source_id": "ashare_akshare_sina_hfq",
                     "market": "CN_A_SHARE",
@@ -337,7 +338,7 @@ def _dataset(
                     if source == "OKX"
                     else {}
                 )
-            )
+
         )
     )
     path.with_suffix(".manifest.json").write_text(

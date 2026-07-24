@@ -5,6 +5,7 @@
 - 共享 (源,品种,周期) 的 K 线抓取结果做短 TTL 缓存，避免重复请求。
 - 监控清单持久化到 web_settings，重启恢复。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -36,8 +37,15 @@ logger = logging.getLogger(__name__)
 
 # 每个周期的轮询节奏（秒）
 _CADENCE = {
-    "1m": 15, "5m": 30, "15m": 45, "30m": 60,
-    "1h": 60, "4h": 120, "1d": 300, "1w": 600, "1M": 600,
+    "1m": 15,
+    "5m": 30,
+    "15m": 45,
+    "30m": 60,
+    "1h": 60,
+    "4h": 120,
+    "1d": 300,
+    "1w": 600,
+    "1M": 600,
 }
 # K 线周期长度（秒）；用于推算「下一根已收盘 bar」时间
 _TF_SECONDS = {
@@ -52,8 +60,8 @@ _TF_SECONDS = {
     "1M": 2592000,  # 近似 30 天
 }
 _DEFAULT_CADENCE = 60
-_N_BARS = 500                 # 每次拉取的历史 bar 数（喂给特征引擎）
-_HISTORY_LEN = 60             # 保留的信号强度历史点数（供 sparkline）
+_N_BARS = 500  # 每次拉取的历史 bar 数（喂给特征引擎）
+_HISTORY_LEN = 60  # 保留的信号强度历史点数（供 sparkline）
 _VALID_KINDS = {k for k, _ in SOURCE_KINDS}
 
 
@@ -61,7 +69,9 @@ def _cadence_for(tf: str) -> int:
     return _CADENCE.get(tf, _DEFAULT_CADENCE)
 
 
-def _next_bar_close_at(last_bar_open: int | None, timeframe: str, now: float | None = None) -> int | None:
+def _next_bar_close_at(
+    last_bar_open: int | None, timeframe: str, now: float | None = None
+) -> int | None:
     """根据最后已收盘 bar 的开盘时间，推算下次收盘（即下次信号更新）的 Unix 秒。
 
     若最后一根已收盘 bar 已过时太久（超过约 2 个周期仍无新 bar），视为休市/断档，
@@ -157,7 +167,7 @@ class WatchTask:
     best_score: float | None
     cadence_s: int
     # 运行时状态
-    state: str = "pending"          # pending|ok|insufficient|error
+    state: str = "pending"  # pending|ok|insufficient|error
     direction: str | None = None
     strength: float | None = None
     position: float | None = None
@@ -258,7 +268,10 @@ class RealtimeManager:
         for w in watches:
             try:
                 self._add_task_internal(
-                    w["source"], w["symbol"], w["timeframe"], w["strategy_file"],
+                    w["source"],
+                    w["symbol"],
+                    w["timeframe"],
+                    w["strategy_file"],
                     persist=False,
                 )
             except Exception:
@@ -267,16 +280,27 @@ class RealtimeManager:
             self._ensure_thread()
 
     def _persist(self) -> None:
-        save_settings({"realtime_watches": [t.persist_dict() for t in self._tasks.values()]})
+        save_settings(
+            {"realtime_watches": [t.persist_dict() for t in self._tasks.values()]}
+        )
 
     # ── 增删 ────────────────────────────────────────────────────────────
-    def add_watch(self, source: str, symbol: str, timeframe: str, strategy_file: str) -> dict[str, Any]:
-        task = self._add_task_internal(source, symbol, timeframe, strategy_file, persist=True)
+    def add_watch(
+        self, source: str, symbol: str, timeframe: str, strategy_file: str
+    ) -> dict[str, Any]:
+        task = self._add_task_internal(
+            source, symbol, timeframe, strategy_file, persist=True
+        )
         self._ensure_thread()
         return task.to_public()
 
     def _add_task_internal(
-        self, source: str, symbol: str, timeframe: str, strategy_file: str, persist: bool
+        self,
+        source: str,
+        symbol: str,
+        timeframe: str,
+        strategy_file: str,
+        persist: bool,
     ) -> WatchTask:
         source = (source or "").strip()
         symbol = (symbol or "").strip()
@@ -300,13 +324,13 @@ class RealtimeManager:
 
         name = Path(path).stem
         strategy_fingerprint = str(meta["fingerprint"])
-        task_id = (
-            f"{source}:{symbol}:{timeframe}:{name}:"
-            f"{strategy_fingerprint[:12]}"
-        )
+        task_id = f"{source}:{symbol}:{timeframe}:{name}:{strategy_fingerprint[:12]}"
 
         warn = ""
-        if meta.get("vocab_version") and meta["vocab_version"] not in (VOCAB_VERSION, "legacy"):
+        if meta.get("vocab_version") and meta["vocab_version"] not in (
+            VOCAB_VERSION,
+            "legacy",
+        ):
             warn = f"词表版本不符（{meta['vocab_version']} vs {VOCAB_VERSION}），信号可能失真"
         elif meta.get("symbol") and meta["symbol"] != symbol:
             warn = f"该因子为 {meta['symbol']} 训练，跨品种运行仅供参考"
@@ -382,7 +406,9 @@ class RealtimeManager:
             if self._running and self._thread and self._thread.is_alive():
                 return
             self._running = True
-            self._thread = threading.Thread(target=self._loop, name="realtime", daemon=True)
+            self._thread = threading.Thread(
+                target=self._loop, name="realtime", daemon=True
+            )
             self._thread.start()
 
     def stop(self) -> None:
@@ -456,9 +482,9 @@ class RealtimeManager:
                     strategy_fingerprint=task.strategy_fingerprint,
                     bar_ts=int(last_ts),
                     price=float(bars[-1].close),
-                    raw_position=float(task.position),
-                    factor_value=float(task.factor_value),
-                    strength=float(task.strength),
+                    raw_position=float(result["position_raw"]),
+                    factor_value=float(result["factor_value_raw"]),
+                    strength=float(result["strength_raw"]),
                     minimum_exposure=float(
                         getattr(Config, "MIN_TRADE_EXPOSURE", min_exposure())
                     ),
@@ -466,9 +492,7 @@ class RealtimeManager:
                         getattr(Config, "SIGNAL_REBALANCE_DELTA", 0.10)
                     ),
                     stop_loss_pct=float(getattr(Config, "STOP_LOSS_PCT", -0.02)),
-                    take_profit_pct=float(
-                        getattr(Config, "TAKE_PROFIT_PCT", 0.04)
-                    ),
+                    take_profit_pct=float(getattr(Config, "TAKE_PROFIT_PCT", 0.04)),
                     take_profit_remaining_ratio=float(
                         getattr(
                             Config,

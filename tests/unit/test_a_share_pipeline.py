@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import subprocess
+import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -8,9 +12,61 @@ import pytest
 import web.a_share_pipeline as pipeline_module
 from web.a_share_pipeline import ASharePipelineManager
 
-
 RUN_ID = "run_20260723T151419Z_bdc5e5a0"
 DATA_HASH = "a" * 64
+
+
+def _write_fake_backtest(tmp_path: Path) -> dict:
+    report_path = (
+        tmp_path
+        / "local_runs"
+        / RUN_ID
+        / "postprocess"
+        / "backtest_output"
+        / "multi_factor_report.json"
+    )
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report = {
+        "evaluation_mode": "replay",
+        "symbol": "600519",
+        "timeframe": "D1",
+        "data_sha256": DATA_HASH,
+        "portfolio": {"total_return": 1.2, "sharpe": 0.5},
+        "symbols": {"600519": {"n_trades": 10}},
+    }
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    return {
+        **report,
+        "report_path": str(report_path.relative_to(tmp_path)).replace("\\", "/"),
+        "report_sha256": hashlib.sha256(report_path.read_bytes()).hexdigest(),
+    }
+
+
+def _write_fake_signal(tmp_path: Path) -> dict:
+    output_path = (
+        tmp_path
+        / "local_runs"
+        / RUN_ID
+        / "postprocess"
+        / "signal_simulation.json"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "format": "alphamaster_signal_simulation_v3",
+        "run_id": RUN_ID,
+        "symbol": "600519",
+        "timeframe": "1d",
+    }
+    output_path.write_text(json.dumps(payload), encoding="utf-8")
+    return {
+        "lifecycle_event": {
+            "action": "BUY",
+            "previous_exposure": 0.0,
+            "resulting_exposure": 0.6,
+        },
+        "output_path": str(output_path.relative_to(tmp_path)).replace("\\", "/"),
+        "output_sha256": hashlib.sha256(output_path.read_bytes()).hexdigest(),
+    }
 
 
 def _fixture(
@@ -32,7 +88,7 @@ def _fixture(
         "run_id": RUN_ID,
         "symbol": "600519",
         "timeframe": "D1",
-        "local_source": "ashare_local",
+        "local_source": "ashare_akshare_sina_hfq",
         "data_sha256": DATA_HASH,
     }
     (run_dir / "run_manifest.json").write_text(
@@ -93,24 +149,11 @@ def test_ready_training_runs_backtest_then_signal_and_persists_one_run(
 
     def fake_backtest(**_kwargs):
         calls.append("backtest")
-        return {
-            "evaluation_mode": "replay",
-            "symbol": "600519",
-            "timeframe": "D1",
-            "data_sha256": DATA_HASH,
-            "portfolio": {"total_return": 1.2, "sharpe": 0.5},
-            "symbols": {"600519": {"n_trades": 10}},
-        }
+        return _write_fake_backtest(tmp_path)
 
     def fake_signal(**_kwargs):
         calls.append("signal")
-        return {
-            "lifecycle_event": {
-                "action": "BUY",
-                "previous_exposure": 0.0,
-                "resulting_exposure": 0.6,
-            }
-        }
+        return _write_fake_signal(tmp_path)
 
     monkeypatch.setattr(manager, "_run_backtest", fake_backtest)
     monkeypatch.setattr(manager, "_run_signal", fake_signal)
@@ -158,25 +201,12 @@ def test_published_strategy_without_run_id_uses_verified_bundle_identity(
     monkeypatch.setattr(
         manager,
         "_run_backtest",
-        lambda **_kwargs: {
-            "evaluation_mode": "replay",
-            "symbol": "600519",
-            "timeframe": "D1",
-            "data_sha256": DATA_HASH,
-            "portfolio": {"total_return": 1.2, "sharpe": 0.5},
-            "symbols": {"600519": {"n_trades": 10}},
-        },
+        lambda **_kwargs: _write_fake_backtest(tmp_path),
     )
     monkeypatch.setattr(
         manager,
         "_run_signal",
-        lambda **_kwargs: {
-            "lifecycle_event": {
-                "action": "BUY",
-                "previous_exposure": 0.0,
-                "resulting_exposure": 0.6,
-            }
-        },
+        lambda **_kwargs: _write_fake_signal(tmp_path),
     )
 
     manager.observe(training)
@@ -257,6 +287,19 @@ def test_non_ashare_training_is_not_claimed(
     manifest_path = tmp_path / "local_runs" / RUN_ID / "run_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["local_source"] = "okx"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    assert manager.observe(training) is None
+
+
+def test_d1_generic_ashare_source_is_not_claimed_as_sina_hfq(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, training = _fixture(tmp_path, monkeypatch)
+    manifest_path = tmp_path / "local_runs" / RUN_ID / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["local_source"] = "ashare_local"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     assert manager.observe(training) is None
@@ -349,26 +392,13 @@ def test_transient_signal_failure_retries_without_repeating_ready_backtest(
 
     def fake_backtest(**_kwargs):
         calls.append("backtest")
-        return {
-            "evaluation_mode": "replay",
-            "symbol": "600519",
-            "timeframe": "D1",
-            "data_sha256": DATA_HASH,
-            "portfolio": {"total_return": 1.2, "sharpe": 0.5},
-            "symbols": {"600519": {"n_trades": 10}},
-        }
+        return _write_fake_backtest(tmp_path)
 
     def fake_signal(**_kwargs):
         calls.append("signal")
         if calls.count("signal") == 1:
             raise pipeline_module.PipelineTransientError("通达信暂时不可用")
-        return {
-            "lifecycle_event": {
-                "action": "BUY",
-                "previous_exposure": 0.0,
-                "resulting_exposure": 0.6,
-            }
-        }
+        return _write_fake_signal(tmp_path)
 
     monkeypatch.setattr(manager, "_run_backtest", fake_backtest)
     monkeypatch.setattr(manager, "_run_signal", fake_signal)
@@ -385,3 +415,93 @@ def test_transient_signal_failure_retries_without_repeating_ready_backtest(
     assert second["status"] == "READY"
     assert second["attempts"] == 2
     assert calls == ["backtest", "signal", "signal"]
+
+
+def test_forged_ready_state_cannot_skip_backtest_and_signal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, training = _fixture(tmp_path, monkeypatch)
+    state_path = (
+        tmp_path / "local_runs" / RUN_ID / "pipeline_state.json"
+    )
+    state_path.write_text(
+        json.dumps(
+            {
+                "format": pipeline_module.PIPELINE_FORMAT,
+                "run_id": RUN_ID,
+                "status": "READY",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = manager.observe(training)
+
+    assert state is not None
+    assert state["status"] == "FAILED"
+    assert state["state_integrity_error"] is True
+    assert "完整性校验失败" in state["error"]
+
+
+def test_two_managers_share_one_postprocess_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first, training = _fixture(tmp_path, monkeypatch)
+    second = ASharePipelineManager(
+        local_runs_root=tmp_path / "local_runs"
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    calls: list[str] = []
+
+    def fake_backtest(**_kwargs):
+        calls.append("backtest")
+        entered.set()
+        assert release.wait(timeout=5)
+        return _write_fake_backtest(tmp_path)
+
+    def fake_signal(**_kwargs):
+        calls.append("signal")
+        return _write_fake_signal(tmp_path)
+
+    for manager in (first, second):
+        monkeypatch.setattr(manager, "_run_backtest", fake_backtest)
+        monkeypatch.setattr(manager, "_run_signal", fake_signal)
+
+    first.observe(training)
+    assert entered.wait(timeout=5)
+    second_state = second.observe(training)
+    assert second_state is not None
+    assert second_state["status"] == "POSTPROCESSING"
+    release.set()
+
+    assert first.wait(RUN_ID, timeout=5)["status"] == "READY"
+    assert second.wait(RUN_ID, timeout=5)["status"] == "READY"
+    assert calls == ["backtest", "signal"]
+
+
+def test_run_lease_is_exclusive_across_processes(tmp_path: Path) -> None:
+    lock_path = tmp_path / "pipeline.lock"
+    lease = pipeline_module._RunLease(lock_path)
+    assert lease.acquire() is True
+    code = (
+        "from pathlib import Path;"
+        "from web.a_share_pipeline import _RunLease;"
+        f"lease=_RunLease(Path({str(lock_path)!r}));"
+        "print(lease.acquire())"
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=Path(__file__).resolve().parents[2],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=20,
+        )
+    finally:
+        lease.release()
+
+    assert result.stdout.strip() == "False"

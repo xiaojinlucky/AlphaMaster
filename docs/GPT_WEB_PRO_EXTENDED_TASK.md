@@ -4,14 +4,14 @@
 
 ## 访问方式与唯一事实源
 
-请使用已连接的 GitHub MCP，只读取私有仓库：
+请使用已连接的 GitHub MCP，只读取仓库所有者明确要求持续公开的仓库：
 
 ```text
 xiaojinlucky/AlphaMaster
 branch: main
 ```
 
-先报告实际 `main` SHA 和访问状态。不得用公开 upstream、搜索结果、旧对话、模型记忆或其他仓库替代私有仓库当前代码。
+先报告实际 `main` SHA 和访问状态。不得用公开 upstream、搜索结果、旧对话、模型记忆或其他仓库替代目标仓库当前代码。
 
 本任务不授权：
 
@@ -261,7 +261,7 @@ sealed test：策略冻结后才访问
 
 ### C. 原作者问题与 fork 修复边界
 
-如需判断“原仓库是否已有问题”，优先通过私有仓库自身 Git 历史中的 fork 基线与后续提交证明；如果 GitHub MCP 无法读取所需历史，就标记 `PENDING_LOCAL_VERIFICATION`，不得突破本任务边界去读取其他仓库：
+如需判断“原仓库是否已有问题”，优先通过目标仓库自身 Git 历史中的 fork 基线与后续提交证明；如果 GitHub MCP 无法读取所需历史，就标记 `PENDING_LOCAL_VERIFICATION`，不得突破本任务边界去读取其他仓库：
 
 - 哪个问题源自原仓库；
 - 哪个问题由 fork 新增；

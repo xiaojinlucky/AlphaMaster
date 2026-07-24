@@ -6,7 +6,7 @@
 
 ![Web 控制台总览](docs/images/00_hero.png)
 
-目标发布仓库：[github.com/xiaojinlucky/AlphaMaster](https://github.com/xiaojinlucky/AlphaMaster)；原作者仓库保留为只读 `upstream`：[rosemarycox5334-debug/AlphaMaster](https://github.com/rosemarycox5334-debug/AlphaMaster)。默认只向私有仓库发布；当前仓库公开，但用户已于 2026-07-20 明确授权临时发布本次已审查的 36 路快照，主交接提交为 `4a897de`。`.env`、真实配置、密钥、数据、模型和日志始终不上传，后续发布仍须重新确认。
+目标发布仓库：[github.com/xiaojinlucky/AlphaMaster](https://github.com/xiaojinlucky/AlphaMaster)；原作者仓库保留为只读 `upstream`：[rosemarycox5334-debug/AlphaMaster](https://github.com/rosemarycox5334-debug/AlphaMaster)。用户已于 2026-07-24 明确要求目标仓库持续保持公开，以便网页版 GPT 与 BioMNI（BIOMNI）直接读取已提交源码和证据；不得再把改为私有作为发布前提。公开不放宽安全边界：`.env`、真实配置、密钥、原始数据、数据库、模型、checkpoint、训练历史、日志和运行态始终不上传，每次发布仍须按精确文件快照重新确认。
 
 现役数据身份、Slurm 批次、checkpoint、回测、虚拟信号和封存评估边界以 [`CONTEXT.md`](CONTEXT.md) 与 [`docs/VALIDATION_EVIDENCE.md`](docs/VALIDATION_EVIDENCE.md) 为准；历史提交不能替代当前运行证据。接手或让外部模型规划前，先读这两份文件和 [`docs/GPT5_6SOL_HANDOFF.md`](docs/GPT5_6SOL_HANDOFF.md)。
 

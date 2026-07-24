@@ -8,7 +8,7 @@
 - 项目路径：`D:\Desktop\Quant\AlphaMaster`。
 - Python：项目 `.venv`，当前主验证环境为 Python 3.11。
 - Web：本机回环地址 `127.0.0.1:8765`；桌面快捷方式只启动控制台，不会自动提交训练。
-- 目标发布仓库：`xiaojinlucky/AlphaMaster`，`main` 跟踪 `origin/main`。默认要求私有发布；2026-07-20 用户仅授权将本次 36 路精确快照临时推送到当前公开仓库，主交接提交为 `4a897de`。密钥、真实配置、数据、模型和日志仍是硬阻断项，后续发布必须重新确认。
+- 目标发布仓库：`xiaojinlucky/AlphaMaster`，`main` 跟踪 `origin/main`。用户已于 2026-07-24 明确要求仓库持续保持公开，以便网页版 GPT 与 BioMNI（BIOMNI）直接读取；不得再把改为私有作为发布前提。密钥、真实配置、原始数据、数据库、模型、checkpoint、训练历史、日志和运行态仍是硬阻断项，每次发布必须重新确认精确文件快照。
 - 原作者仓库：`rosemarycox5334-debug/AlphaMaster`，本机只读 remote 为 `upstream`。
 
 ## 2. 远程训练环境
@@ -36,7 +36,7 @@
 | `browser:control-in-app-browser` | 本机 Web 页面、控制台错误、布局和运行状态验证 | 外部模型不能把静态代码检查当成真实页面验收 |
 | `neat-freak` | 对照代码收敛 CONTEXT、README、docs 和规则 | 外部计划应引用 canonical 文档，不继续追加冲突快照 |
 | `github:github` | 读取和核对 GitHub 仓库、提交、PR 与权限事实 | 外部 GitHub MCP 结论仍要按本机工作区和实时远程状态复核 |
-| `github:yeet` | 精确 Git 范围、密钥扫描、私有远程校验和发布 | 本项目禁止未经确认开分支/PR，实际发布按项目 Git 规则适配 |
+| `github:yeet` | 精确 Git 范围、密钥扫描、远程身份校验和发布 | 本项目明确要求目标仓库持续公开；禁止未经确认开分支/PR，实际发布按项目 Git 规则适配 |
 | `codex-remote-ops` | Windows 到远程 Codex/节点链路排障 | 仅在远程基础设施故障时使用，不替代 Slurm 训练合同 |
 
 ## 5. 与本项目有关的既定偏好

@@ -1,10 +1,10 @@
 # GPT-5.6-sol 移交说明
 
-> 历史专项快照：本文件记录 200-bar 标准化与未来函数审计背景。2026-07-19 后的当前方向、选择性上游同步和网页版 GPT 入口以 `docs/LIVE_TRADING_DIRECTION_HANDOFF.md` 与 `docs/WEB_GPT_CONTROLLER_PROMPT.md` 为准。
+> 历史专项快照：本文件记录 200-bar 标准化与未来函数审计背景。当前方向以根目录 `CONTEXT.md`、`docs/PORTFOLIO_CONTROLLER_V1.md` 和 `docs/BIOMNI_PORTFOLIO_REVIEW_PROMPT.md` 为准。
 
 ## 1. 项目定位
 
-AlphaMaster 是基于原始公开仓库的私有轻量二次开发项目。现有核心路线保持为：
+AlphaMaster 是基于原始公开仓库的公开轻量二次开发项目；持续公开是仓库所有者为网页版 GPT 与 BioMNI 协作作出的明确决定。现有核心路线保持为：
 
 ```text
 AlphaGPT 生成公式

@@ -20,13 +20,13 @@ import pyarrow.parquet as pq
 import torch
 
 from config import Config
+from data_pipeline.a_share_akshare import AKSHARE_SLICE_SEALED_EVALUATION
 from data_pipeline.a_share_data import (
     ASHARE_DATASET_FORMAT,
     ASHARE_SOURCE,
     ASHARE_SOURCE_ID,
     ASHARE_SPECS_BY_TIMEFRAME,
 )
-from data_pipeline.a_share_akshare import AKSHARE_SLICE_SEALED_EVALUATION
 from data_pipeline.dataset_contracts import (
     AKSHARE_HFQ_FORMAT,
     AKSHARE_HFQ_SOURCE_ID,
@@ -49,7 +49,6 @@ from web.slurm_training_client import (
     sha256_file,
 )
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TRAINING_SOURCE_PATTERNS = (
     "config.py",
@@ -70,7 +69,12 @@ DATA_SOURCE_CONTRACTS = {
     AKSHARE_SOURCE: (AKSHARE_HFQ_SOURCE_ID, AKSHARE_HFQ_FORMAT),
 }
 REQUIRED_DATA_COLUMNS = ("time", "open", "high", "low", "close", "tick_volume")
-LOCAL_RUNS_ROOT = PROJECT_ROOT / "local_runs"
+LOCAL_RUNS_ROOT = Path(
+    os.getenv(
+        "ALPHAMASTER_LOCAL_RUNS_ROOT",
+        str(PROJECT_ROOT / "local_runs"),
+    )
+).expanduser().resolve()
 PUBLISHED_BUNDLE_FORMAT = "alphamaster_published_bundle_v1"
 RUN_ID_RE = re.compile(r"^run_\d{8}T\d{6}Z_[0-9a-f]{8}$")
 RECOVERY_UNKNOWN = "RECOVERY_UNKNOWN"
@@ -278,7 +282,7 @@ class SlurmTrainingManager:
         self._cached_status = self._status_payload()
 
     @classmethod
-    def from_environment(cls) -> "SlurmTrainingManager":
+    def from_environment(cls) -> SlurmTrainingManager:
         return cls()
 
     def _current_pointer(self) -> Path:

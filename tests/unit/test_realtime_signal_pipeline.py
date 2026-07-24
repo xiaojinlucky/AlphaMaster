@@ -106,8 +106,11 @@ def _ok_result(position: float) -> dict:
     return {
         "state": "ok",
         "direction": direction,
+        "strength_raw": abs(position),
         "strength": abs(position),
+        "position_raw": position,
         "position": position,
+        "factor_value_raw": position,
         "factor_value": position,
         "bars_used": 500,
         "message": "",
@@ -245,6 +248,36 @@ def test_negative_a_share_signal_is_recorded_but_not_pushed(
     assert task.latest_event["requested_exposure"] == 0.0
     assert task.latest_event["delivery_status"] == "NOT_REQUIRED"
     assert notified is False
+
+
+def test_realtime_pipeline_uses_full_precision_position_for_entry_gate(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    realtime_module, manager, task = _manager_and_task(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        manager,
+        "_get_bars",
+        lambda *_args, **_kwargs: [
+            Bar(ts=1000, open=100, high=101, low=99, close=100, volume=1)
+        ],
+    )
+    result = _ok_result(0.04996)
+    result["position"] = 0.05
+    result["strength"] = 0.05
+    monkeypatch.setattr(
+        realtime_module,
+        "evaluate_signal",
+        lambda *_args, **_kwargs: dict(result),
+    )
+
+    manager._evaluate_task(task)
+
+    assert task.position == 0.05
+    assert task.latest_event is not None
+    assert task.latest_event["action"] == "HOLD"
+    assert task.latest_event["requested_exposure"] == 0.0
+    assert task.latest_event["raw_position"] == pytest.approx(0.04996)
 
 
 def test_feishu_trade_signal_message_contains_auditable_fields() -> None:
