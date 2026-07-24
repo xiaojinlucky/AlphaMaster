@@ -34,16 +34,25 @@ def test_data_filename_rejects_paths_and_unknown_timeframes() -> None:
 
 def test_selector_accepts_only_compute_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _client()
-    monkeypatch.setattr(
-        client_module.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(
+    observed: dict[str, object] = {}
+
+    def first_run(command, **_kwargs):
+        observed["command"] = command
+        return SimpleNamespace(
             returncode=0,
             stdout="Recommended now: compute-node-12\n",
             stderr="",
-        ),
+        )
+
+    monkeypatch.setattr(
+        client_module.subprocess,
+        "run",
+        first_run,
     )
     assert client.select_compute_host() == "compute-node-12"
+    command = observed["command"]
+    assert isinstance(command, list)
+    assert Path(command[0]).name.lower() == "pwsh.exe"
 
     monkeypatch.setattr(
         client_module.subprocess,

@@ -1,4 +1,4 @@
-"""训练后端必须显式选择，远程配置缺失时禁止退回本机。"""
+"""模型训练只能使用 Slurm，任何本机后端配置都必须失败关闭。"""
 from __future__ import annotations
 
 import pytest
@@ -9,13 +9,14 @@ from web import training_manager as manager_module
 def test_missing_backend_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TRAINING_BACKEND", raising=False)
 
-    with pytest.raises(RuntimeError, match="拒绝隐式本机训练"):
+    with pytest.raises(RuntimeError, match="只允许 TRAINING_BACKEND=slurm"):
         manager_module._build_training_manager()
 
 
-def test_local_backend_requires_explicit_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_local_backend_is_rejected_even_when_explicit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("TRAINING_BACKEND", "local")
 
-    manager = manager_module._build_training_manager()
-
-    assert type(manager) is manager_module.TrainingManager
+    with pytest.raises(RuntimeError, match="禁止在 Windows 本机训练"):
+        manager_module._build_training_manager()

@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import hashlib
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
 
-from run_backtest import _validate_strategy_data_contract
+from run_backtest import (
+    _build_sealed_report_payload,
+    _validate_sealed_report_cli,
+    _validate_strategy_data_contract,
+    _write_sealed_report_atomic,
+)
 
 
 _DIGEST = "a" * 64
@@ -205,3 +213,246 @@ def test_diagnostic_overlap_is_explicitly_labeled() -> None:
 
     assert result["evaluation_mode"] == "diagnostic_overlap"
     assert result["score_start_index"] == 0
+
+
+def test_sealed_oos_requires_explicit_post_training_score_start() -> None:
+    strategy = _strategy()
+    strategy["data_end"] = "2023-12-01T00:00:00Z"
+    manager = _manager()
+    manager.data_sha256 = "b" * 64
+    manager.dataset_id = f"sha256:{manager.data_sha256}"
+
+    with pytest.raises(ValueError, match="显式提供 score_start"):
+        _validate_strategy_data_contract(
+            strategy,
+            manager,
+            evaluation_mode="sealed_oos",
+        )
+
+
+def test_sealed_oos_rejects_training_data_hash() -> None:
+    with pytest.raises(ValueError, match="hash 与训练数据不同"):
+        _validate_strategy_data_contract(
+            _strategy(),
+            _manager(),
+            evaluation_mode="sealed_oos",
+            score_start="2024-05-01T00:00:00Z",
+        )
+
+
+def test_sealed_oos_score_start_must_be_strictly_after_training_end() -> None:
+    strategy = _strategy()
+    strategy["data_end"] = "2023-12-01T00:00:00Z"
+    manager = _manager()
+    manager.data_sha256 = "b" * 64
+    manager.dataset_id = f"sha256:{manager.data_sha256}"
+
+    with pytest.raises(ValueError, match="必须晚于训练数据结束时间"):
+        _validate_strategy_data_contract(
+            strategy,
+            manager,
+            evaluation_mode="sealed_oos",
+            score_start=strategy["data_end"],
+        )
+
+
+def test_sealed_oos_preserves_mode_and_actual_score_window() -> None:
+    strategy = _strategy()
+    strategy["data_end"] = "2023-12-01T00:00:00Z"
+    manager = _manager()
+    manager.data_sha256 = "b" * 64
+    manager.dataset_id = f"sha256:{manager.data_sha256}"
+
+    result = _validate_strategy_data_contract(
+        strategy,
+        manager,
+        evaluation_mode="sealed_oos",
+        score_start="2024-01-01T00:15:00Z",
+    )
+
+    assert result["evaluation_mode"] == "sealed_oos"
+    assert result["same_dataset"] is False
+    assert result["score_start"] == "2024-01-01T01:13:20Z"
+    assert result["score_end"] == manager.data_end
+
+
+@pytest.mark.parametrize(
+    ("evaluation_mode", "strategy_file", "sealed_report", "single_mode", "match"),
+    [
+        ("sealed_oos", "strategy.json", None, False, "--sealed-report"),
+        ("out_of_sample", "strategy.json", "sealed.json", False, "仅允许"),
+        ("sealed_oos", None, "sealed.json", False, "--strategy-file"),
+        ("sealed_oos", "strategy.json", "sealed.json", True, "不接受 --single"),
+    ],
+)
+def test_sealed_report_cli_rejects_invalid_combinations(
+    evaluation_mode: str,
+    strategy_file: str | None,
+    sealed_report: str | None,
+    single_mode: bool,
+    match: str,
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        _validate_sealed_report_cli(
+            evaluation_mode=evaluation_mode,
+            strategy_file=strategy_file,
+            sealed_report=sealed_report,
+            single_mode=single_mode,
+        )
+
+
+def test_sealed_report_cli_accepts_explicit_single_strategy_mode() -> None:
+    result = _validate_sealed_report_cli(
+        evaluation_mode="sealed_oos",
+        strategy_file="strategy.json",
+        sealed_report="sealed.json",
+        single_mode=False,
+    )
+
+    assert result == Path("sealed.json")
+
+
+def test_sealed_report_requires_exactly_one_symbol_result() -> None:
+    with pytest.raises(ValueError, match="正好一个品种结果"):
+        _build_sealed_report_payload(
+            results_map={
+                "BTCUSDT": {"sharpe": 1.1, "cost_rate": 0.0003},
+                "ETHUSDT": {"sharpe": 1.2, "cost_rate": 0.0003},
+            },
+            evaluation_contract={
+                "evaluation_mode": "sealed_oos",
+                "score_start": "2024-01-01T00:00:00Z",
+                "score_end": "2024-12-31T00:00:00Z",
+            },
+            data_sha256="b" * 64,
+            strategy_bytes=b"strategy",
+            commission_pct=0.02,
+            slippage_pct=0.01,
+        )
+
+
+def test_sealed_report_has_exact_fields_and_raw_strategy_hash() -> None:
+    strategy_bytes = b'{\r\n  "formula": [1, 2, 3]\r\n}\r\n'
+
+    payload = _build_sealed_report_payload(
+        results_map={
+            "BTCUSDT": {"sharpe": 1.23456789, "cost_rate": 0.0003}
+        },
+        evaluation_contract={
+            "evaluation_mode": "sealed_oos",
+            "score_start": "2024-01-01T00:00:00Z",
+            "score_end": "2024-12-31T00:00:00Z",
+        },
+        data_sha256="b" * 64,
+        strategy_bytes=strategy_bytes,
+        commission_pct=0.02,
+        slippage_pct=0.01,
+    )
+
+    assert set(payload) == {
+        "format",
+        "symbol",
+        "data_sha256",
+        "strategy_sha256",
+        "evaluation_mode",
+        "test_start",
+        "test_end",
+        "commission_pct",
+        "slippage_pct",
+        "cost_rate",
+        "sharpe",
+    }
+    assert payload == {
+        "format": "alphamaster_sealed_oos_report_v2",
+        "symbol": "BTCUSDT",
+        "data_sha256": "b" * 64,
+        "strategy_sha256": hashlib.sha256(strategy_bytes).hexdigest(),
+        "evaluation_mode": "sealed_oos",
+        "test_start": "2024-01-01T00:00:00Z",
+        "test_end": "2024-12-31T00:00:00Z",
+        "commission_pct": 0.02,
+        "slippage_pct": 0.01,
+        "cost_rate": 0.0003,
+        "sharpe": 1.23456789,
+    }
+
+
+def test_sealed_report_write_is_atomic_and_never_overwrites(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "reports" / "sealed.json"
+    payload = {
+        "format": "alphamaster_sealed_oos_report_v2",
+        "symbol": "BTCUSDT",
+        "data_sha256": "b" * 64,
+        "strategy_sha256": "c" * 64,
+        "evaluation_mode": "sealed_oos",
+        "test_start": "2024-01-01T00:00:00Z",
+        "test_end": "2024-12-31T00:00:00Z",
+        "commission_pct": 0.02,
+        "slippage_pct": 0.01,
+        "cost_rate": 0.0003,
+        "sharpe": 1.25,
+    }
+
+    _write_sealed_report_atomic(target, payload)
+    original_bytes = target.read_bytes()
+
+    assert json.loads(original_bytes) == payload
+    with pytest.raises(FileExistsError, match="禁止覆盖"):
+        _write_sealed_report_atomic(target, {**payload, "sharpe": 9.9})
+    assert target.read_bytes() == original_bytes
+    assert list(target.parent.glob(f".{target.name}.*.tmp")) == []
+
+
+@pytest.mark.parametrize("sharpe", [float("nan"), float("inf"), float("-inf")])
+def test_sealed_report_rejects_non_finite_sharpe(
+    sharpe: float,
+) -> None:
+    with pytest.raises(ValueError, match="有限浮点数"):
+        _build_sealed_report_payload(
+            results_map={
+                "BTCUSDT": {"sharpe": sharpe, "cost_rate": 0.0003}
+            },
+            evaluation_contract={
+                "evaluation_mode": "sealed_oos",
+                "score_start": "2024-01-01T00:00:00Z",
+                "score_end": "2024-12-31T00:00:00Z",
+            },
+            data_sha256="b" * 64,
+            strategy_bytes=b"strategy",
+            commission_pct=0.02,
+            slippage_pct=0.01,
+        )
+
+
+def test_sealed_report_rejects_zero_total_cost() -> None:
+    with pytest.raises(ValueError, match="严格大于 0"):
+        _build_sealed_report_payload(
+            results_map={"BTCUSDT": {"sharpe": 1.2, "cost_rate": 0.0}},
+            evaluation_contract={
+                "evaluation_mode": "sealed_oos",
+                "score_start": "2024-01-01T00:00:00Z",
+                "score_end": "2024-12-31T00:00:00Z",
+            },
+            data_sha256="b" * 64,
+            strategy_bytes=b"strategy",
+            commission_pct=0.0,
+            slippage_pct=0.0,
+        )
+
+
+def test_sealed_report_rejects_declared_cost_mismatch() -> None:
+    with pytest.raises(ValueError, match="实际 cost_rate 不一致"):
+        _build_sealed_report_payload(
+            results_map={"BTCUSDT": {"sharpe": 1.2, "cost_rate": 0.0}},
+            evaluation_contract={
+                "evaluation_mode": "sealed_oos",
+                "score_start": "2024-01-01T00:00:00Z",
+                "score_end": "2024-12-31T00:00:00Z",
+            },
+            data_sha256="b" * 64,
+            strategy_bytes=b"strategy",
+            commission_pct=0.02,
+            slippage_pct=0.01,
+        )

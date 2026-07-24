@@ -8,11 +8,14 @@
 # ===== Core Dependencies (Required for main pipeline) =====
 
 # Deep Learning & Numerical Computing
-torch>=2.0.0          # PyTorch for model training and inference
+torch==2.8.0          # Windows 2.12/2.13 c10.dll regression; 2.8 verified locally
 numpy>=1.24.0         # Numerical operations
 
 # Data Processing
 pandas>=2.0.0         # Data manipulation and analysis
+pytdx>=1.72           # Tongdaxin A-share realtime quotes
+akshare==1.18.64      # A-share historical qfq training datasets
+xlrd==2.0.1           # Official CSI constituent XLS reader
 
 # MT5 Trading Platform
 MetaTrader5>=5.0.45   # MetaTrader 5 Python API for data and order execution

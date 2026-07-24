@@ -88,8 +88,9 @@ def test_live_strategy_save_is_atomic_and_preserves_full_training_identity(
         "tick_volume",
     ]
 
-    source._save_strategy_live()
+    save_path = source._save_strategy_live()
 
+    assert save_path == str(Path("strategies") / "best_BTCUSDT.json")
     strategy = json.loads(
         (tmp_path / "strategies" / "best_BTCUSDT.json").read_text(
             encoding="utf-8"
@@ -110,6 +111,19 @@ def test_training_loop_has_no_minimal_strategy_overwrite_path() -> None:
     source = inspect.getsource(AlphaEngine.train)
     assert "json.dump(strategy_data" not in source
     assert source.count("self._save_strategy_live()") >= 3
+
+
+def test_live_strategy_save_rejects_missing_explicit_data_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    source = _engine()
+    del source.data_sha256
+
+    with pytest.raises(RuntimeError, match="原子保存失败"):
+        source._save_strategy_live()
+    assert not (tmp_path / "strategies" / "best_BTCUSDT.json").exists()
 
 
 def test_checkpoint_round_trip_saves_full_identity_and_isolated_path(

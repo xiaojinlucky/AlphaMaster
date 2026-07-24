@@ -23,7 +23,13 @@ from data_pipeline.a_share_data import (
     sha256_file,
     validate_canonical_training_frame,
 )
+from data_pipeline.a_share_akshare import (
+    AKSHARE_SLICE_SEALED_EVALUATION,
+    load_akshare_hfq_manifest,
+)
 from data_pipeline.dataset_contracts import (
+    AKSHARE_HFQ_SOURCE_ID,
+    AKSHARE_SOURCE,
     DATA_SOURCE_IDS,
     GENERIC_SOURCE_CONTRACTS,
     MT5_LEGACY_SOURCE_ID,
@@ -224,33 +230,47 @@ def _resolve_training_contract(
     digest = sha256_file(path)
     canonical_a_share_name = _CANONICAL_ASHARE_RE.fullmatch(path.name) is not None
     a_share_manifest = None
+    a_share_source_id: str | None = None
     if payload is not None and payload.get("source") == ASHARE_SOURCE:
         a_share_manifest = load_a_share_manifest(path, frame)
+        a_share_source_id = ASHARE_SOURCE_ID
+    elif payload is not None and payload.get("source") == AKSHARE_SOURCE:
+        a_share_manifest = load_akshare_hfq_manifest(path, frame)
+        a_share_source_id = AKSHARE_HFQ_SOURCE_ID
     elif canonical_a_share_name and payload is not None:
-        raise ValueError("六位 A 股规范文件必须使用有效的 AShareLocal manifest")
-    elif canonical_a_share_name and expected_source_id != ASHARE_SOURCE_ID:
-        raise ValueError("六位 A 股规范文件缺少有效的 AShareLocal manifest")
+        raise ValueError("六位 A 股规范文件必须使用受支持且有效的 A 股 manifest")
+    elif canonical_a_share_name and expected_source_id not in {
+        ASHARE_SOURCE_ID,
+        AKSHARE_HFQ_SOURCE_ID,
+    }:
+        raise ValueError("六位 A 股规范文件缺少有效的 A 股来源合同")
 
     if a_share_manifest is not None:
         volume_col = "tick_volume"
         periods_per_year = int(a_share_manifest["periods_per_year"])
         minimum_bars = int(a_share_manifest["minimum_bars"])
-        source_id = ASHARE_SOURCE_ID
+        if a_share_source_id is None:
+            raise ValueError("A 股来源身份缺失")
+        source_id = a_share_source_id
         data_sha256 = str(a_share_manifest["data_sha256"])
         dataset_id = str(a_share_manifest["dataset_id"])
-    elif expected_source_id == ASHARE_SOURCE_ID:
+    elif expected_source_id in {ASHARE_SOURCE_ID, AKSHARE_HFQ_SOURCE_ID}:
         if not canonical_a_share_name:
-            raise ValueError("manifestless ashare_local 文件名必须是 6位代码_(M5|M15|H1|D1).parquet")
+            raise ValueError(
+                "manifestless A 股文件名必须是 6位代码_(M5|M15|H1|D1).parquet"
+            )
         spec = ASHARE_SPECS_BY_TIMEFRAME.get(timeframe)
         if spec is None:
-            raise ValueError("ashare_local 只支持 M5/M15/H1/D1")
+            raise ValueError("A 股训练数据只支持 M5/M15/H1/D1")
+        if expected_source_id == AKSHARE_HFQ_SOURCE_ID and timeframe != "D1":
+            raise ValueError(f"{AKSHARE_HFQ_SOURCE_ID} 只支持 D1")
         if expected_minimum_bars is None:
-            raise ValueError("manifestless ashare_local 必须显式传入 minimum_bars")
+            raise ValueError("manifestless A 股数据必须显式传入 minimum_bars")
         validate_canonical_training_frame(frame)
         volume_col = "tick_volume"
         periods_per_year = spec.periods_per_year
         minimum_bars = spec.minimum_bars
-        source_id = ASHARE_SOURCE_ID
+        source_id = expected_source_id
         data_sha256 = digest
         dataset_id = f"sha256:{digest}"
     else:
@@ -364,6 +384,22 @@ def inspect_parquet_file(
         )
 
     years = round(bars / periods_per_year, 2)
+    manifest = _read_manifest(p)
+    derivation = (
+        manifest.get("derivation")
+        if isinstance(manifest, dict)
+        and isinstance(manifest.get("derivation"), dict)
+        else None
+    )
+    dataset_purpose = (
+        str(derivation.get("purpose"))
+        if isinstance(derivation, dict)
+        else None
+    )
+    sealed_evaluation = (
+        source_id == AKSHARE_HFQ_SOURCE_ID
+        and dataset_purpose == AKSHARE_SLICE_SEALED_EVALUATION
+    )
     return {
         "data_file": str(p.resolve()),
         "filename": p.name,
@@ -381,11 +417,14 @@ def inspect_parquet_file(
         "source": source_id,
         "data_sha256": data_sha256,
         "dataset_id": dataset_id,
+        "dataset_purpose": dataset_purpose,
         "manifest_path": str(p.with_suffix(".manifest.json").resolve()),
-        "registration": "registered" if _read_manifest(p) is not None else "bare_legacy",
+        "registration": "registered" if manifest is not None else "bare_legacy",
         "capabilities": {
             "local_training": True,
-            "remote_training": source_id != "local_file",
+            "remote_training": (
+                source_id != "local_file" and not sealed_evaluation
+            ),
             "backtest": True,
             "legacy_registration": (
                 source_id == "local_file" and volume_col == "tick_volume"

@@ -14,6 +14,10 @@ OKX_FORMAT = "alphamaster_okx_dataset_v1"
 OKX_SOURCE_ID = "okx"
 OKX_LEGACY_SOURCE_ID = "okx_legacy_attested"
 
+AKSHARE_SOURCE = "AKShare"
+AKSHARE_HFQ_FORMAT = "alphamaster_ashare_akshare_sina_hfq_dataset_v1"
+AKSHARE_HFQ_SOURCE_ID = "ashare_akshare_sina_hfq"
+
 TRAINING_SOURCE_IDS = frozenset(
     {
         MT5_SOURCE_ID,
@@ -21,6 +25,7 @@ TRAINING_SOURCE_IDS = frozenset(
         OKX_SOURCE_ID,
         OKX_LEGACY_SOURCE_ID,
         "ashare_local",
+        AKSHARE_HFQ_SOURCE_ID,
     }
 )
 DATA_SOURCE_IDS = TRAINING_SOURCE_IDS | {"local_file"}
@@ -43,6 +48,7 @@ SOURCE_FAMILIES = {
     OKX_SOURCE_ID: "okx",
     OKX_LEGACY_SOURCE_ID: "okx",
     "ashare_local": "ashare",
+    AKSHARE_HFQ_SOURCE_ID: "ashare",
     "local_file": "local",
 }
 

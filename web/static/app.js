@@ -12,6 +12,9 @@ let selectedBacktestDataInfo = null;
 let chart = null;
 let chartSymbol = null;
 let pollTimer = null;
+let pollTickInFlight = false;
+let overviewRefreshInFlight = false;
+let lastTrainingSnapshot = null;
 let clientErrors = [];
 let debugMode = false;
 let lastDebugViewContent = "";
@@ -31,7 +34,7 @@ const $ = (id) => document.getElementById(id);
 
 async function ensureControlToken() {
   if (controlToken) return controlToken;
-  const res = await nativeFetch(API + "/api/session", {
+  const res = await nativeFetch(API + `/api/session?refresh=${Date.now()}`, {
     method: "GET",
     cache: "no-store",
     credentials: "same-origin",
@@ -49,7 +52,14 @@ async function secureFetch(input, init = {}) {
   const headers = new Headers(options.headers || {});
   headers.set("X-AlphaMaster-Control", await ensureControlToken());
   options.headers = headers;
-  return nativeFetch(input, options);
+  let response = await nativeFetch(input, options);
+  if (response.status === 403 && !String(input).includes("/api/session")) {
+    // 后端重启会轮换本机控制令牌；刷新一次令牌后重放原请求。
+    controlToken = "";
+    headers.set("X-AlphaMaster-Control", await ensureControlToken());
+    response = await nativeFetch(input, options);
+  }
+  return response;
 }
 
 const CPU_TRAINING_NOTE = `暂无报错
@@ -222,13 +232,21 @@ async function fetchJSON(path, opts = {}) {
   const silent = !!opts.silent;
   const fetchOpts = { ...opts };
   delete fetchOpts.silent;
+  const timeoutMs = Number(fetchOpts.timeoutMs) || 12000;
+  delete fetchOpts.timeoutMs;
+  const timeoutController = new AbortController();
+  const timeoutId = window.setTimeout(() => timeoutController.abort(), timeoutMs);
+  if (!fetchOpts.signal) fetchOpts.signal = timeoutController.signal;
   let res;
   try {
     res = await secureFetch(API + path, fetchOpts);
   } catch (e) {
-    const msg = `网络错误 ${path}: ${e.message}`;
+    const detail = e?.name === "AbortError" ? `${timeoutMs}ms 超时` : e.message;
+    const msg = `网络错误 ${path}: ${detail}`;
     await logClientError(msg, { path, silent });
     throw new Error(msg);
+  } finally {
+    window.clearTimeout(timeoutId);
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -243,6 +261,22 @@ async function fetchJSON(path, opts = {}) {
 function formatScore(v) {
   if (v == null || Number.isNaN(v)) return "—";
   return Number(v).toFixed(4);
+}
+
+function formatNumber(v, digits = 2) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toFixed(digits) : "—";
+}
+
+function formatSigned(v, digits = 2) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "—";
+  return `${n >= 0 ? "+" : ""}${n.toFixed(digits)}`;
+}
+
+function formatPct(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? `${(n * 100).toFixed(2)}%` : "—";
 }
 
 function dataIdentityLabel(info) {
@@ -306,7 +340,7 @@ function renderDataFileCard(info) {
   const yearsText = info.years_h1 != null ? `${info.years_h1} 年` : "—";
   const identityText = dataIdentityLabel(info);
   const trainingText = trainingCompatible
-    ? `可用于${info.training_backend === "slurm" ? "远程" : "本地"}训练`
+    ? "可用于服务器 Slurm 训练"
     : "需要先注册";
   const registrationAction = info.registration_plan_sha256
     ? `<div class="data-file-inline-actions">
@@ -323,7 +357,7 @@ function renderDataFileCard(info) {
       <div class="item"><span class="label">身份</span><span class="value">${identityText}</span></div>
       <div class="item"><span class="label">状态</span><span class="value">${trainingText}</span></div>
       <div class="item"><span class="label">进度</span><span class="value" id="fileProgressPct">—</span></div>
-      <div class="item"><span class="label">本次训练时长</span><span class="value" id="fileElapsedTime">—</span></div>
+      <div class="item"><span class="label">本次任务总耗时</span><span class="value" id="fileElapsedTime">—</span></div>
       <div class="item"><span class="label">历史训练总时长</span><span class="value" id="fileHistoryElapsedTime">—</span></div>
       <div class="item"><span class="label">最优分数</span><span class="value score-best" id="fileBestScore">—</span></div>
       <div class="item"><span class="label">验证分数</span><span class="value score-val" id="fileValScore">—</span></div>
@@ -485,7 +519,12 @@ function updateTrainingTimeFields(progress, training) {
   }
 
   const elapsed = formatElapsed(job.started_at, active ? null : job.finished_at);
-  sessionEl.textContent = active || elapsed === "—" ? elapsed : `${elapsed}（已停）`;
+  const terminalLabel = {
+    completed: "已完成",
+    failed: "失败",
+    stopped: "已停止",
+  }[job.state] || "已结束";
+  sessionEl.textContent = active || elapsed === "—" ? elapsed : `${elapsed}（${terminalLabel}）`;
 }
 
 function updateFileProgress(progress) {
@@ -705,10 +744,29 @@ function renderStrategies(rows) {
 function updateTrainingUI(training, progress) {
   const job = training?.job;
   const active = training?.active;
+  const statusUnknown = !!training?.status_unknown;
   const pill = $("jobPill");
   const startBtn = $("startBtn");
   const retrainBtn = $("retrainBtn");
   const stopBtn = $("stopBtn");
+  const resources = job?.requested_resources || {};
+  const trainParams = job?.training_parameters || {};
+  if (job?.backend === "slurm") {
+    const steps = trainParams.train_steps || progress?.train_steps || "—";
+    const cpus = resources.cpus_per_task ? `${resources.cpus_per_task} 核` : "单节点";
+    $("deviceMeta").textContent = `${steps} steps · 服务器 Slurm · ${cpus}`;
+  }
+
+  if (statusUnknown && !job) {
+    pill.innerHTML = '<i class="pill-dot"></i>状态读取失败 · 保持等待';
+    pill.className = "pill failed";
+    startBtn.disabled = true;
+    if (retrainBtn) retrainBtn.disabled = true;
+    stopBtn.disabled = true;
+    $("logHint").textContent = "未取得可信训练状态；不会按空闲处理";
+    updateTrainingTimeFields(progress, training);
+    return;
+  }
 
   if (!job || job.state === "idle") {
     pill.innerHTML = '<i class="pill-dot"></i>空闲';
@@ -729,17 +787,25 @@ function updateTrainingUI(training, progress) {
     stopped: "已停止",
   };
   const label = job.symbol ? `${job.symbol} ${job.timeframe || ""}`.trim() : "训练";
-  const stateText = stateLabel[job.state] || job.state;
+  const staleSuffix = training?.remote_status_stale
+    ? ` · 状态延迟 ${Number(training.remote_status_age_seconds) || 0}s`
+    : statusUnknown
+      ? " · 使用上次可信状态"
+      : "";
+  const stateText = `${stateLabel[job.state] || job.state}${staleSuffix}`;
   pill.innerHTML = `<i class="pill-dot"></i>${stateText} · ${label}`;
   pill.className = "pill " + (job.state === "running" ? "running" : job.state);
 
   const trainingCompatible = !!selectedDataInfo?.capabilities?.training;
-  startBtn.disabled = active || !selectedDataFile || !trainingCompatible;
+  startBtn.disabled = statusUnknown || active || !selectedDataFile || !trainingCompatible;
   if (retrainBtn) {
-    retrainBtn.disabled = active || !selectedDataFile || !trainingCompatible;
+    retrainBtn.disabled =
+      statusUnknown || active || !selectedDataFile || !trainingCompatible;
   }
-  stopBtn.disabled = !active;
-  $("logHint").textContent = job.log_path || "—";
+  stopBtn.disabled = statusUnknown || !active;
+  $("logHint").textContent = job.last_log_poll_error
+    ? `${job.log_path || "日志"} · 最后拉取失败：${job.last_log_poll_error}`
+    : job.log_path || "—";
   updateTrainingTimeFields(progress, training);
 
   const logView = $("logView");
@@ -748,44 +814,279 @@ function updateTrainingUI(training, progress) {
   if (atBottom) logView.scrollTop = logView.scrollHeight;
 }
 
+function pipelineStateText(status) {
+  return {
+    PENDING: "等待",
+    WAITING_TRAINING: "等待训练",
+    RUNNING: "进行中",
+    POSTPROCESSING: "处理中",
+    RETRY_WAIT: "等待重试",
+    READY: "完成",
+    FAILED: "失败",
+    CANCELLED: "已取消",
+  }[String(status || "").toUpperCase()] || "等待";
+}
+
+function updatePipelineStage(id, stage, detail) {
+  const card = $(id);
+  if (!card) return;
+  const status = String(stage?.status || "PENDING").toUpperCase();
+  card.dataset.state = status.toLowerCase();
+  const text = card.querySelector("p");
+  const state = card.querySelector(".pipeline-stage-state");
+  if (text) text.textContent = detail || "等待";
+  if (state) state.textContent = pipelineStateText(status);
+}
+
+function updatePipelineUI(pipeline) {
+  const meta = $("pipelineRunMeta");
+  const statusText = $("pipelineStatus");
+  if (!pipeline) {
+    if (meta) meta.textContent = "等待大 A 训练任务";
+    if (statusText) statusText.textContent = "尚未开始";
+    updatePipelineStage("pipelineTrainingStage", null, "等待单节点 Slurm 作业");
+    updatePipelineStage("pipelineBacktestStage", null, "等待同一 run 的策略产物");
+    updatePipelineStage("pipelineSignalStage", null, "等待通达信已收盘 K 线");
+    return;
+  }
+
+  const stages = pipeline.stages || {};
+  const training = stages.training || {};
+  const backtest = stages.backtest || {};
+  const signal = stages.signal || {};
+  const runShort = pipeline.run_id ? pipeline.run_id.replace(/^run_/, "") : "—";
+  if (meta) {
+    meta.textContent = `${pipeline.symbol || "大 A"} ${pipeline.timeframe || ""} · ${runShort}`;
+  }
+
+  const trainingDetail = training.status === "READY"
+    ? [
+        training.node || "计算节点",
+        training.allocated_cpus ? `${training.allocated_cpus} 核` : "",
+        training.max_rss ? `峰值 ${training.max_rss}` : "",
+        training.elapsed ? `墙钟 ${training.elapsed}` : "",
+        Number.isFinite(Number(training.best_score))
+          ? `最优 ${Number(training.best_score).toFixed(4)}`
+          : "",
+      ].filter(Boolean).join(" · ")
+    : (
+        training.error
+          || (training.job_id ? `Slurm #${training.job_id}` : "等待单节点 Slurm 作业")
+      );
+  updatePipelineStage("pipelineTrainingStage", training, trainingDetail);
+
+  const portfolio = backtest.portfolio || {};
+  const backtestDetail = backtest.status === "READY"
+    ? `replay · 累计对数收益 ${formatSigned(portfolio.total_return, 3)} · 夏普 ${formatSigned(portfolio.sharpe, 3)}`
+    : (backtest.error || "等待同一 run 的策略产物");
+  updatePipelineStage("pipelineBacktestStage", backtest, backtestDetail);
+
+  const event = signal.lifecycle_event || {};
+  const signalDetail = signal.status === "READY"
+    ? `${event.action || "HOLD"} · ${formatPct(event.previous_exposure)} → ${formatPct(event.resulting_exposure)} · 参考价 ${formatNumber(event.price, 2)}`
+    : (signal.error || "等待通达信已收盘 K 线");
+  updatePipelineStage("pipelineSignalStage", signal, signalDetail);
+
+  if (statusText) {
+    if (pipeline.status === "READY") {
+      statusText.textContent = `闭环完成：${event.action || "HOLD"}，虚拟仓位 ${formatPct(event.resulting_exposure)}`;
+    } else if (pipeline.status === "FAILED") {
+      statusText.textContent = `流水线失败：${pipeline.error || "请查看阶段状态"}`;
+    } else {
+      statusText.textContent = pipelineStateText(pipeline.status);
+    }
+  }
+}
+
+const BATCH_ACTIVE_ITEM_STATES = new Set(["DISPATCHING", "TRAINING", "POSTPROCESSING"]);
+
+function batchStateText(status) {
+  return {
+    QUEUED: "已排队",
+    ACTIVE: "执行中",
+    DISPATCHING: "正在提交",
+    TRAINING: "服务器训练",
+    POSTPROCESSING: "回测与信号模拟",
+    READY: "全部完成",
+    NEEDS_ATTENTION: "需要处理",
+  }[String(status || "").toUpperCase()] || "等待";
+}
+
+function updateBatchQueueUI(snapshot, training) {
+  const panel = $("batchQueuePanel");
+  const batch = snapshot?.batch || null;
+  const items = Array.isArray(snapshot?.items) ? snapshot.items : [];
+  if (!panel || !batch) {
+    if (panel) panel.dataset.state = "empty";
+    $("batchQueueMeta").textContent = "尚无持久化批次";
+    $("batchQueueStatus").textContent = "尚未入队";
+    $("batchQueueProgressText").textContent = "0 / 50";
+    $("batchQueueProgressBar").style.width = "0%";
+    $("batchQueueProgressTrack").setAttribute("aria-valuemax", "50");
+    $("batchQueueProgressTrack").setAttribute("aria-valuenow", "0");
+    $("batchQueueActive").textContent = "建立批次后会在这里显示真实训练顺序。";
+    ["batchQueuedCount", "batchTrainingCount", "batchPostprocessCount", "batchReadyCount", "batchAttentionCount"]
+      .forEach((id) => { $(id).textContent = "0"; });
+    return;
+  }
+
+  const counts = {
+    QUEUED: 0,
+    DISPATCHING: 0,
+    TRAINING: 0,
+    POSTPROCESSING: 0,
+    READY: 0,
+    NEEDS_ATTENTION: 0,
+  };
+  items.forEach((item) => {
+    const state = String(item?.status || "").toUpperCase();
+    if (Object.hasOwn(counts, state)) counts[state] += 1;
+  });
+
+  const total = Number(batch.item_count) || items.length;
+  const ready = counts.READY;
+  const percent = total > 0 ? Math.min(100, Math.max(0, (ready / total) * 100)) : 0;
+  const batchStatus = String(batch.status || "QUEUED").toUpperCase();
+  panel.dataset.state = batchStatus.toLowerCase();
+  $("batchQueueMeta").textContent = `批次 ${String(batch.batch_id || "—").replace(/^batch_/, "")}`;
+  $("batchQueueStatus").textContent = batchStateText(batchStatus);
+  $("batchQueueProgressText").textContent = `${ready} / ${total}`;
+  $("batchQueueProgressBar").style.width = `${percent}%`;
+  $("batchQueueProgressTrack").setAttribute("aria-valuemax", String(total));
+  $("batchQueueProgressTrack").setAttribute("aria-valuenow", String(ready));
+  $("batchQueuedCount").textContent = String(counts.QUEUED);
+  $("batchTrainingCount").textContent = String(counts.DISPATCHING + counts.TRAINING);
+  $("batchPostprocessCount").textContent = String(counts.POSTPROCESSING);
+  $("batchReadyCount").textContent = String(ready);
+  $("batchAttentionCount").textContent = String(counts.NEEDS_ATTENTION);
+
+  const first = items[0] || null;
+  if (first) {
+    $("batchQueueBudget").textContent = [
+      `${first.train_steps} 步`,
+      `${first.cpus_per_task} 核`,
+      first.memory,
+      first.time_limit,
+    ].filter(Boolean).join(" · ");
+  }
+
+  const active = items.find((item) => BATCH_ACTIVE_ITEM_STATES.has(String(item?.status || "").toUpperCase()));
+  const attention = items.find((item) => String(item?.status || "").toUpperCase() === "NEEDS_ATTENTION");
+  const currentJob = training?.job || {};
+  if (active) {
+    const runShort = String(active.planned_run_id || "—").replace(/^run_/, "");
+    const jobText = active.job_id ? ` · Slurm #${active.job_id}` : "";
+    $("batchQueueActive").textContent =
+      `第 ${Number(active.ordinal) + 1} / ${total} 只：${active.symbol} ${active.timeframe} · ${batchStateText(active.status)}${jobText} · ${runShort}`;
+  } else if (attention) {
+    $("batchQueueActive").textContent =
+      `第 ${Number(attention.ordinal) + 1} / ${total} 只：${attention.symbol} 需要处理 · ${attention.error || "查看训练日志"}`;
+  } else if (ready === total && total > 0) {
+    $("batchQueueActive").textContent = "50 只基线训练、同数据重放和虚拟信号已全部完成。";
+  } else if (training?.active && currentJob.run_id) {
+    const jobText = currentJob.slurm_job_id ? `Slurm #${currentJob.slurm_job_id}` : String(currentJob.run_id).replace(/^run_/, "");
+    $("batchQueueActive").textContent = `当前任务 ${jobText} 完成后，自动从第 ${ready + 1} / ${total} 只开始。`;
+  } else {
+    $("batchQueueActive").textContent = `等待自动领取第 ${ready + 1} / ${total} 只标的。`;
+  }
+}
+
+async function refreshBatchQueue(training) {
+  try {
+    const listing = await fetchJSON("/api/training/batches", { silent: true });
+    const batches = Array.isArray(listing?.batches) ? listing.batches : [];
+    const activeBatchId = String(listing?.active_item?.batch_id || "").trim();
+    const batch = (
+      activeBatchId
+        ? batches.find((item) => String(item?.batch_id || "") === activeBatchId)
+        : null
+    ) || batches.find((item) =>
+      ["QUEUED", "ACTIVE", "NEEDS_ATTENTION"].includes(String(item?.status || "").toUpperCase())
+    ) || batches[batches.length - 1];
+    const batchId = activeBatchId || batch?.batch_id;
+    if (!batchId) {
+      updateBatchQueueUI(null, training);
+      return;
+    }
+    const detail = await fetchJSON(
+      `/api/training/batches/${encodeURIComponent(batchId)}`,
+      { silent: true }
+    );
+    updateBatchQueueUI(detail, training);
+  } catch (_) {
+    const panel = $("batchQueuePanel");
+    if (panel) panel.dataset.state = "needs_attention";
+    $("batchQueueStatus").textContent = "队列读取失败";
+    $("batchQueueActive").textContent = "后台训练不受影响；下一轮轮询会继续读取真实状态。";
+  }
+}
+
 async function refreshOverview() {
-  let overview = { data_file: null, progress: null };
-  let strategies = { strategies: [] };
-  let training = { active: false, job: null, log_tail: [] };
-
+  if (overviewRefreshInFlight) return;
+  overviewRefreshInFlight = true;
   try {
-    overview = await fetchJSON("/api/overview", { silent: true });
-  } catch (_) {}
+    let overview = { data_file: null, progress: null, training: null, pipeline: null };
+    let strategies = { strategies: [] };
+    let overviewOk = false;
+    let trainingTrusted = false;
 
-  try {
-    strategies = await fetchJSON("/api/strategies", { silent: true });
-  } catch (_) {}
+    try {
+      overview = await fetchJSON("/api/overview", { silent: true });
+      overviewOk = true;
+    } catch (_) {}
 
-  try {
-    training = await fetchJSON("/api/training/status", { silent: true });
-  } catch (_) {}
+    try {
+      strategies = await fetchJSON("/api/strategies", { silent: true });
+    } catch (_) {}
 
-  if (overview.data_file) renderDataFileCard(overview.data_file);
-  updateFileProgress(overview.progress);
-  updateExportBtn(overview.progress, strategies.strategies);
-  updateTrainingBtns(overview.progress, training);
-  updateTrainingUI(training, overview.progress);
-  renderStrategies(strategies.strategies);
+    let training = overviewOk && overview?.training ? overview.training : null;
+    if (training) trainingTrusted = true;
+    try {
+      training = await fetchJSON("/api/training/status", { silent: true });
+      trainingTrusted = true;
+    } catch (_) {}
 
-  const sym = overview.progress?.symbol || selectedSymbol || training?.job?.symbol;
-  const trainingActive = !!training?.active;
-  if (lastTrainingActive && !trainingActive && sym) {
-    await applyBestStrategyForBacktest(sym, null);
+    if (trainingTrusted) {
+      lastTrainingSnapshot = training;
+    } else if (lastTrainingSnapshot) {
+      training = { ...lastTrainingSnapshot, status_unknown: true };
+    } else {
+      training = {
+        active: false,
+        job: null,
+        log_tail: [],
+        status_unknown: true,
+      };
+    }
+
+    if (overview.data_file) renderDataFileCard(overview.data_file);
+    updateFileProgress(overview.progress);
+    updateExportBtn(overview.progress, strategies.strategies);
+    updateTrainingBtns(overview.progress, training);
+    updateTrainingUI(training, overview.progress);
+    updatePipelineUI(training?.pipeline || overview?.pipeline);
+    await refreshBatchQueue(training);
+    renderStrategies(strategies.strategies);
+
+    const sym = overview.progress?.symbol || selectedSymbol || training?.job?.symbol;
+    const trainingActive = !!training?.active;
+    if (trainingTrusted) {
+      if (lastTrainingActive && !trainingActive && sym) {
+        await applyBestStrategyForBacktest(sym, null);
+      }
+      lastTrainingActive = trainingActive;
+    }
+
+    if (sym && (training?.active || overview.progress)) {
+      await loadSymbolChart(sym, overview.progress);
+    }
+
+    if (debugMode) await refreshDebugLogs();
+    else renderDebugView([], []);
+    refreshAiProviderStatus();
+  } finally {
+    overviewRefreshInFlight = false;
   }
-  lastTrainingActive = trainingActive;
-
-  if (sym && (training?.active || overview.progress)) {
-    await loadSymbolChart(sym, overview.progress);
-  }
-
-  if (debugMode) await refreshDebugLogs();
-  else renderDebugView([], []);
-  refreshAiProviderStatus();
 }
 
 async function loadConfig() {
@@ -800,7 +1101,9 @@ async function loadConfig() {
   const cfg = await fetchJSON("/api/config");
   debugMode = !!cfg.debug_mode;
   $("debugModeCheck").checked = debugMode;
-  $("deviceMeta").textContent = `${cfg.train_steps} steps · batch ${cfg.batch_size} · ${cfg.device}`;
+  $("deviceMeta").textContent = cfg.training_backend === "slurm"
+    ? `${cfg.train_steps} steps · 服务器 Slurm · 单节点`
+    : `${cfg.train_steps} steps · batch ${cfg.batch_size} · ${cfg.device}`;
   if (cfg.error_log) {
     $("debugLogPaths").textContent = `本地: ${cfg.error_log}`;
   }
@@ -1211,8 +1514,8 @@ async function retrainFromScratch() {
     return;
   }
   const ok = window.confirm(
-    "重新训练会清除该品种的检查点，从第 0 步重新搜索。\n" +
-      "已有的更优策略会保留，只有挖到更高分才会覆盖。\n\n" +
+    "重新训练会创建新的服务器 Slurm run，从第 0 步重新搜索。\n" +
+      "成功后会用同一 run 的策略、检查点和训练曲线成套替换旧版本，并自动继续回测和虚拟信号。\n\n" +
       "确定要重新训练吗？"
   );
   if (!ok) return;
@@ -1240,6 +1543,7 @@ function updateExportBtn(progress, strategies) {
 function updateTrainingBtns(progress, training) {
   const sym = progress?.symbol || selectedSymbol;
   const active = training?.active;
+  const statusUnknown = !!training?.status_unknown;
   const hasCheckpoint = Boolean(progress?.has_checkpoint);
   const exportBtn = $("exportTrainingBtn");
   const importBtn = $("importTrainingBtn");
@@ -1247,6 +1551,8 @@ function updateTrainingBtns(progress, training) {
   let exportTitle = "打包 checkpoint、训练曲线与策略为 zip";
   if (!sym) {
     exportTitle = "请先选择数据文件";
+  } else if (statusUnknown) {
+    exportTitle = "训练状态暂时无法确认，保持禁用";
   } else if (active) {
     exportTitle = "训练进行中，请停止后再导出";
   } else if (!hasCheckpoint) {
@@ -1254,7 +1560,7 @@ function updateTrainingBtns(progress, training) {
   }
 
   if (exportBtn) {
-    exportBtn.disabled = !sym || !hasCheckpoint || !!active;
+    exportBtn.disabled = !sym || !hasCheckpoint || !!active || statusUnknown;
     exportBtn.title = exportTitle;
   }
   if (importBtn) {
@@ -1380,7 +1686,21 @@ async function exportStrategy() {
 
 async function stopTraining() {
   try {
-    const res = await fetchJSON("/api/training/stop", { method: "POST" });
+    const job = lastTrainingSnapshot?.job || {};
+    const expectedRunId = String(job.run_id || "").trim();
+    const expectedJobId = String(job.slurm_job_id || "").trim();
+    if (!expectedRunId || !expectedJobId) {
+      await logClientError("无法确认页面最后展示的训练任务身份，拒绝发送停止请求");
+      return;
+    }
+    const res = await fetchJSON("/api/training/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        run_id: expectedRunId,
+        slurm_job_id: expectedJobId,
+      }),
+    });
     await refreshOverview();
     const sym = res.training?.job?.symbol || selectedSymbol;
     await applyBestStrategyForBacktest(sym, res.strategy_file);
@@ -2096,6 +2416,7 @@ let rtSources = [];
 let rtSourceById = {};
 let rtImportedStrategy = null; // {path, name}
 let rtGridSig = "";
+let rtSignalSig = "";
 let rtServerSkew = 0; // server_time - local_now（秒）
 let rtCountdownTimer = null;
 let rtTvBlockedShownAt = 0;
@@ -2122,6 +2443,22 @@ const RT_STATE_LABEL = {
   ok: "运行中",
   insufficient: "历史不足",
   error: "错误",
+};
+const RT_ACTION = {
+  HOLD: "继续持有 / 观望",
+  BUY: "买入",
+  ADD: "加仓",
+  REDUCE: "减仓",
+  EXIT: "离场",
+  TAKE_PROFIT: "止盈",
+  STOP_LOSS: "止损",
+};
+const RT_DELIVERY = {
+  DELIVERED: "飞书已送达",
+  FAILED: "飞书发送失败",
+  SKIPPED: "飞书未启用",
+  PENDING: "飞书待发送",
+  NOT_REQUIRED: "本轮不推送",
 };
 
 /** 把 0~1 强度翻成「把握」白话 */
@@ -2270,7 +2607,7 @@ async function saveRtFeishuSettings() {
       body: JSON.stringify(payload),
     });
     if (hint) {
-      hint.textContent = "✓ 已保存，方向转折时会推送到飞书群。";
+      hint.textContent = "✓ 已保存，新的可执行交易信号会推送到飞书群。";
       hint.classList.remove("bad", "invalid");
       hint.classList.add("valid");
     }
@@ -2297,13 +2634,15 @@ async function testRtFeishu() {
   const btn = $("rtFeishuTestBtn");
   if (btn) btn.disabled = true;
   try {
+    const payload = {};
+    const webhookUrl = $("rtFeishuWebhook")?.value?.trim() || "";
+    const secret = $("rtFeishuSecret")?.value?.trim() || "";
+    if (webhookUrl) payload.webhook_url = webhookUrl;
+    if (secret) payload.secret = secret;
     await fetchJSON("/api/realtime/feishu/test", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        webhook_url: $("rtFeishuWebhook")?.value || "",
-        secret: $("rtFeishuSecret")?.value || "",
-      }),
+      body: JSON.stringify(payload),
     });
     if (hint) {
       hint.textContent = "✓ 测试消息已发送，请到飞书群查收。";
@@ -2660,9 +2999,84 @@ async function refreshRealtime() {
     }
   }
   renderRealtimeGrid(st.watches || []);
+  await refreshRealtimeSignals();
   maybeShowTvBlockedFromWatches(st.watches || []);
   ensureRtCountdownTimer();
   tickRtCountdowns();
+}
+
+async function refreshRealtimeSignals() {
+  let rows;
+  try {
+    const data = await fetchJSON("/api/realtime/signals?limit=200", { silent: true });
+    rows = (data.signals || []).filter((event) => event.action !== "HOLD").slice(0, 20);
+  } catch (_) {
+    return;
+  }
+  renderRealtimeSignals(rows);
+}
+
+function renderRealtimeSignals(events) {
+  const feed = $("rtSignalFeed");
+  const hint = $("rtSignalHistoryHint");
+  if (!feed) return;
+  if (hint) {
+    hint.textContent = events.length
+      ? `显示最近 ${events.length} 条可执行信号`
+      : "等待首个可执行信号";
+  }
+  if (!events.length) {
+    feed.innerHTML =
+      '<div class="metric-empty">买入、加仓、减仓、离场、止盈或止损产生后，会记录在这里。</div>';
+    rtSignalSig = "";
+    return;
+  }
+  const sig = events
+    .map((event) =>
+      [
+        event.event_id,
+        event.action,
+        event.resulting_exposure,
+        event.delivery_status,
+        event.delivery_attempts,
+      ].join("~")
+    )
+    .join("|");
+  if (sig === rtSignalSig) return;
+  rtSignalSig = sig;
+
+  feed.innerHTML = events
+    .map((event) => {
+      const action = RT_ACTION[event.action] || event.action;
+      const previous = Math.round(Number(event.previous_exposure || 0) * 100);
+      const resulting = Math.round(Number(event.resulting_exposure || 0) * 100);
+      const price = Number.isFinite(Number(event.price))
+        ? Number(event.price).toFixed(3).replace(/\.?0+$/, "")
+        : "—";
+      const delivery = RT_DELIVERY[event.delivery_status] || event.delivery_status || "—";
+      const barTime = event.bar_ts
+        ? new Date(Number(event.bar_ts) * 1000).toLocaleString()
+        : "—";
+      const actionCls = `action-${String(event.action || "").toLowerCase()}`;
+      const deliveryCls = `delivery-${String(event.delivery_status || "").toLowerCase()}`;
+      return `
+        <article class="rt-signal-row ${actionCls}">
+          <div class="rt-signal-main">
+            <span class="rt-signal-action">${escHtml(action)}</span>
+            <strong>${escHtml(event.symbol || "—")}</strong>
+            <span>${escHtml(event.timeframe || "—")}</span>
+          </div>
+          <div class="rt-signal-change">${previous}% → ${resulting}%</div>
+          <div class="rt-signal-price">参考价 ${escHtml(price)}</div>
+          <div class="rt-signal-time">${escHtml(barTime)}</div>
+          <div class="rt-signal-delivery ${deliveryCls}">${escHtml(delivery)}</div>
+          <div class="rt-signal-reason" title="${escHtml(event.reason || "")}">
+            ${escHtml(event.reason || "—")}
+          </div>
+          <code>${escHtml(event.event_id || "—")}</code>
+        </article>`;
+    })
+    .join("");
 }
 
 // 半环表盘（180° 上半环，值弧按强度填充）
@@ -2699,6 +3113,10 @@ function renderRealtimeGrid(watches) {
         w.message,
         w.last_bar_ts,
         w.updated_at,
+        w.latest_event?.event_id || "",
+        w.latest_event?.action || "",
+        w.latest_event?.resulting_exposure ?? "",
+        w.latest_event?.delivery_status || "",
         w.session_live ? 1 : 0,
         w.next_bar_close_at || "",
       ].join("~")
@@ -2745,6 +3163,21 @@ function renderRealtimeGrid(watches) {
           ? `<div class="rt-msg">${escHtml(displayMsg)}</div>`
           : "";
       const sizeText = plain ? plain.size : "—";
+      const event = w.latest_event || null;
+      const action = event ? RT_ACTION[event.action] || event.action : "等待首次决策";
+      const exposure =
+        event && event.resulting_exposure != null
+          ? `${Math.round(Number(event.resulting_exposure) * 100)}%`
+          : "—";
+      const delivery =
+        event && event.delivery_status
+          ? RT_DELIVERY[event.delivery_status] || event.delivery_status
+          : "—";
+      const actionCls = event ? `action-${String(event.action || "").toLowerCase()}` : "";
+      const deliveryCls =
+        event && event.delivery_status
+          ? `delivery-${String(event.delivery_status).toLowerCase()}`
+          : "";
       return `
     <div class="rt-card ${dirCls}" data-id="${escHtml(w.id)}">
       <button class="rt-remove" data-remove="${escHtml(w.id)}" title="移除监控">×</button>
@@ -2763,6 +3196,11 @@ function renderRealtimeGrid(watches) {
       <div class="rt-meta">
         <span class="rt-meta-item">因子 <b>${factorText}</b></span>
         <span class="rt-meta-item">${escHtml(w.strategy_name)}</span>
+      </div>
+      <div class="rt-action-row ${actionCls}">
+        <span class="rt-action-name">最新动作 <b>${escHtml(action)}</b></span>
+        <span class="rt-action-exposure">虚拟仓位 <b>${escHtml(exposure)}</b></span>
+        <span class="rt-delivery ${deliveryCls}">${escHtml(delivery)}</span>
       </div>
       <div class="rt-foot">
         <span class="rt-state ${w.state}">${RT_STATE_LABEL[w.state] || w.state}</span>
@@ -2792,10 +3230,22 @@ function renderRealtimeGrid(watches) {
 
 function startPolling() {
   if (pollTimer) clearInterval(pollTimer);
-  pollTimer = setInterval(() => {
-    refreshOverview();
-    if (currentPage === "backtest" || btActive) refreshBacktest();
-    if (currentPage === "realtime" || rtEngineRunning) refreshRealtime();
+  pollTimer = setInterval(async () => {
+    if (pollTickInFlight) return;
+    pollTickInFlight = true;
+    try {
+      await refreshOverview();
+      const followUps = [];
+      if (currentPage === "backtest" || btActive) followUps.push(refreshBacktest());
+      if (currentPage === "realtime" || rtEngineRunning) followUps.push(refreshRealtime());
+      await Promise.all(followUps);
+    } catch (error) {
+      if (debugMode) {
+        await logClientError(`轮询刷新失败: ${error?.message || error}`);
+      }
+    } finally {
+      pollTickInFlight = false;
+    }
   }, 4000);
 }
 
@@ -2910,10 +3360,6 @@ async function init() {
   });
   if ($("rtFeishuSaveBtn")) $("rtFeishuSaveBtn").addEventListener("click", saveRtFeishuSettings);
   if ($("rtFeishuTestBtn")) $("rtFeishuTestBtn").addEventListener("click", testRtFeishu);
-  if ($("rtFeishuTestBtn")) {
-    $("rtFeishuTestBtn").disabled = true;
-    $("rtFeishuTestBtn").title = "第一阶段已禁用飞书测试请求";
-  }
   if ($("rtFeishuHelpBtn")) $("rtFeishuHelpBtn").addEventListener("click", openRtFeishuHelpModal);
   document.querySelectorAll("[data-close-feishu-help]").forEach((el) => {
     el.addEventListener("click", closeRtFeishuHelpModal);

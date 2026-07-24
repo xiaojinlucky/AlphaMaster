@@ -18,6 +18,7 @@ from .alphagpt import AlphaGPT, NewtonSchulzLowRankDecay, StableRankMonitor
 from .vm import StackVM
 from .backtest import MT5Backtest
 from .vocab import FORMULA_VOCAB, VOCAB_VERSION, VocabVersionMismatchError  # task 12.2
+from utils.training_runtime import require_slurm_training_runtime
 
 # P3：冠军在场时间稳健性校验所需
 try:
@@ -143,54 +144,67 @@ def _strategy_file_for_symbol(symbol: str | None) -> str:
     return _STRATEGY_FILE
 
 
-def _fallback_data_file_for_symbol(symbol: str) -> tuple[str | None, str | None]:
-    """Read web_settings.json last_data_file when strategy JSON lacks data_file."""
-    settings_path = pathlib.Path("web_settings.json")
-    if not settings_path.exists():
-        return None, None
-    try:
-        settings = json.loads(settings_path.read_text(encoding="utf-8"))
-        last = str(settings.get("last_data_file") or "").strip()
-    except (json.JSONDecodeError, OSError):
-        return None, None
-    if not last:
-        return None, None
-    p = pathlib.Path(last)
-    if not p.exists():
-        return None, None
-    try:
-        from data_pipeline.parquet_manager import inspect_parquet_file
-
-        info = inspect_parquet_file(str(p.resolve()))
-    except Exception:
-        return str(p.resolve()), None
-    if info.get("symbol") != symbol:
-        return None, None
-    return str(p.resolve()), info.get("timeframe")
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Walk-Forward 折叠构建
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _build_walk_forward_folds(T: int, n_folds: int = 5, gap: int = 20) -> list[dict]:
-    fold_size = T // n_folds
-    if fold_size < 2:
-        return [{"train_start": 0, "train_end": T, "val_start": 0, "val_end": T, "gap": 0}]
-    total_required = fold_size * n_folds + gap * (n_folds - 1)
-    if total_required > T:
-        gap = max(0, (T - fold_size * n_folds) // n_folds)
-    folds = []
-    for k in range(1, n_folds):
-        train_end = fold_size * k
-        val_start = train_end + gap
-        val_end   = val_start + fold_size if k < n_folds - 1 else T
-        if val_start >= T or val_end > T:
+WALK_FORWARD_LABEL_HORIZON = 2
+WALK_FORWARD_MIN_WINDOW = 2
+
+
+def _build_walk_forward_folds(
+    T: int,
+    n_folds: int = 5,
+    gap: int = 20,
+) -> list[dict]:
+    """构建扩展训练窗；隔离带绝不缩短，也绝不退化为重叠验证。"""
+    if isinstance(T, bool) or not isinstance(T, int) or T <= 0:
+        raise ValueError("T 必须是正整数")
+    if isinstance(n_folds, bool) or not isinstance(n_folds, int) or n_folds < 2:
+        raise ValueError("n_folds 必须是至少 2 的整数")
+    if isinstance(gap, bool) or not isinstance(gap, int):
+        raise ValueError("gap 必须是整数")
+    if gap < WALK_FORWARD_LABEL_HORIZON:
+        raise ValueError(
+            "gap 不得小于 2；target_ret[t] 使用 open[t+1] 和 open[t+2]"
+        )
+
+    effective_n_folds = min(n_folds, T // WALK_FORWARD_MIN_WINDOW)
+    validation_size = 0
+    while effective_n_folds >= 2:
+        usable_bars = T - gap * (effective_n_folds - 1)
+        validation_size = usable_bars // effective_n_folds
+        if validation_size >= WALK_FORWARD_MIN_WINDOW:
             break
-        folds.append({"train_start": 0, "train_end": train_end,
-                      "val_start": val_start, "val_end": val_end, "gap": gap})
-    if not folds:
-        return [{"train_start": 0, "train_end": T, "val_start": 0, "val_end": T, "gap": 0}]
+        effective_n_folds -= 1
+    if effective_n_folds < 2:
+        raise ValueError(
+            f"T={T} 无法在保留 gap={gap} 的前提下构建独立训练/验证窗口"
+        )
+
+    folds: list[dict] = []
+    for k in range(1, effective_n_folds):
+        train_end = validation_size * k + gap * (k - 1)
+        val_start = train_end + gap
+        val_end = (
+            T
+            if k == effective_n_folds - 1
+            else val_start + validation_size
+        )
+        if not (
+            0 < train_end < val_start < val_end <= T
+            and val_start - train_end == gap
+        ):
+            raise RuntimeError("walk-forward 折叠内部不变量被破坏")
+        folds.append(
+            {
+                "train_start": 0,
+                "train_end": train_end,
+                "val_start": val_start,
+                "val_end": val_end,
+                "gap": gap,
+            }
+        )
     return folds
 
 
@@ -538,6 +552,7 @@ class AlphaEngine:
 
     def train(self, start_step: int = 0, end_step: int | None = None,
               migration_hook=None, verbose_header: bool = True):
+        require_slurm_training_runtime()
         if self.data_manager is None:
             raise RuntimeError("AlphaEngine requires a data_manager.")
 
@@ -1043,8 +1058,11 @@ class AlphaEngine:
         # ── End of training ──────────────────────────────────────────
         # 仅当跑满最终步时才保存最终 strategy 和历史
         if end_step == ModelConfig.TRAIN_STEPS:
+            save_path: str | None = None
             if self.best_formula is not None:
-                self._save_strategy_live()
+                save_path = self._save_strategy_live()
+                if save_path is None:
+                    raise RuntimeError("训练结束，但最终策略文件保存失败")
 
             sym_tag = f"[{self.target_symbol}] " if self.target_symbol else ""
             self.training_history.pop('_low_entropy_streak', None)
@@ -1064,7 +1082,7 @@ class AlphaEngine:
             print(f"  自适应噪声   : 启用={ModelConfig.ADAPTIVE_NOISE}，范围=[{ModelConfig.NOISE_MIN}, {ModelConfig.NOISE_MAX}]")
             print(f"  部分层重置   : 启用={ModelConfig.PARTIAL_RESET}，层={ModelConfig.PARTIAL_RESET_LAYERS}")
             print(f"  重启次数     : {self._restart_count}")
-            print(f"  策略已保存   : {save_path}")
+            print(f"  策略已保存   : {save_path or '未生成'}")
 
 
     # ── 实时保存最优公式（防进程意外退出丢失）────────────────────────────────
@@ -1083,26 +1101,18 @@ class AlphaEngine:
         except Exception:
             pass
 
-    def _save_strategy_live(self) -> None:
+    def _save_strategy_live(self) -> str | None:
         """每次 best_formula 更新时立即保存 strategy json。
         即使训练中途进程被杀（OOM/终端回收/Ctrl+C），也能保留最新最优公式。
         """
         if self.best_formula is None:
-            return
+            return None
         try:
             from .vocab import VOCAB_VERSION
             save_path = _strategy_file_for_symbol(self.target_symbol)
             pathlib.Path(save_path).parent.mkdir(parents=True, exist_ok=True)
 
-            existing: dict = {}
             p = pathlib.Path(save_path)
-            if p.exists():
-                try:
-                    raw = json.loads(p.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        existing = raw
-                except Exception:
-                    existing = {}
 
             strategy_data = {
                 "vocab_version": VOCAB_VERSION,
@@ -1111,8 +1121,7 @@ class AlphaEngine:
                 "best_score": self.best_score,
                 "formula_decoded": self._decode_formula(self.best_formula),
             }
-            # 保留训练数据路径等元数据，避免 live 保存把 data_file 冲掉
-            for key in (
+            identity_fields = (
                 "timeframe",
                 "data_file",
                 "mode",
@@ -1126,21 +1135,22 @@ class AlphaEngine:
                 "data_start",
                 "data_end",
                 "data_columns",
-            ):
+            )
+            if self.target_symbol:
+                missing = [
+                    key for key in identity_fields
+                    if getattr(self, key, None) is None
+                ]
+                if missing:
+                    raise RuntimeError(
+                        "实时策略缺少本次训练的明确数据身份: "
+                        + ", ".join(missing)
+                    )
+            for key in identity_fields:
                 output_key = "columns" if key == "data_columns" else key
                 val = getattr(self, key, None)
-                if val is None:
-                    val = existing.get(output_key)
                 if val is not None:
                     strategy_data[output_key] = val
-            if not strategy_data.get("data_file") and self.target_symbol:
-                data_file, tf = _fallback_data_file_for_symbol(self.target_symbol)
-                if data_file:
-                    strategy_data["data_file"] = data_file
-                if tf and not strategy_data.get("timeframe"):
-                    strategy_data["timeframe"] = tf
-                if data_file and not strategy_data.get("mode"):
-                    strategy_data["mode"] = "parquet_file"
 
             staging = p.with_name(
                 f".{p.name}.{os.getpid()}.{os.urandom(8).hex()}.partial"
@@ -1154,8 +1164,9 @@ class AlphaEngine:
                 os.replace(staging, p)
             finally:
                 staging.unlink(missing_ok=True)
-        except Exception:
-            pass
+            return save_path
+        except Exception as exc:
+            raise RuntimeError("实时策略原子保存失败") from exc
 
     # ── Checkpoint save / load ────────────────────────────────────────────────
 

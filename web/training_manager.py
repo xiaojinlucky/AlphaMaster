@@ -80,6 +80,10 @@ class TrainingManager:
                 "job": self._job.to_dict() if self._job else None,
             }
 
+    def snapshot(self) -> dict[str, Any]:
+        """本机后端没有远程轮询，快照等同于即时状态。"""
+        return self.status()
+
     def start(
         self,
         data_file: str,
@@ -146,7 +150,14 @@ class TrainingManager:
             )
             return self._job
 
-    def stop(self) -> bool:
+    def stop(
+        self,
+        *,
+        expected_run_id: str | None = None,
+        expected_job_id: str | int | None = None,
+    ) -> bool:
+        if expected_run_id is not None or expected_job_id is not None:
+            raise RuntimeError("本机训练后端不支持 run/job 身份取消")
         with self._lock:
             if self._proc is None or self._proc.poll() is not None:
                 return False
@@ -157,11 +168,16 @@ class TrainingManager:
                 self._proc.kill()
             return True
 
-    def parse_step_from_log(self) -> int | None:
+    def parse_step_from_log(
+        self,
+        *,
+        refresh_remote: bool = True,
+        run_id: str | None = None,
+    ) -> int | None:
         """从日志尾部解析当前步数，用于 checkpoint 写入前的进度展示。"""
         import re
 
-        for line in reversed(self.tail_log(80)):
+        for line in reversed(self.cached_log_tail(80, run_id=run_id)):
             m = re.search(r"\[(\d+)/\d+\]", line)
             if m:
                 return int(m.group(1))
@@ -179,6 +195,14 @@ class TrainingManager:
             except OSError:
                 return []
             return [strip_ansi(line) for line in content.splitlines()[-lines:]]
+
+    def cached_log_tail(
+        self,
+        lines: int = 200,
+        *,
+        run_id: str | None = None,
+    ) -> list[str]:
+        return self.tail_log(lines)
 
     def _refresh_state(self) -> None:
         if self._proc is None or self._job is None:
@@ -240,17 +264,13 @@ class TrainingManager:
 
 def _build_training_manager():
     backend = os.getenv("TRAINING_BACKEND", "").strip().lower()
-    if not backend:
+    if backend != "slurm":
         raise RuntimeError(
-            "必须显式设置 TRAINING_BACKEND=slurm 或 TRAINING_BACKEND=local；拒绝隐式本机训练"
+            "AlphaMaster 模型训练只允许 TRAINING_BACKEND=slurm；禁止在 Windows 本机训练"
         )
-    if backend == "local":
-        return TrainingManager()
-    if backend == "slurm":
-        from web.slurm_training_manager import SlurmTrainingManager
+    from web.slurm_training_manager import SlurmTrainingManager
 
-        return SlurmTrainingManager.from_environment()
-    raise RuntimeError(f"不支持的 TRAINING_BACKEND: {backend}")
+    return SlurmTrainingManager.from_environment()
 
 
 training_manager = _build_training_manager()

@@ -186,6 +186,11 @@ class Config:
     TRAILING_ACTIVATION = 0.03
     TRAILING_DROP       = 0.015
 
+    # A 股只做多信号账本：不连接券商，只生成可审计的交易动作。
+    SIGNAL_REBALANCE_DELTA = 0.10
+    SIGNAL_TAKE_PROFIT_REMAINING_RATIO = 0.50
+    SIGNAL_EVENT_DB = "local_data/signal_events.sqlite3"
+
     # 时间对齐
     REBALANCE_ON_BAR_CLOSE = True  # True=仅新 K 线收盘后调仓，对标回测
     EXECUTION_LAG_BARS     = 1     # 与回测 target_ret 的执行延迟对齐

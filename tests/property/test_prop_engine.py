@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 import torch
 from torch.distributions import Categorical
-from hypothesis import given, settings
+from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 import pytest
@@ -47,7 +47,7 @@ from model_core.alphagpt import AlphaGPT
 @given(
     T=st.integers(min_value=10, max_value=500),
     n_folds=st.integers(min_value=2, max_value=8),
-    gap=st.integers(min_value=0, max_value=50),
+    gap=st.integers(min_value=2, max_value=50),
 )
 @settings(max_examples=50)
 def test_walk_forward_gap_invariant(T, n_folds, gap):
@@ -62,16 +62,14 @@ def test_walk_forward_gap_invariant(T, n_folds, gap):
 
     **Validates: Requirements T2.1, T2.3**
     """
+    assume((T - gap) // 2 >= 2)
     folds = _build_walk_forward_folds(T, n_folds, gap)
+    assert folds
     for fold in folds:
-        actual_gap = fold["gap"]
-        # Detect the degenerate fallback fold (fold_size < 2): val_start=0, val_end=T.
-        # In this case the gap invariant deliberately does not apply — the fold is a
-        # full-overlap single-fold fallback that bypasses the gap logic entirely.
-        is_degenerate = (fold["val_start"] == 0 and fold["val_end"] == T)
-        if not is_degenerate:
-            assert fold["val_start"] == fold["train_end"] + actual_gap
-            assert fold["val_start"] < T
+        assert fold["gap"] == gap
+        assert fold["val_start"] == fold["train_end"] + gap
+        assert fold["train_start"] == 0
+        assert 0 < fold["train_end"] < fold["val_start"] < fold["val_end"]
         assert fold["val_end"] <= T
 
 

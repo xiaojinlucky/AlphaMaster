@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import zipfile
 from io import BytesIO
 from pathlib import Path
@@ -28,6 +29,21 @@ def tmp_path() -> Path:
 
 
 _REAL_CHECKPOINT_STATES: tuple[dict, dict] | None = None
+
+
+def test_training_source_fingerprint_isolated_from_frontend() -> None:
+    paths = {row["path"] for row in manager_module._source_files()}
+    assert "train_file.py" in paths
+    assert "data_pipeline/a_share_data.py" in paths
+    assert "model_core/engine.py" in paths
+    assert "model_core/backtest.py" in paths
+    assert "strategy_manager/signal.py" in paths
+    assert "utils/training_runtime.py" in paths
+    assert "scripts/train_slurm_worker.py" in paths
+    assert "scripts/train_alphamaster.sbatch" in paths
+    assert "web/app.py" not in paths
+    assert "web/static/app.js" not in paths
+    assert not any(path.startswith("tests/") for path in paths)
 
 
 def _real_checkpoint_states() -> tuple[dict, dict]:
@@ -251,10 +267,21 @@ def _dataset(
         "MetaTrader5": "alphamaster_mt5_dataset_v1",
         "OKX": "alphamaster_okx_dataset_v1",
         "AShareLocal": "alphamaster_ashare_local_dataset_v1",
+        "AKShare": "alphamaster_ashare_akshare_sina_hfq_dataset_v1",
     }
-    periods_per_year = 968 if source == "AShareLocal" else 6240
+    periods_per_year = (
+        242
+        if source == "AKShare"
+        else (968 if source == "AShareLocal" else 6240)
+    )
     minimum_bars = (
-        1936 if source == "AShareLocal" else manager_module.Config.MIN_BARS
+        484
+        if source == "AKShare"
+        else (
+            1936
+            if source == "AShareLocal"
+            else manager_module.Config.MIN_BARS
+        )
     )
     source_fields = (
         {
@@ -270,13 +297,47 @@ def _dataset(
         }
         if source == "AShareLocal"
         else (
-            {
-                "source_family": "OKX",
-                "provenance_level": "downloader_verified",
-                "bar_completion": "confirmed_only",
-            }
-            if source == "OKX"
-            else {}
+            (
+                {
+                    "source_id": "ashare_akshare_sina_hfq",
+                    "market": "CN_A_SHARE",
+                    "bar_timestamp_semantics": "bar_close",
+                    "source_timezone": "Asia/Shanghai",
+                    "session_close_times": ["15:00"],
+                    "periods_per_year": periods_per_year,
+                    "minimum_bars": minimum_bars,
+                    "provider": "AKShare",
+                    "provider_version": "1.18.64",
+                    "provider_interface": "stock_zh_a_daily",
+                    "adjustment": "hfq",
+                    "adjustment_history_semantics": (
+                        "cumulative_historical_factor_not_latest_price_normalized"
+                    ),
+                    "bar_completion": "completed_trading_days_only",
+                    "source_response_sha256": "e" * 64,
+                    "request": {
+                        "canonical_symbol": symbol,
+                        "symbol": (
+                            f"sh{symbol}"
+                            if symbol.startswith("6")
+                            else f"sz{symbol}"
+                        ),
+                        "start_date": "20200101",
+                        "end_date": "20260101",
+                        "adjust": "hfq",
+                    },
+                }
+                if source == "AKShare"
+                else (
+                    {
+                        "source_family": "OKX",
+                        "provenance_level": "downloader_verified",
+                        "bar_completion": "confirmed_only",
+                    }
+                    if source == "OKX"
+                    else {}
+                )
+            )
         )
     )
     path.with_suffix(".manifest.json").write_text(
@@ -404,6 +465,324 @@ def test_submit_poll_download_and_restart_recovery(
     assert restored.status()["job"]["remote_state"] == "READY"
 
 
+def test_missing_current_pointer_is_the_only_idle_recovery_state(
+    isolated_project: Path,
+    tmp_path: Path,
+) -> None:
+    client = FakeClient()
+    runs = tmp_path / "runs"
+    manager = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=runs,
+    )
+
+    status = manager.status()
+
+    assert status["active"] is False
+    assert status["status_unknown"] is False
+    assert status["job"] is None
+    started = manager.start(str(_dataset(tmp_path)), "XAUUSD", "H1")
+    assert started["remote_state"] == "PENDING"
+    assert client.submitted == [started["run_id"]]
+
+
+@pytest.mark.parametrize(
+    "damage",
+    (
+        "broken-current-json",
+        "missing-state",
+        "broken-state-json",
+        "broken-state-structure",
+    ),
+)
+def test_existing_but_unrecoverable_current_pointer_fails_closed(
+    isolated_project: Path,
+    tmp_path: Path,
+    damage: str,
+) -> None:
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    pointer = runs / "current.json"
+    run_id = "run_20260724T010000Z_1234abcd"
+    state_path = runs / run_id / "state.json"
+    if damage == "broken-current-json":
+        pointer.write_text("{", encoding="utf-8")
+    else:
+        pointer.write_text(
+            json.dumps({"run_id": run_id}),
+            encoding="utf-8",
+        )
+        if damage in {"broken-state-json", "broken-state-structure"}:
+            state_path.parent.mkdir()
+            state_path.write_text(
+                (
+                    "{"
+                    if damage == "broken-state-json"
+                    else json.dumps(
+                        {
+                            "run_id": run_id,
+                            "remote_state": [],
+                        }
+                    )
+                ),
+                encoding="utf-8",
+            )
+    pointer_before = pointer.read_bytes()
+    client = FakeClient()
+    manager = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=runs,
+    )
+
+    status = manager.status()
+
+    assert status["active"] is True
+    assert status["status_unknown"] is True
+    assert status["remote_status_stale"] is True
+    assert status["job"]["remote_state"] == manager_module.RECOVERY_UNKNOWN
+    assert status["job"]["state"] == "failed"
+    assert "恢复失败" in status["job"]["recovery_error"]
+    with pytest.raises(RuntimeError, match="恢复失败"):
+        manager.start(str(_dataset(tmp_path)), "XAUUSD", "H1")
+    assert client.prepared == []
+    assert client.uploaded == []
+    assert client.submitted == []
+    assert pointer.read_bytes() == pointer_before
+
+
+def test_unreadable_current_pointer_fails_closed(
+    isolated_project: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runs = (tmp_path / "runs").resolve()
+    runs.mkdir()
+    pointer = runs / "current.json"
+    pointer.write_text(
+        json.dumps({"run_id": "run_20260724T010000Z_1234abcd"}),
+        encoding="utf-8",
+    )
+    real_read_text = Path.read_text
+
+    def fail_current_read(path: Path, *args, **kwargs):
+        if path.resolve() == pointer:
+            raise OSError("simulated read failure")
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_current_read)
+    client = FakeClient()
+    manager = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=runs,
+    )
+
+    status = manager.status()
+
+    assert status["active"] is True
+    assert status["status_unknown"] is True
+    assert status["job"]["remote_state"] == manager_module.RECOVERY_UNKNOWN
+    assert "current.json" in status["job"]["recovery_error"]
+    with pytest.raises(RuntimeError, match="恢复失败"):
+        manager.start(str(_dataset(tmp_path)), "XAUUSD", "H1")
+    assert client.prepared == []
+    assert client.uploaded == []
+    assert client.submitted == []
+
+
+def test_planned_run_id_is_idempotent_and_never_resubmitted(
+    isolated_project: Path,
+    tmp_path: Path,
+) -> None:
+    client = FakeClient(["PENDING"])
+    manager = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=tmp_path / "runs",
+    )
+    data_file = _dataset(tmp_path)
+    planned = "run_20260724T010000Z_1234abcd"
+
+    first = manager.start(
+        str(data_file),
+        "XAUUSD",
+        "H1",
+        from_scratch=True,
+        planned_run_id=planned,
+    )
+    repeated = manager.start(
+        str(data_file),
+        "XAUUSD",
+        "H1",
+        from_scratch=True,
+        planned_run_id=planned,
+    )
+
+    assert first["run_id"] == planned
+    assert repeated["run_id"] == planned
+    assert client.submitted == [planned]
+
+
+def test_planned_run_retries_only_before_slurm_job_id_exists(
+    isolated_project: Path,
+    tmp_path: Path,
+) -> None:
+    class RejectFirstUploadClient(FakeClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.rejected = False
+
+        def upload_inputs(self, *, run_id: str, **kwargs):
+            self.uploaded.append(run_id)
+            if not self.rejected:
+                self.rejected = True
+                raise manager_module.SlurmClientError(
+                    "manifest local_source 不受支持"
+                )
+            return {"ok": True}
+
+    client = RejectFirstUploadClient()
+    manager = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=tmp_path / "runs",
+    )
+    data_file = _dataset(tmp_path)
+    planned = "run_20260724T010000Z_1234abce"
+
+    with pytest.raises(RuntimeError, match="提交失败"):
+        manager.start(
+            str(data_file),
+            "XAUUSD",
+            "H1",
+            from_scratch=True,
+            planned_run_id=planned,
+        )
+    failed = manager.status()["job"]
+    assert failed["remote_state"] == "FAILED"
+    assert failed["slurm_job_id"] is None
+
+    retried = manager.start(
+        str(data_file),
+        "XAUUSD",
+        "H1",
+        from_scratch=True,
+        planned_run_id=planned,
+    )
+
+    assert retried["run_id"] == planned
+    assert retried["remote_state"] == "PENDING"
+    assert retried["retry_count"] == 1
+    assert retried["retry_history"][0]["error"] == (
+        "manifest local_source 不受支持"
+    )
+    assert client.submitted == [planned]
+
+
+def test_planned_run_id_rejects_identity_change(
+    isolated_project: Path,
+    tmp_path: Path,
+) -> None:
+    client = FakeClient(["PENDING"])
+    manager = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=tmp_path / "runs",
+    )
+    data_file = _dataset(tmp_path)
+    planned = "run_20260724T010000Z_1234abcd"
+    manager.start(
+        str(data_file),
+        "XAUUSD",
+        "H1",
+        planned_run_id=planned,
+    )
+
+    with pytest.raises(RuntimeError, match="已绑定不同"):
+        manager.start(
+            str(data_file),
+            "XAUUSD",
+            "H1",
+            from_scratch=True,
+            planned_run_id=planned,
+        )
+
+
+def test_planned_run_id_freezes_explicit_training_budget(
+    isolated_project: Path,
+    tmp_path: Path,
+) -> None:
+    client = FakeClient(["PENDING"])
+    manager = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=tmp_path / "runs",
+    )
+    data_file = _dataset(tmp_path)
+    planned = "run_20260724T010000Z_8765abcd"
+
+    job = manager.start(
+        str(data_file),
+        "XAUUSD",
+        "H1",
+        from_scratch=True,
+        planned_run_id=planned,
+        train_steps=200,
+        cpus_per_task=12,
+        memory="32G",
+        time_limit="00:30:00",
+    )
+
+    assert job["training_parameters"] == {
+        "train_steps": 200,
+        "from_scratch": True,
+    }
+    assert job["requested_resources"] == {
+        "partition": "cpu",
+        "qos": "normal",
+        "cpus_per_task": 12,
+        "memory": "32G",
+        "time_limit": "00:30:00",
+    }
+    with pytest.raises(RuntimeError, match="已绑定不同"):
+        manager.start(
+            str(data_file),
+            "XAUUSD",
+            "H1",
+            from_scratch=True,
+            planned_run_id=planned,
+            train_steps=201,
+            cpus_per_task=12,
+            memory="32G",
+            time_limit="00:30:00",
+        )
+
+
+def test_start_rejects_expected_source_drift_before_remote_prepare(
+    isolated_project: Path,
+    tmp_path: Path,
+) -> None:
+    client = FakeClient()
+    runs = tmp_path / "runs"
+    manager = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=runs,
+    )
+    actual = manager.current_source_sha256()
+    drifted = "0" * 64 if actual != "0" * 64 else "1" * 64
+
+    with pytest.raises(
+        RuntimeError,
+        match="expected_source_sha256 不一致",
+    ):
+        manager.start(
+            str(_dataset(tmp_path)),
+            "XAUUSD",
+            "H1",
+            expected_source_sha256=drifted,
+        )
+
+    assert client.prepared == []
+    assert client.uploaded == []
+    assert client.submitted == []
+    assert not (runs / "current.json").exists()
+
+
 def test_ready_publishes_one_run_bundle_and_replaces_old_higher_score_strategy(
     isolated_project: Path,
     tmp_path: Path,
@@ -457,6 +836,57 @@ def test_ready_publishes_one_run_bundle_and_replaces_old_higher_score_strategy(
             "strategies/best_XAUUSD.json",
             "training_history_XAUUSD.json",
         }
+
+
+def test_explicit_wrong_strategy_run_id_never_reaches_ready_or_publish(
+    isolated_project: Path,
+    tmp_path: Path,
+) -> None:
+    client = FakeClient(["COMPLETED"])
+    original = client.download_result
+    wrong_run_id = "run_20260724T020000Z_deadbeef"
+
+    def wrong_strategy_run_id(**kwargs):
+        result = original(**kwargs)
+        strategy_path = (
+            kwargs["local_artifact_root"]
+            / "strategies"
+            / "best_XAUUSD.json"
+        )
+        strategy = json.loads(strategy_path.read_text(encoding="utf-8"))
+        strategy["run_id"] = wrong_run_id
+        strategy_path.write_text(json.dumps(strategy), encoding="utf-8")
+        digest = hashlib.sha256(strategy_path.read_bytes()).hexdigest()
+        for row in result["artifacts"]:
+            if row["path"] == "strategies/best_XAUUSD.json":
+                row["size"] = strategy_path.stat().st_size
+                row["sha256"] = digest
+        result["artifact_sha256"]["strategies/best_XAUUSD.json"] = digest
+        return result
+
+    client.download_result = wrong_strategy_run_id  # type: ignore[method-assign]
+    pointer_path = (
+        isolated_project / "published_training" / "current_XAUUSD.json"
+    )
+    pointer_path.parent.mkdir(parents=True)
+    pointer_before = b'{"bundle_id":"old"}'
+    pointer_path.write_bytes(pointer_before)
+    strategy_path = isolated_project / "strategies" / "best_XAUUSD.json"
+    strategy_path.parent.mkdir(parents=True)
+    strategy_before = b'{"best_score":9.9}'
+    strategy_path.write_bytes(strategy_before)
+    manager = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=tmp_path / "runs",
+    )
+
+    manager.start(str(_dataset(tmp_path)), "XAUUSD", "H1")
+    failed = manager.status()["job"]
+
+    assert failed["remote_state"] == "FAILED"
+    assert "run_id" in failed["error"]
+    assert pointer_path.read_bytes() == pointer_before
+    assert strategy_path.read_bytes() == strategy_before
 
 
 @pytest.mark.parametrize(
@@ -624,6 +1054,70 @@ def test_submit_response_loss_recovers_same_run_and_job_after_restart(
     assert recovered["remote_state"] == "PENDING"
     assert recovered["slurm_job_id"] == "4321"
     assert client.submitted == [started["run_id"], started["run_id"]]
+
+
+@pytest.mark.parametrize(
+    ("interrupted_action", "expected_state"),
+    [
+        ("prepare", "PREPARING"),
+        ("upload", "UPLOADING"),
+        ("submit", "SUBMITTING"),
+    ],
+)
+def test_dispatch_recovery_rechecks_frozen_source_before_every_remote_action(
+    isolated_project: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interrupted_action: str,
+    expected_state: str,
+) -> None:
+    client = FakeClient(
+        transport_failures={interrupted_action: 1},
+    )
+    runs = tmp_path / "runs"
+    manager = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=runs,
+    )
+    expected_source = manager.current_source_sha256()
+    observed_source = {"value": expected_source}
+    monkeypatch.setattr(
+        manager_module,
+        "current_training_source_sha256",
+        lambda: observed_source["value"],
+    )
+
+    started = manager.start(
+        str(_dataset(tmp_path)),
+        "XAUUSD",
+        "H1",
+        expected_source_sha256=expected_source,
+    )
+    assert started["remote_state"] == expected_state
+    assert started["expected_source_sha256"] == expected_source
+    calls_before_recovery = (
+        len(client.prepared),
+        len(client.uploaded),
+        len(client.submitted),
+    )
+    observed_source["value"] = (
+        "0" * 64 if expected_source != "0" * 64 else "1" * 64
+    )
+
+    restored = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=runs,
+    )
+    recovered = restored.status()["job"]
+
+    assert recovered["run_id"] == started["run_id"]
+    assert recovered["remote_state"] == "FAILED"
+    assert "源码 SHA-256 已漂移" in recovered["error"]
+    assert (
+        len(client.prepared),
+        len(client.uploaded),
+        len(client.submitted),
+    ) == calls_before_recovery
 
 
 def test_restart_recovers_persisted_submitted_state(
@@ -908,6 +1402,31 @@ def test_ashare_periods_and_minimum_bars_enter_run_identity(
     assert run_manifest["minimum_bars"] == 1936
 
 
+def test_akshare_hfq_enters_ashare_run_identity(
+    isolated_project: Path,
+    tmp_path: Path,
+) -> None:
+    path = _dataset(
+        tmp_path,
+        symbol="600519",
+        timeframe="D1",
+        source="AKShare",
+    )
+    manager = manager_module.SlurmTrainingManager(
+        client=FakeClient(),
+        local_runs_root=tmp_path / "runs",
+    )
+    started = manager.start(str(path), "600519", "D1")
+    run_manifest = json.loads(
+        (tmp_path / "runs" / started["run_id"] / "run_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert run_manifest["local_source"] == "ashare_akshare_sina_hfq"
+    assert run_manifest["periods_per_year"] == 242
+    assert run_manifest["minimum_bars"] == 484
+
+
 def test_missing_strategy_cannot_become_ready(
     isolated_project: Path,
     tmp_path: Path,
@@ -962,6 +1481,261 @@ def test_cancel_and_log_progress_are_remote_only(
     assert client.cancelled == [(job["run_id"], "4321")]
     assert manager._job["remote_state"] == "CANCELLING"
     assert manager.status()["job"]["remote_state"] == "CANCELLED"
+
+
+def test_snapshot_and_cached_log_never_poll_remote(
+    isolated_project: Path,
+    tmp_path: Path,
+) -> None:
+    client = FakeClient(["RUNNING"])
+    manager = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=tmp_path / "runs",
+    )
+    manager.start(str(_dataset(tmp_path)), "XAUUSD", "H1")
+    assert manager.tail_log(80) == ["[10/20] smoke"]
+
+    def fail_status(*_args, **_kwargs):
+        raise AssertionError("snapshot 不得查询远程 Slurm")
+
+    def fail_tail(*_args, **_kwargs):
+        raise AssertionError("cached_log_tail 不得查询远程日志")
+
+    client.status = fail_status  # type: ignore[method-assign]
+    client.tail = fail_tail  # type: ignore[method-assign]
+
+    snapshot = manager.snapshot()
+    assert snapshot["active"] is True
+    assert snapshot["job"]["remote_state"] == "PENDING"
+    assert manager.cached_log_tail(80) == ["[10/20] smoke"]
+    assert manager.parse_step_from_log(refresh_remote=False) == 10
+
+
+def test_cached_log_and_progress_are_bound_to_requested_run(
+    isolated_project: Path,
+    tmp_path: Path,
+) -> None:
+    client = FakeClient(["RUNNING"])
+    manager = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=tmp_path / "runs",
+    )
+    current = manager.start(str(_dataset(tmp_path)), "XAUUSD", "H1")
+    assert manager.tail_log(80) == ["[10/20] smoke"]
+
+    other_run_id = "run_20260724T020000Z_deadbeef"
+    other_log = tmp_path / "runs" / other_run_id / "logs" / "tail.log"
+    other_log.parent.mkdir(parents=True, exist_ok=True)
+    other_log.write_text("[77/200] other run\n", encoding="utf-8")
+
+    assert manager.cached_log_tail(80, run_id=current["run_id"]) == [
+        "[10/20] smoke"
+    ]
+    assert manager.cached_log_tail(80, run_id=other_run_id) == [
+        "[77/200] other run"
+    ]
+    assert (
+        manager.parse_step_from_log(
+            refresh_remote=False,
+            run_id=other_run_id,
+        )
+        == 77
+    )
+    assert manager.tail_log(80, expected_run_id=other_run_id) == []
+
+
+def test_terminal_log_is_marked_final_only_after_successful_remote_pull(
+    isolated_project: Path,
+    tmp_path: Path,
+) -> None:
+    client = FakeClient(["COMPLETED"])
+    manager = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=tmp_path / "runs",
+    )
+    manager.start(str(_dataset(tmp_path)), "XAUUSD", "H1")
+    run_id = manager.snapshot()["job"]["run_id"]
+
+    def fail_tail(*_args, **_kwargs):
+        raise manager_module.SlurmClientError("remote log unavailable")
+
+    client.tail = fail_tail  # type: ignore[method-assign]
+    assert manager.tail_log(80, expected_run_id=run_id, final=True) == []
+    failed_snapshot = manager.snapshot()["job"]
+    assert "final_log_refreshed_at" not in failed_snapshot
+    assert failed_snapshot["last_log_poll_error"] == "remote log unavailable"
+
+    client.tail = lambda *_args, **_kwargs: ["final line"]  # type: ignore[method-assign]
+    assert manager.tail_log(80, expected_run_id=run_id, final=True) == [
+        "final line"
+    ]
+    completed_snapshot = manager.snapshot()["job"]
+    assert completed_snapshot["final_log_refreshed_at"]
+    assert "last_log_poll_error" not in completed_snapshot
+
+
+def test_unknown_slurm_state_remains_active_and_visible_as_stale(
+    isolated_project: Path,
+    tmp_path: Path,
+) -> None:
+    client = FakeClient()
+    manager = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=tmp_path / "runs",
+    )
+    manager.start(str(_dataset(tmp_path)), "XAUUSD", "H1")
+
+    def unknown_status(*_args, **_kwargs):
+        raise manager_module.SlurmClientError(
+            "未知 Slurm 状态: POWER_DOWN_NODE"
+        )
+
+    client.status = unknown_status  # type: ignore[method-assign]
+    status = manager.status()
+
+    assert status["active"] is True
+    assert status["job"]["remote_state"] == "PENDING"
+    assert status["remote_status_stale"] is True
+    assert "POWER_DOWN_NODE" in status["job"]["last_poll_error"]
+
+
+def test_temporary_slurm_client_error_never_proves_remote_failure(
+    isolated_project: Path,
+    tmp_path: Path,
+) -> None:
+    client = FakeClient()
+    manager = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=tmp_path / "runs",
+    )
+    manager.start(str(_dataset(tmp_path)), "XAUUSD", "H1")
+    client.status = lambda *_args, **_kwargs: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        manager_module.SlurmClientError("temporary sacct failure")
+    )
+
+    status = manager.status()
+
+    assert status["active"] is True
+    assert status["job"]["remote_state"] == "PENDING"
+    assert status["remote_status_stale"] is True
+    assert status["job"]["last_poll_error"] == "temporary sacct failure"
+
+
+def test_raw_nonterminal_slurm_state_overrides_stale_failed_normalization(
+    isolated_project: Path,
+    tmp_path: Path,
+) -> None:
+    client = FakeClient()
+    manager = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=tmp_path / "runs",
+    )
+    manager.start(str(_dataset(tmp_path)), "XAUUSD", "H1")
+
+    client.status = lambda *_args, **_kwargs: {  # type: ignore[method-assign]
+        "state": "SPECIAL_EXIT",
+        "status": "FAILED",
+        "reason": "legacy normalizer",
+    }
+    status = manager.status()
+
+    assert status["active"] is True
+    assert status["job"]["remote_state"] == "PENDING"
+    assert status["job"]["slurm_state"] == "SPECIAL_EXIT"
+    assert not status["job"].get("error")
+
+
+def test_stop_rejects_changed_run_or_job_identity(
+    isolated_project: Path,
+    tmp_path: Path,
+) -> None:
+    client = FakeClient()
+    manager = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=tmp_path / "runs",
+    )
+    job = manager.start(str(_dataset(tmp_path)), "XAUUSD", "H1")
+
+    with pytest.raises(RuntimeError, match="run_id 已变化"):
+        manager.stop(
+            expected_run_id="run_20260724T020000Z_deadbeef",
+            expected_job_id=job["slurm_job_id"],
+        )
+    with pytest.raises(RuntimeError, match="job_id 已变化"):
+        manager.stop(
+            expected_run_id=job["run_id"],
+            expected_job_id="999999",
+        )
+
+    assert client.cancelled == []
+    assert manager.stop(
+        expected_run_id=job["run_id"],
+        expected_job_id=job["slurm_job_id"],
+    )
+    assert client.cancelled == [(job["run_id"], job["slurm_job_id"])]
+
+
+def test_remote_log_wait_does_not_hold_training_state_lock(
+    isolated_project: Path,
+    tmp_path: Path,
+) -> None:
+    client = FakeClient()
+    manager = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=tmp_path / "runs",
+    )
+    job = manager.start(str(_dataset(tmp_path)), "XAUUSD", "H1")
+    tail_started = threading.Event()
+    release_tail = threading.Event()
+
+    def blocking_tail(*_args, **_kwargs):
+        tail_started.set()
+        assert release_tail.wait(timeout=5)
+        return ["done"]
+
+    client.tail = blocking_tail  # type: ignore[method-assign]
+    tail_thread = threading.Thread(
+        target=manager.tail_log,
+        kwargs={
+            "expected_run_id": job["run_id"],
+            "expected_job_id": job["slurm_job_id"],
+        },
+    )
+    tail_thread.start()
+    assert tail_started.wait(timeout=2)
+
+    stop_results: list[bool] = []
+    stop_thread = threading.Thread(
+        target=lambda: stop_results.append(
+            manager.stop(
+                expected_run_id=job["run_id"],
+                expected_job_id=job["slurm_job_id"],
+            )
+        )
+    )
+    stop_thread.start()
+    stop_thread.join(timeout=1)
+    assert not stop_thread.is_alive()
+    assert stop_results == [True]
+
+    release_tail.set()
+    tail_thread.join(timeout=2)
+    assert not tail_thread.is_alive()
+
+
+def test_batch_source_hash_matches_frozen_run_manifest(
+    isolated_project: Path,
+    tmp_path: Path,
+) -> None:
+    manager = manager_module.SlurmTrainingManager(
+        client=FakeClient(),
+        local_runs_root=tmp_path / "runs",
+    )
+    job = manager.start(str(_dataset(tmp_path)), "XAUUSD", "H1")
+
+    assert manager.current_source_sha256() == manager.run_source_sha256(
+        job["run_id"]
+    )
 
 
 def test_cancel_transport_loss_is_retried_until_remote_terminal_state(

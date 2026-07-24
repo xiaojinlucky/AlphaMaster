@@ -1,8 +1,7 @@
 """
-train_file.py — 从单个 Parquet K 线文件训练
+train_file.py — Slurm Worker 从单个 Parquet K 线文件训练
 
-用法:
-    python train_file.py --data-file D:\\K线数据\\AAPL_H1.parquet
+本入口只允许服务器 Slurm Worker 调用，不是 Windows 本机训练命令。
 
 文件名格式: {品种}_{周期}.parquet，例如 AAPL_H1.parquet、US30.cash_H1.parquet
 """
@@ -28,6 +27,7 @@ from model_core.config import ModelConfig
 import model_core.engine as _engine_module
 from model_core.engine import AlphaEngine
 from model_core.vocab import VOCAB_VERSION
+from utils.training_runtime import require_slurm_training_runtime
 
 
 DEFAULT_TRAIN_STEPS = ModelConfig.TRAIN_STEPS
@@ -111,6 +111,7 @@ def train_from_file(
     periods_per_year: int | None = None,
     minimum_bars: int | None = None,
 ) -> AlphaEngine | None:
+    require_slurm_training_runtime()
     info = inspect_parquet_file(
         data_file,
         expected_source_id=data_source,

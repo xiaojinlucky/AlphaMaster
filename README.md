@@ -1,6 +1,6 @@
 # AlphaMaster
 
-基于深度神经网络强化学习的量化因子挖掘中心：从 Parquet / MT5 / OKX K 线自动搜索可解释因子公式，支持 Web 端训练、回测与实时信号分析。
+基于深度神经网络强化学习的量化因子挖掘中心：从 A 股 / MT5 / OKX Parquet 自动搜索可解释因子公式，模型训练固定走服务器 Slurm，并在 Web 端贯通回测与实时信号分析。
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
@@ -8,9 +8,11 @@
 
 目标发布仓库：[github.com/xiaojinlucky/AlphaMaster](https://github.com/xiaojinlucky/AlphaMaster)；原作者仓库保留为只读 `upstream`：[rosemarycox5334-debug/AlphaMaster](https://github.com/rosemarycox5334-debug/AlphaMaster)。默认只向私有仓库发布；当前仓库公开，但用户已于 2026-07-20 明确授权临时发布本次已审查的 36 路快照，主交接提交为 `4a897de`。`.env`、真实配置、密钥、数据、模型和日志始终不上传，后续发布仍须重新确认。
 
-当前数据身份、checkpoint、旧 MT5 注册、样本外回测和训练包 v2 已随 `d4dcb75` 发布并通过独立严格审查。接手或让外部模型规划前，先读 [`CONTEXT.md`](CONTEXT.md) 和 [`docs/GPT5_6SOL_HANDOFF.md`](docs/GPT5_6SOL_HANDOFF.md)。
+现役数据身份、Slurm 批次、checkpoint、回测、虚拟信号和封存评估边界以 [`CONTEXT.md`](CONTEXT.md) 与 [`docs/VALIDATION_EVIDENCE.md`](docs/VALIDATION_EVIDENCE.md) 为准；历史提交不能替代当前运行证据。接手或让外部模型规划前，先读这两份文件和 [`docs/GPT5_6SOL_HANDOFF.md`](docs/GPT5_6SOL_HANDOFF.md)。
 
-网页版 GPT Pro Extended Thinking 的 AlphaMaster 专属总控入口为 [`docs/GPT_WEB_PRO_EXTENDED_TASK.md`](docs/GPT_WEB_PRO_EXTENDED_TASK.md)。当前轻量二次开发重点是打通 Windows 本机控制端与 Linux Slurm 服务器之间的训练提交、状态/日志交互、恢复和产物回传。
+网页版 GPT Pro Extended Thinking 的 AlphaMaster 专属总控入口为 [`docs/GPT_WEB_PRO_EXTENDED_TASK.md`](docs/GPT_WEB_PRO_EXTENDED_TASK.md)。当前主线是普通大 A 账户的只做多信号：Windows 本机负责数据、控制、回测和信号展示；所有模型训练固定提交到 Linux Slurm 服务器，训练完成后自动继续回测和虚拟信号。
+
+当前 50 只中证 A50 仅作为龙头基线池，用于先跑通批量训练、回测和虚拟信号；它不等于“近一年轮动表现最强 50 只”。官方依据、成熟轮动框架候选、夏普门槛和未完成调研见 [`docs/A50_ROTATION_RESEARCH_EVIDENCE.md`](docs/A50_ROTATION_RESEARCH_EVIDENCE.md)。
 
 ---
 
@@ -18,9 +20,9 @@
 
 AlphaMaster 把「挖因子」做成一条可操作的流水线：
 
-1. **训练**：用强化学习在特征 + 算子空间里搜索公式，按验证集表现选优  
-2. **回测**：用 `tanh(因子)` 连续仓位在历史行情上模拟交易，看资金曲线与绩效  
-3. **实时分析**：按周期收盘后重算信号，展示方向与把握；方向转折可推飞书提醒  
+1. **服务器训练**：本机上传经过身份校验的 Parquet，Slurm 单节点用强化学习搜索公式，本机不训练
+2. **成本回测**：训练产物回传后，用 `tanh(因子)` 连续仓位和手续费 / 滑点完成工程重放或独立样本外评分
+3. **虚拟与实时信号**：读取通达信已收盘 K 线，以普通 A 股账户只做多语义生成买入、加仓、减仓、离场、止盈和止损事件，并可推送飞书
 
 公式以 token 序列保存（如 `strategies/best_BTCUSDT.json`），可用 StackVM 解释执行，训练 / 回测 / 实时共用同一套信号逻辑。
 
@@ -47,18 +49,18 @@ Windows 已可使用桌面 `AlphaMaster` 快捷方式：双击后自动启动本
 
 | 步骤 | 作用 |
 |------|------|
-| **01 模型训练** | 选 Parquet、开始 / 重新训练、看曲线与日志、导出策略与检查点 |
+| **01 模型训练** | 选 Parquet、提交服务器 Slurm、看资源与曲线，并自动继续回测和虚拟信号 |
 | **02 策略回测** | 选策略 JSON，设手续费 / 滑点，看绩效与资金曲线 |
-| **03 实时分析** | 多数据源监控，收盘后更新信号；可选飞书转折提醒 |
+| **03 实时分析** | 多数据源监控，收盘后更新只做多交易动作；可选飞书信号推送 |
 
 ### 模型训练
 
 ![训练页](docs/images/01_train.png)
 
 - Parquet 命名：`{品种}_{周期}.parquet`，例如 `BTCUSDT_H1.parquet`、`XAUUSD_H1.parquet`  
-- **本地后端**：普通续训只在当前数据身份的最新 run 中寻找最高 step；重新训练会新建隔离 run 并从头训练，旧 run 保留
 - **manifest 边界**：AlphaMaster 核心读取本地 Parquet 不依赖 manifest；Slurm 远程训练必须用 sidecar 绑定文件哈希、来源和数据范围。旧 MT5 文件可在页面一次确认后自动注册，新版 MT5 / OKX 导出器会自动生成
 - **Slurm 第一阶段**：每个 run 独立训练；网络中断会重连同一 run/job，跨 run checkpoint 续训尚未开放；每次 `READY` 会以单一原子指针发布该 run 的 checkpoint、训练历史和策略整套产物，不跨 run 混用
+- **大 A 自动后处理**：大 A run 达到 `READY` 后，以同一 `run_id` 自动执行含手续费 / 滑点的 replay 回测，再用通达信最新已收盘 K 线生成虚拟动作；页面明确提示 replay 不是样本外收益
 - 展示最优分数、验证分数、训练曲线与最优公式；可选 AI 分析当前训练情况  
 
 ### AI 模型供应商
@@ -85,10 +87,15 @@ AI 通道采用固定白名单，不读取浏览器、IDE、Electron、WorkBuddy
 
 ![实时分析页](docs/images/03_realtime.png)
 
-- 数据源：MT5 / OKX 等（以界面可用源为准）  
+- 数据源：普通 A 股优先使用通达信；其他来源以界面可用源为准
 - **只在当前周期 K 线收盘后**重新判断；未收盘 bar 不参与信号  
 - 卡片展示方向（看涨 / 看跌 / 不确定）与把握程度  
-- 可选飞书 Webhook：仅在方向转折时推送文字提醒  
+- 普通 A 股账户只做多：负因子不会生成做空建议；空仓时观望，持仓时减仓或离场
+- SQLite 虚拟仓位与事件账本：同一策略、品种、周期、K 线只生成一个决策，重启后不重复
+- 动作包括买入、加仓、减仓、离场、止盈和止损；系统只发信号，不连接券商、不自动下单
+- 可选飞书 Webhook：只推送新的可执行交易动作，继续持有和观望不打扰
+- 飞书网络失败、限流或服务端错误自动重试，最终投递状态保留在信号历史中
+- 普通 A 股 T+1、停牌、涨跌停和实际可卖数量需按真实账户确认；这里不伪装成券商执行校验
 
 ---
 
@@ -115,6 +122,7 @@ AlphaMaster/
 
 - Python **3.10+**（建议 3.11）  
 - PyTorch、pandas、FastAPI、uvicorn 等（见 `requirements.txt`）  
+- Windows 使用已验证的 PyTorch 2.8 CPU；不要自动升级到本机已复现 `c10.dll` 启动失败的 2.12/2.13
 - 可选：MetaTrader 5 终端（实时 MT5 行情；当前仓库不提供可用下单适配器）
 - 复制 `.env.example` 为 `.env` 填写 MT5 等凭证（`.env` 已 gitignore）  
 
@@ -138,9 +146,9 @@ Linux Slurm Worker 使用独立的 `requirements-linux-worker.lock`，不安装 
 
 ---
 
-## Windows Parquet（MT5 / OKX）→ Slurm CPU 训练
+## Windows Parquet（A 股 / MT5 / OKX）→ Slurm CPU 训练
 
-第一阶段支持本机 MT5 已收盘 K 线导出或经过来源清单校验的 OKX Parquet，通过本机 Web 控制台提交到 Slurm。`login-node` 仅作为 SSH 配置中的跳板，不运行命令；每次远端操作先调用节点选择器确定健康的交互入口，真正的训练节点始终由 Slurm 调度。
+支持严格转换后的本机 A 股 Parquet、MT5 已收盘 K 线或经过来源清单校验的 OKX Parquet，通过本机 Web 控制台提交到 Slurm。`login-node` 仅作为 SSH 配置中的跳板，不运行命令；每次远端操作先调用节点选择器确定健康的交互入口，真正的训练节点始终由 Slurm 调度。
 
 ```powershell
 # 1. 从当前已登录的 MT5 导出准确品种/周期；默认排除未收盘 bar
@@ -163,7 +171,17 @@ Slurm 模式固定使用 `cpu` 分区、`normal` QOS 和服务器项目 Python 3
 
 当前正式任务默认申请 12 CPU；实际训练节点仍由 Slurm 根据集群可用性分配，不固定节点。
 
-`TRAINING_BACKEND` 必须显式配置；缺失或未知值会拒绝启动。只有明确设置 `TRAINING_BACKEND=local` 才允许本机训练。
+`TRAINING_BACKEND` 必须为 `slurm`；缺失、`local` 或其他值都会拒绝启动，远端失败也绝不退回 Windows 本机训练。
+
+训练门同时位于模型引擎和单文件训练入口：只有 Linux 计算节点上的受控 Slurm Worker 能真正进入训练循环。Web 后台会持续观察当前 job；浏览器关闭不影响训练完成后的回测与虚拟信号。后处理只接受哈希验证后的 Slurm 发布包，临时行情/回测超时最多自动重试 3 次。
+
+### 2026-07-23 大 A 真实闭环证据
+
+- 输入：`600519_D1.parquet`，5,955 根日线，数据 SHA-256 为 `4cb8912466781de76735f3bcd7873dac204098bc5a5e8647e3b8a009fd4627b8`
+- Slurm：run `run_20260723T151419Z_bdc5e5a0`、job `568306`，单节点 `cu16`、12 CPU、32 GB 申请；20 步完成，墙钟 `00:01:25`、累计 CPU `10:09.454`、峰值内存 `1254524K`
+- 最优公式分数：`0.8649603724`；策略、checkpoint、训练历史三类产物均完成哈希校验并回传
+- replay 回测：累计对数收益 `2.912246`、夏普 `0.5306`、索提诺 `0.6649`、盈亏比 `2.3136`、588 笔；这是同训练数据的工程闭环验证，不是独立样本外成绩
+- 通达信最新 500 根已收盘日线生成 `BUY`，目标虚拟仓位 `64.63%`，参考价 `1292.01`，止损 `1266.1698`，止盈 `1343.6904`；本次流水线验证未发送飞书
 
 ### 旧 MT5 数据如何接入
 
@@ -193,18 +211,17 @@ Slurm 模式固定使用 `cpu` 分区、`normal` QOS 和服务器项目 Python 3
 ## 常用命令
 
 ```powershell
-# Web 控制台
-python run_web.py --port 8765
-
-# CLI 训练（自动续训；加 --from-scratch 则重新训练）
-python train_file.py --data-file D:\K线数据\BTCUSDT_H1.parquet
-python train_file.py --data-file D:\K线数据\BTCUSDT_H1.parquet --from-scratch
-python train_file.py --data-file D:\K线数据\XAUUSD_H1.parquet --from-scratch --train-steps 20
+# 本机只启动控制台；训练按钮会创建并提交服务器 Slurm run
+.venv\Scripts\python.exe run_web.py --host 127.0.0.1 --port 8765
 
 # 回测可显式选择独立测试数据；auto 会自动判断重放或样本外
-python run_backtest.py --single --strategy-file strategies\best_BTCUSDT.json `
-  --data-file D:\K线数据\BTCUSDT_H1_future.parquet --evaluation-mode auto
+.venv\Scripts\python.exe run_backtest.py --single `
+  --strategy-file strategies\best_600519.json `
+  --data-file D:\大A数据\600519_D1_future.parquet `
+  --evaluation-mode auto
 ```
+
+`train_file.py` 是 Slurm Worker 内部入口，不是 Windows 本机训练命令。不要在本机直接运行它；正式模型训练统一从 Web 提交服务器 Slurm。
 
 策略输出默认在 `strategies/best_{symbol}.json`。
 

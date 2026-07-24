@@ -399,8 +399,25 @@ def test_sbatch_script_has_fixed_clean_runtime() -> None:
     text = script.read_text(encoding="utf-8")
     assert "umask 077" in text
     assert "/hwdata/home/jinqc/Quant/AlphaMaster/.venv/bin/python" not in text  # 由固定 ROOT 拼出
+    assert 'readonly RUN_DIR="$(pwd -P)"' in text
+    assert "BASH_SOURCE" not in text
     assert 'readonly PYTHON="${ROOT}/.venv/bin/python"' in text
     assert "exec /usr/bin/env -i" in text
     assert "OMP_NUM_THREADS" in text
     assert "--wrap" not in text
     assert "--nodelist" not in text
+
+
+def test_clean_training_env_authorizes_only_the_slurm_worker(tmp_path: Path) -> None:
+    env = worker._clean_training_env(
+        tmp_path,
+        12,
+        {
+            "SLURM_JOB_ID": "12345",
+            "SLURMD_NODENAME": "cu16",
+        },
+    )
+
+    assert env["ALPHAMASTER_TRAINING_RUNTIME"] == "slurm_worker_v1"
+    assert env["SLURM_JOB_ID"] == "12345"
+    assert env["SLURMD_NODENAME"] == "cu16"

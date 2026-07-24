@@ -37,7 +37,22 @@ def test_critical_business_dom_ids_remain_unique():
         "rtBrowseStrategyBtn",
         "rtAddBtn",
         "rtGrid",
+        "rtSignalFeed",
         "rtFeishuSaveBtn",
+        "pipelineTrainingStage",
+        "pipelineBacktestStage",
+        "pipelineSignalStage",
+        "pipelineStatus",
+        "batchQueuePanel",
+        "batchQueueProgressTrack",
+        "batchQueueProgressBar",
+        "batchQueueStatus",
+        "batchQueueActive",
+        "batchQueuedCount",
+        "batchTrainingCount",
+        "batchPostprocessCount",
+        "batchReadyCount",
+        "batchAttentionCount",
     }
     assert required <= set(ids)
 
@@ -125,19 +140,72 @@ def test_realtime_placeholder_and_missing_value_guards_exist():
     assert 'function setRtStrategyHint' in SCRIPT
     assert 'picked.classList.toggle("bad", isError)' in SCRIPT
     assert '$("rtSymbolInput").addEventListener("input", onRtStrategyChange)' in SCRIPT
+    assert 'fetchJSON("/api/realtime/signals?limit=200"' in SCRIPT
+    assert "function renderRealtimeSignals(events)" in SCRIPT
+    assert "第一阶段已禁用飞书测试请求" not in SCRIPT
 
 
 def test_training_capability_survives_status_refresh_and_keeps_legacy_action():
     assert "const retainedPlanSha =" in SCRIPT
     assert 'info.registration !== "registered"' in SCRIPT
     assert (
-        "startBtn.disabled = active || !selectedDataFile || !trainingCompatible"
+        "startBtn.disabled = statusUnknown || active || !selectedDataFile || !trainingCompatible"
         in SCRIPT
     )
     assert (
-        "retrainBtn.disabled = active || !selectedDataFile || !trainingCompatible"
+        "statusUnknown || active || !selectedDataFile || !trainingCompatible"
         in SCRIPT
     )
+
+
+def test_training_page_exposes_the_real_slurm_to_signal_pipeline():
+    assert "模型训练固定提交到服务器单节点 Slurm" in INDEX
+    assert "可用于服务器 Slurm 训练" in SCRIPT
+    assert "可用于本地训练" not in SCRIPT
+    assert 'RETRY_WAIT: "等待重试"' in SCRIPT
+    assert "training.error" in SCRIPT
+    assert "本机不训练" in INDEX
+    assert "大 A 落地流水线" in INDEX
+    assert "同训练数据重放不等于样本外收益" in INDEX
+    assert "function updatePipelineUI(pipeline)" in SCRIPT
+    assert 'updatePipelineUI(training?.pipeline || overview?.pipeline)' in SCRIPT
+    assert_rule(".pipeline-stage-grid", "grid-template-columns: repeat(3, minmax(0, 1fr))")
+
+
+def test_training_page_exposes_persisted_a50_batch_truth():
+    assert "A50 龙头基线训练队列（50 只）" in INDEX
+    assert "重放结果不计入样本外 Sharpe 门槛" in INDEX
+    assert "最终封存评估仍保持一次性、整批 50 只统一揭示" in INDEX
+    assert "function updateBatchQueueUI(snapshot, training)" in SCRIPT
+    assert 'fetchJSON("/api/training/batches"' in SCRIPT
+    assert 'const activeBatchId = String(listing?.active_item?.batch_id || "").trim()' in SCRIPT
+    assert "`/api/training/batches/${encodeURIComponent(batchId)}`" in SCRIPT
+    assert "await refreshBatchQueue(training)" in SCRIPT
+    assert_rule(
+        ".batch-queue-counts",
+        "grid-template-columns: repeat(5, minmax(0, 1fr))",
+    )
+    assert_rule(
+        ".batch-queue-progress-bar",
+        "width: 0",
+        "transition: width 0.3s ease",
+    )
+
+
+def test_training_polling_never_turns_a_read_failure_into_fake_idle():
+    assert "const timeoutMs = Number(fetchOpts.timeoutMs) || 12000" in SCRIPT
+    assert "timeoutController.abort()" in SCRIPT
+    assert "if (overviewRefreshInFlight) return;" in SCRIPT
+    assert "overviewRefreshInFlight = true;" in SCRIPT
+    assert "overviewRefreshInFlight = false;" in SCRIPT
+    assert "if (trainingTrusted)" in SCRIPT
+    assert "training = { ...lastTrainingSnapshot, status_unknown: true }" in SCRIPT
+    assert "status_unknown: true" in SCRIPT
+    assert "状态读取失败 · 保持等待" in SCRIPT
+    assert "未取得可信训练状态；不会按空闲处理" in SCRIPT
+    assert "if (pollTickInFlight) return;" in SCRIPT
+    assert "pollTickInFlight = true;" in SCRIPT
+    assert "pollTickInFlight = false;" in SCRIPT
 
 
 def test_data_provenance_and_backtest_evaluation_labels_are_explicit():
@@ -160,6 +228,13 @@ def test_debug_polling_is_disabled_when_debug_mode_is_off():
     assert "if (!debugMode) {" in SCRIPT
     assert "if (!silent && debugMode) await refreshDebugLogs();" in SCRIPT
     assert "if (debugMode) await refreshDebugLogs();" in SCRIPT
+
+
+def test_backend_restart_refreshes_local_control_token_once():
+    assert "`/api/session?refresh=${Date.now()}`" in SCRIPT
+    assert "if (response.status === 403" in SCRIPT
+    assert 'controlToken = ""' in SCRIPT
+    assert SCRIPT.count("response = await nativeFetch(input, options)") == 2
 
 
 def test_sidebar_resource_targets_exist_and_are_wired():

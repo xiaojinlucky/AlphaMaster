@@ -317,7 +317,7 @@ def test_six_digit_canonical_name_without_manifest_is_not_treated_as_generic(
 ) -> None:
     output, _result = converted_h1
     output.with_suffix(".manifest.json").unlink()
-    with pytest.raises(ValueError, match="缺少有效的 AShareLocal manifest"):
+    with pytest.raises(ValueError, match="缺少有效的 A 股来源合同"):
         inspect_parquet_file(output)
 
 
@@ -329,7 +329,10 @@ def test_six_digit_canonical_name_rejects_non_ashare_sidecar(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["source"] = "OKX"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    with pytest.raises(ValueError, match="必须使用有效的 AShareLocal manifest"):
+    with pytest.raises(
+        ValueError,
+        match="必须使用受支持且有效的 A 股 manifest",
+    ):
         inspect_parquet_file(output)
 
 

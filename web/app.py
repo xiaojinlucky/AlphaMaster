@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import secrets
 import sys
 import threading
@@ -24,6 +26,8 @@ from data_pipeline.legacy_mt5_registry import (
     build_single_file_registration_plan,
     write_registration_report,
 )
+from data_pipeline.a_share_akshare import AKSHARE_SLICE_TRAINING
+from data_pipeline.dataset_contracts import AKSHARE_HFQ_SOURCE_ID, source_family
 from data_pipeline.parquet_manager import ParquetDataManager, inspect_parquet_file
 from model_core.config import ModelConfig
 from web.file_dialog import pick_parquet_file, pick_strategy_file
@@ -50,11 +54,22 @@ from web.strategy_file import (
     sync_best_strategy_for_symbol,
 )
 from web.training_manager import training_manager
+from web.training_batch import TrainingBatchController, default_queue_path
+from web.training_queue import (
+    BatchItemSpec,
+    DataHashDriftError,
+    IdempotencyConflictError,
+    QueueValidationError,
+    TrainingQueue,
+)
 from web.training_time import get_training_time_summary
 from web.training_package import build_training_export_zip
 from web.backtest_manager import backtest_manager
+from web.a_share_pipeline import a_share_pipeline_manager
 from web.realtime_manager import realtime_manager
 from web.data_sources.factory import list_sources
+from web.feishu_notify import send_text as send_feishu_text
+from web.feishu_notify import validate_feishu_webhook_url
 from strategy_manager.live_signal import min_exposure
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -64,12 +79,23 @@ setup_logging()
 logger = get_logger()
 
 app = FastAPI(title="AlphaMaster Training", version="1.1.0")
+training_queue = TrainingQueue(default_queue_path(ROOT))
+training_batch_controller = TrainingBatchController(
+    queue=training_queue,
+    training_manager=training_manager,
+    pipeline_manager=a_share_pipeline_manager,
+)
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost"})
 _TOKEN_EXEMPT_API_PATHS = frozenset({"/api/health", "/api/session"})
 _CONTROL_TOKEN = secrets.token_urlsafe(32)
 _REGISTRATION_PLAN_LOCK = threading.Lock()
 _REGISTRATION_PLANS: dict[str, dict[str, Any]] = {}
+_PIPELINE_MONITOR_INTERVAL_SECONDS = 5.0
+_PIPELINE_MONITOR_STOP = threading.Event()
+_PIPELINE_MONITOR_THREAD: threading.Thread | None = None
+_TRAINING_LOG_REFRESH_LOCK = threading.Lock()
+_TRAINING_LOG_REFRESH_THREAD: threading.Thread | None = None
 _SENSITIVE_SETTING_KEYS = frozenset(
     {
         "ai_api_key",
@@ -174,6 +200,26 @@ class StartTrainingRequest(BaseModel):
     from_scratch: bool = False
 
 
+class StopTrainingRequest(BaseModel):
+    run_id: str
+    slurm_job_id: str
+
+
+class BatchTrainingItemRequest(BaseModel):
+    data_file: str
+    planned_run_id: str
+    train_steps: int = 200
+    cpus_per_task: int = 12
+    memory: str = "32G"
+    time_limit: str = "00:30:00"
+
+
+class CreateTrainingBatchRequest(BaseModel):
+    idempotency_key: str
+    contract_sha256: str
+    items: list[BatchTrainingItemRequest]
+
+
 class ClientLogRequest(BaseModel):
     level: str = "error"
     message: str
@@ -235,6 +281,11 @@ class FeishuSettingsRequest(BaseModel):
     secret: str | None = None
 
 
+class FeishuTestRequest(BaseModel):
+    webhook_url: str | None = None
+    secret: str | None = None
+
+
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     started = time.perf_counter()
@@ -282,7 +333,8 @@ def _decorate_data_info(
 ) -> dict[str, Any]:
     payload = dict(info)
     capabilities = dict(payload.get("capabilities") or {})
-    backend = str(training_manager.status().get("backend") or "local")
+    # 数据能力装饰只依赖固定后端配置，不能为了展示文件卡片阻塞远端轮询锁。
+    backend = os.getenv("TRAINING_BACKEND", "").strip().lower()
     training_compatible = bool(
         capabilities.get("remote_training")
         if backend == "slurm"
@@ -468,7 +520,7 @@ def _sync_and_persist_best_strategy(
     invalidate_checkpoint_cache()
     hint = data_file_hint
     if not hint:
-        job = training_manager.status().get("job") or {}
+        job = training_manager.snapshot().get("job") or {}
         if str(job.get("symbol") or "") == symbol:
             hint = job.get("data_file") or None
     if not hint:
@@ -599,6 +651,7 @@ def api_config() -> dict[str, Any]:
         "reward_mode": ModelConfig.REWARD_MODE,
         "max_formula_len": ModelConfig.MAX_FORMULA_LEN,
         "device": str(ModelConfig.DEVICE),
+        "training_backend": os.getenv("TRAINING_BACKEND", "").strip().lower(),
         "last_data_file": data_file,
         "data_file": file_info,
         "last_backtest_data_file": settings.get("last_backtest_data_file") or "",
@@ -778,7 +831,11 @@ def _progress_with_live_step(
     current_step = p.current_step
     train_steps = p.train_steps
     if active:
-        live = training_manager.parse_step_from_log()
+        run_id = str((job or {}).get("run_id") or "") or None
+        live = training_manager.parse_step_from_log(
+            refresh_remote=False,
+            run_id=run_id,
+        )
         current_step = live if live is not None else 0
         live_parameters = (job or {}).get("training_parameters") or {}
         live_train_steps = live_parameters.get("train_steps")
@@ -837,8 +894,11 @@ def api_overview() -> dict[str, Any]:
     file_info = None
     progress = None
 
-    training = training_manager.status()
+    training = training_manager.snapshot()
     job = training.get("job")
+    pipeline = a_share_pipeline_manager.snapshot(
+        (job or {}).get("run_id") if isinstance(job, dict) else None
+    )
     active = bool(training.get("active"))
 
     if data_file:
@@ -885,6 +945,7 @@ def api_overview() -> dict[str, Any]:
         "data_file": file_info,
         "progress": progress,
         "training": training,
+        "pipeline": pipeline,
     }
 
 
@@ -964,9 +1025,110 @@ async def api_import_training() -> dict[str, Any]:
 
 @app.get("/api/training/status")
 def api_training_status() -> dict[str, Any]:
-    status = training_manager.status()
-    status["log_tail"] = training_manager.tail_log(150)
+    status = training_manager.snapshot()
+    job = status.get("job") if isinstance(status, dict) else None
+    run_id = (job or {}).get("run_id") if isinstance(job, dict) else None
+    status["log_tail"] = training_manager.cached_log_tail(
+        150,
+        run_id=run_id,
+    )
+    status["pipeline"] = a_share_pipeline_manager.snapshot(run_id)
     return status
+
+
+@app.get("/api/pipeline/status")
+def api_pipeline_status() -> dict[str, Any]:
+    training = training_manager.snapshot()
+    run_id = (training.get("job") or {}).get("run_id")
+    return {
+        "pipeline": a_share_pipeline_manager.snapshot(run_id),
+        "training_run_id": run_id,
+    }
+
+
+@app.get("/api/training/batches")
+def api_training_batches() -> dict[str, Any]:
+    return {
+        "batches": [
+            {
+                "batch_id": batch.batch_id,
+                "idempotency_key": batch.idempotency_key,
+                "status": batch.status,
+                "contract_sha256": batch.contract_sha256,
+                "source_sha256": batch.source_sha256,
+                "item_count": batch.item_count,
+                "created_at": batch.created_at,
+                "updated_at": batch.updated_at,
+            }
+            for batch in training_queue.list_batches()
+        ],
+        "active_item": training_batch_controller.snapshot()["active_item"],
+    }
+
+
+@app.get("/api/training/batches/{batch_id}")
+def api_training_batch(batch_id: str) -> dict[str, Any]:
+    snapshot = training_batch_controller.snapshot(batch_id)
+    if snapshot["batch"] is None:
+        raise HTTPException(404, "批训练不存在")
+    return snapshot
+
+
+@app.post("/api/training/batches")
+def api_training_batch_create(
+    req: CreateTrainingBatchRequest,
+) -> dict[str, Any]:
+    if not 1 <= len(req.items) <= 50:
+        raise HTTPException(400, "批训练必须包含 1 至 50 个标的")
+    specs: list[BatchItemSpec] = []
+    for item in req.items:
+        if re.fullmatch(
+            r"run_\d{8}T\d{6}Z_[0-9a-f]{8}",
+            item.planned_run_id,
+        ) is None:
+            raise HTTPException(400, "planned_run_id 格式非法")
+        info = _inspect_or_http(item.data_file)
+        if (
+            info.get("source") != AKSHARE_HFQ_SOURCE_ID
+            or source_family(str(info.get("source") or "")) != "ashare"
+            or info.get("timeframe") != "D1"
+            or info.get("dataset_purpose") != AKSHARE_SLICE_TRAINING
+        ):
+            raise HTTPException(
+                400,
+                "A50 批训练只接受已冻结的 AKShare 后复权 D1 训练切片",
+            )
+        specs.append(
+            BatchItemSpec(
+                symbol=str(info["symbol"]),
+                timeframe=str(info["timeframe"]),
+                data_file=str(info["data_file"]),
+                data_sha256=str(info["data_sha256"]),
+                planned_run_id=item.planned_run_id,
+                train_steps=item.train_steps,
+                cpus_per_task=item.cpus_per_task,
+                memory=item.memory,
+                time_limit=item.time_limit,
+            )
+        )
+    try:
+        result = training_queue.create_batch(
+            idempotency_key=req.idempotency_key,
+            contract_sha256=req.contract_sha256,
+            source_sha256=training_manager.current_source_sha256(),
+            items=specs,
+        )
+    except IdempotencyConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except DataHashDriftError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except QueueValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "ok": True,
+        "created": result.created,
+        **training_batch_controller.snapshot(result.batch.batch_id),
+    }
 
 
 @app.post("/api/training/start")
@@ -979,16 +1141,19 @@ def api_training_start(req: StartTrainingRequest) -> dict[str, Any]:
             or "当前数据不满足所选训练后端的要求",
         )
     save_settings({"last_data_file": info["data_file"]})
-    try:
-        job = training_manager.start(
-            data_file=info["data_file"],
-            symbol=info["symbol"],
-            timeframe=info["timeframe"],
-            mode="ftmo",
-            from_scratch=bool(req.from_scratch),
-        )
-    except RuntimeError as e:
-        raise HTTPException(409, str(e)) from e
+    with training_batch_controller.admission_lock:
+        if training_queue.has_pending_work():
+            raise HTTPException(409, "批训练队列正在运行，禁止插入单标的任务")
+        try:
+            job = training_manager.start(
+                data_file=info["data_file"],
+                symbol=info["symbol"],
+                timeframe=info["timeframe"],
+                mode="ftmo",
+                from_scratch=bool(req.from_scratch),
+            )
+        except RuntimeError as e:
+            raise HTTPException(409, str(e)) from e
     if req.from_scratch:
         invalidate_checkpoint_cache()
     return {
@@ -996,15 +1161,38 @@ def api_training_start(req: StartTrainingRequest) -> dict[str, Any]:
         "job": _job_to_dict(job),
         "data_file": info,
         "from_scratch": bool(req.from_scratch),
+        "pipeline": a_share_pipeline_manager.observe(
+            {"active": True, "job": _job_to_dict(job)}
+        ),
     }
 
 
 @app.post("/api/training/stop")
-def api_training_stop() -> dict[str, Any]:
-    job = training_manager.status().get("job") or {}
-    symbol = job.get("symbol")
-    data_file_hint = job.get("data_file")
-    stopped = training_manager.stop()
+def api_training_stop(req: StopTrainingRequest) -> dict[str, Any]:
+    expected_run_id = req.run_id.strip()
+    expected_job_id = req.slurm_job_id.strip()
+    if not expected_run_id or not expected_job_id:
+        raise HTTPException(422, "停止训练必须提供页面展示的 run_id 和 slurm_job_id")
+
+    with training_batch_controller.admission_lock:
+        training = training_manager.status()
+        job = training.get("job") or {}
+        current_run_id = str(job.get("run_id") or "")
+        current_job_id = str(job.get("slurm_job_id") or "")
+        if (
+            current_run_id != expected_run_id
+            or current_job_id != expected_job_id
+        ):
+            raise HTTPException(409, "页面展示的训练任务已变化，拒绝停止")
+        symbol = job.get("symbol")
+        data_file_hint = job.get("data_file")
+        try:
+            stopped = training_manager.stop(
+                expected_run_id=expected_run_id,
+                expected_job_id=expected_job_id,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
     strategy_file = None
     if symbol:
         _wait_training_idle()
@@ -1280,10 +1468,100 @@ def api_backtest_chart(name: str):
 
 @app.on_event("startup")
 def _startup_realtime() -> None:
+    global _PIPELINE_MONITOR_THREAD
     try:
         realtime_manager.load_persisted()
     except Exception as exc:  # noqa: BLE001
         log_error("realtime load_persisted failed", exc)
+    if _PIPELINE_MONITOR_THREAD is None or not _PIPELINE_MONITOR_THREAD.is_alive():
+        _PIPELINE_MONITOR_STOP.clear()
+        _PIPELINE_MONITOR_THREAD = threading.Thread(
+            target=_pipeline_monitor_loop,
+            name="alphamaster-pipeline-monitor",
+            daemon=True,
+        )
+        _PIPELINE_MONITOR_THREAD.start()
+
+
+def _pipeline_monitor_loop() -> None:
+    """即使没有打开浏览器，也持续推进当前 Slurm run 的后处理。"""
+    while not _PIPELINE_MONITOR_STOP.is_set():
+        try:
+            _advance_a_share_pipeline_once()
+        except Exception as exc:  # noqa: BLE001
+            log_error("a-share pipeline monitor failed", exc)
+        _PIPELINE_MONITOR_STOP.wait(_PIPELINE_MONITOR_INTERVAL_SECONDS)
+
+
+def _refresh_training_log_once(training: dict[str, Any]) -> None:
+    job = training.get("job") if isinstance(training, dict) else None
+    if not isinstance(job, dict):
+        return
+    run_id = str(job.get("run_id") or "")
+    job_id = str(job.get("slurm_job_id") or "")
+    if not run_id or not job_id:
+        return
+    remote_state = str(job.get("remote_state") or "").upper()
+    if bool(training.get("active")) and remote_state == "RUNNING":
+        training_manager.tail_log(
+            200,
+            expected_run_id=run_id,
+            expected_job_id=job_id,
+        )
+    elif (
+        remote_state
+        in {
+            "COMPLETED",
+            "DOWNLOADING",
+            "READY",
+            "FAILED",
+            "CANCELLED",
+        }
+        and not job.get("final_log_refreshed_at")
+    ):
+        training_manager.tail_log(
+            200,
+            expected_run_id=run_id,
+            expected_job_id=job_id,
+            final=True,
+        )
+
+
+def _schedule_training_log_refresh(training: dict[str, Any]) -> None:
+    global _TRAINING_LOG_REFRESH_THREAD
+    with _TRAINING_LOG_REFRESH_LOCK:
+        thread = _TRAINING_LOG_REFRESH_THREAD
+        if thread is not None and thread.is_alive():
+            return
+        thread = threading.Thread(
+            target=_refresh_training_log_once,
+            args=(training,),
+            name="alphamaster-training-log-refresh",
+            daemon=True,
+        )
+        _TRAINING_LOG_REFRESH_THREAD = thread
+        thread.start()
+
+
+def _advance_a_share_pipeline_once() -> dict[str, Any] | None:
+    training = training_manager.status()
+    pipeline = a_share_pipeline_manager.observe(training)
+    training_batch_controller.advance_once(
+        training=training,
+        pipeline=pipeline,
+    )
+    _schedule_training_log_refresh(training)
+    return pipeline
+
+
+@app.on_event("shutdown")
+def _shutdown_pipeline_monitor() -> None:
+    global _PIPELINE_MONITOR_THREAD
+    _PIPELINE_MONITOR_STOP.set()
+    thread = _PIPELINE_MONITOR_THREAD
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=2.0)
+    _PIPELINE_MONITOR_THREAD = None
 
 
 @app.get("/api/realtime/sources")
@@ -1341,6 +1619,19 @@ def api_realtime_status() -> dict[str, Any]:
     return realtime_manager.status()
 
 
+@app.get("/api/realtime/signals")
+def api_realtime_signals(
+    limit: int = 100,
+    watch_id: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "signals": realtime_manager.signal_events(
+            limit=limit,
+            watch_id=watch_id,
+        )
+    }
+
+
 @app.post("/api/realtime/watch")
 def api_realtime_watch(req: AddWatchRequest) -> dict[str, Any]:
     try:
@@ -1386,7 +1677,13 @@ def api_realtime_feishu_put(req: FeishuSettingsRequest) -> dict[str, Any]:
     if req.enabled is not None:
         payload["feishu_enabled"] = bool(req.enabled)
     if req.webhook_url is not None:
-        payload["feishu_webhook_url"] = req.webhook_url
+        webhook_url = req.webhook_url.strip()
+        if webhook_url:
+            try:
+                webhook_url = validate_feishu_webhook_url(webhook_url)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+        payload["feishu_webhook_url"] = webhook_url
     if req.secret is not None:
         payload["feishu_secret"] = req.secret
     saved = save_settings(payload)
@@ -1399,8 +1696,16 @@ def api_realtime_feishu_put(req: FeishuSettingsRequest) -> dict[str, Any]:
 
 
 @app.post("/api/realtime/feishu/test")
-def api_realtime_feishu_test() -> dict[str, Any]:
-    raise HTTPException(403, "第一阶段已禁用飞书测试请求")
+def api_realtime_feishu_test(req: FeishuTestRequest | None = None) -> dict[str, Any]:
+    request = req or FeishuTestRequest()
+    ok, detail = send_feishu_text(
+        "【AlphaMaster 飞书连通测试】\n连接成功，后续交易动作信号将发送到本群。",
+        webhook_url=request.webhook_url,
+        secret=request.secret,
+    )
+    if not ok:
+        raise HTTPException(502, f"飞书测试失败：{detail}")
+    return {"ok": True, "message": "飞书测试消息已发送"}
 
 
 @app.get("/")

@@ -7,7 +7,9 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import threading
 import time
 from collections import deque
@@ -16,17 +18,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from config import Config
 from model_core.vocab import (
     FORMULA_VOCAB,
     VOCAB_VERSION,
     VocabVersionMismatchError,
 )
+from strategy_manager.signal_lifecycle import HOLD
 from strategy_manager.live_signal import evaluate_signal, min_exposure
 from web.data_sources.base import bars_to_raw_dict
 from web.data_sources.factory import SOURCE_KINDS, get_source
 from web.settings import load_settings, save_settings
+from web.signal_ledger import SignalLedger
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+logger = logging.getLogger(__name__)
 
 # 每个周期的轮询节奏（秒）
 _CADENCE = {
@@ -110,12 +116,28 @@ def _load_strategy_meta(path: str) -> dict[str, Any]:
             f"策略 {path} 缺少公式兼容版本；需重新训练/重建后监控"
         )
     FORMULA_VOCAB.verify(artifact_version)
+    formula = [int(token) for token in (data.get("formula") or [])]
+    fingerprint_payload = {
+        "formula": formula,
+        "vocab_version": artifact_version,
+        "symbol": data.get("symbol"),
+        "timeframe": data.get("timeframe"),
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            fingerprint_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
     return {
-        "formula": data.get("formula"),
+        "formula": formula,
         "vocab_version": artifact_version,
         "symbol": data.get("symbol"),
         "timeframe": data.get("timeframe"),
         "best_score": data.get("best_score"),
+        "fingerprint": fingerprint,
     }
 
 
@@ -127,6 +149,7 @@ class WatchTask:
     timeframe: str
     strategy_file: str
     strategy_name: str
+    strategy_fingerprint: str
     formula: list[int]
     vocab_version: str | None
     strategy_symbol: str | None
@@ -144,6 +167,7 @@ class WatchTask:
     updated_at: float | None = None
     message: str = ""
     warn: str = ""
+    latest_event: dict[str, Any] | None = None
     next_due: float = 0.0
     history: deque = field(default_factory=lambda: deque(maxlen=_HISTORY_LEN))
 
@@ -157,6 +181,7 @@ class WatchTask:
             "symbol": self.symbol,
             "timeframe": self.timeframe,
             "strategy_name": self.strategy_name,
+            "strategy_fingerprint": self.strategy_fingerprint,
             "strategy_symbol": self.strategy_symbol,
             "strategy_timeframe": self.strategy_timeframe,
             "best_score": self.best_score,
@@ -176,6 +201,7 @@ class WatchTask:
             "message": self.message,
             "tv_blocked": self.message == "TV_CONNECTIVITY_BLOCKED",
             "warn": self.warn,
+            "latest_event": self.latest_event,
             "threshold": min_exposure(),
             "history": list(self.history),
         }
@@ -191,7 +217,7 @@ class WatchTask:
 
 
 class RealtimeManager:
-    def __init__(self) -> None:
+    def __init__(self, signal_ledger_path: str | Path | None = None) -> None:
         self._tasks: dict[str, WatchTask] = {}
         self._lock = threading.RLock()
         self._running = False
@@ -203,6 +229,25 @@ class RealtimeManager:
         self._bar_cache: dict[tuple[str, str, str], tuple[float, list]] = {}
         self._loaded = False
         self._tv_blocked_until = 0.0
+        ledger_path = Path(
+            signal_ledger_path
+            if signal_ledger_path is not None
+            else getattr(
+                Config,
+                "SIGNAL_EVENT_DB",
+                "local_data/signal_events.sqlite3",
+            )
+        )
+        if not ledger_path.is_absolute():
+            ledger_path = PROJECT_ROOT / ledger_path
+        self._signal_ledger_path = ledger_path
+        self._signal_ledger: SignalLedger | None = None
+
+    def _ledger(self) -> SignalLedger:
+        with self._lock:
+            if self._signal_ledger is None:
+                self._signal_ledger = SignalLedger(self._signal_ledger_path)
+            return self._signal_ledger
 
     # ── 持久化 ──────────────────────────────────────────────────────────
     def load_persisted(self) -> None:
@@ -254,7 +299,11 @@ class RealtimeManager:
             raise ValueError("策略文件缺少 formula")
 
         name = Path(path).stem
-        task_id = f"{source}:{symbol}:{timeframe}:{name}"
+        strategy_fingerprint = str(meta["fingerprint"])
+        task_id = (
+            f"{source}:{symbol}:{timeframe}:{name}:"
+            f"{strategy_fingerprint[:12]}"
+        )
 
         warn = ""
         if meta.get("vocab_version") and meta["vocab_version"] not in (VOCAB_VERSION, "legacy"):
@@ -269,6 +318,7 @@ class RealtimeManager:
             timeframe=timeframe,
             strategy_file=path,
             strategy_name=name,
+            strategy_fingerprint=strategy_fingerprint,
             formula=[int(t) for t in meta["formula"]],
             vocab_version=meta.get("vocab_version"),
             strategy_symbol=meta.get("symbol"),
@@ -315,6 +365,14 @@ class RealtimeManager:
             "nearest_seconds_to_next": nearest,
         }
 
+    def signal_events(
+        self,
+        *,
+        limit: int = 100,
+        watch_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return self._ledger().list_events(limit=limit, watch_id=watch_id)
+
     # ── 调度线程 ────────────────────────────────────────────────────────
     def start(self) -> None:
         self._ensure_thread()
@@ -335,7 +393,7 @@ class RealtimeManager:
             try:
                 self._tick()
             except Exception:
-                pass
+                logger.exception("实时信号调度循环失败")
             time.sleep(1.5)
 
     def _tick(self) -> None:
@@ -372,6 +430,8 @@ class RealtimeManager:
                 self._set_error(task, "未获取到 K 线")
                 return
             last_ts = bars[-1].ts
+            if task.state == "ok" and task.last_bar_ts == last_ts:
+                return
             raw = bars_to_raw_dict(bars)
             result = evaluate_signal(task.formula, raw)
 
@@ -382,28 +442,74 @@ class RealtimeManager:
             task.updated_at = time.time()
             if task.state == "ok":
                 new_dir = result["direction"]
-                prev_dir = task.direction
                 task.direction = new_dir
                 task.strength = result["strength"]
                 task.position = result["position"]
                 task.factor_value = result["factor_value"]
                 task.history.append(round(result["strength"], 4))
-                # 已有上次方向且发生转折时推飞书（首次算出方向不打扰）
-                if prev_dir and new_dir and prev_dir != new_dir:
-                    try:
-                        from web.feishu_notify import notify_direction_flip
-
-                        notify_direction_flip(
-                            symbol=task.symbol,
-                            timeframe=task.timeframe,
-                            strategy_name=task.strategy_name,
-                            prev_direction=prev_dir,
-                            new_direction=new_dir,
-                            strength=task.strength,
-                            factor_value=task.factor_value,
+                event, created = self._ledger().process_bar(
+                    watch_id=task.id,
+                    source=task.source,
+                    symbol=task.symbol,
+                    timeframe=task.timeframe,
+                    strategy_name=task.strategy_name,
+                    strategy_fingerprint=task.strategy_fingerprint,
+                    bar_ts=int(last_ts),
+                    price=float(bars[-1].close),
+                    raw_position=float(task.position),
+                    factor_value=float(task.factor_value),
+                    strength=float(task.strength),
+                    minimum_exposure=float(
+                        getattr(Config, "MIN_TRADE_EXPOSURE", min_exposure())
+                    ),
+                    rebalance_delta=float(
+                        getattr(Config, "SIGNAL_REBALANCE_DELTA", 0.10)
+                    ),
+                    stop_loss_pct=float(getattr(Config, "STOP_LOSS_PCT", -0.02)),
+                    take_profit_pct=float(
+                        getattr(Config, "TAKE_PROFIT_PCT", 0.04)
+                    ),
+                    take_profit_remaining_ratio=float(
+                        getattr(
+                            Config,
+                            "SIGNAL_TAKE_PROFIT_REMAINING_RATIO",
+                            0.50,
                         )
-                    except Exception:
-                        pass
+                    ),
+                )
+                task.latest_event = event.to_dict()
+                if created and event.action != HOLD:
+                    from web.feishu_notify import (
+                        feishu_configured,
+                        notify_signal_event,
+                    )
+
+                    configured, detail = feishu_configured()
+                    if not configured:
+                        self._ledger().record_delivery(
+                            event.event_id,
+                            "SKIPPED",
+                            detail,
+                        )
+                    else:
+                        ok, detail = notify_signal_event(event.to_dict())
+                        self._ledger().record_delivery(
+                            event.event_id,
+                            "DELIVERED" if ok else "FAILED",
+                            detail,
+                        )
+                        if not ok:
+                            task.warn = (
+                                f"{task.warn}；" if task.warn else ""
+                            ) + f"飞书投递失败：{detail}"
+                            logger.error(
+                                "飞书投递失败 event_id=%s detail=%s",
+                                event.event_id,
+                                detail,
+                            )
+                    refreshed = self._ledger().get_event(event.event_id)
+                    if refreshed is not None:
+                        task.latest_event = refreshed
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)
             if task.source == "tradingview":

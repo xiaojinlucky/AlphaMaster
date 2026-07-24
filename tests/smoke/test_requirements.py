@@ -27,6 +27,20 @@ def test_metatrader5_present():
     )
 
 
+def test_pytdx_present():
+    """普通 A 股实时信号的数据源必须随主依赖安装。"""
+    assert _pkg_present("pytdx"), (
+        "pytdx is missing from requirements.txt. "
+        "Add 'pytdx>=1.72'."
+    )
+
+
+def test_akshare_and_xlrd_present():
+    """A50 成分与前复权历史数据工具必须随 Windows 控制端安装。"""
+    assert _pkg_present("akshare"), "Add 'akshare==1.18.64'."
+    assert _pkg_present("xlrd"), "Add 'xlrd==2.0.1'."
+
+
 # ── Removed dashboard packages ───────────────────────────────────────────────
 
 def test_streamlit_removed():

@@ -11,7 +11,13 @@ run_backtest.py — 多因子组合回测（含手续费/滑点、夏普、资�
         # 单边手续费/滑点（单位 %），默认 0.02 / 0.01
 """
 
-import json, sys, math, re
+import hashlib
+import json
+import math
+import os
+import re
+import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 import numpy as np
@@ -34,10 +40,27 @@ from model_core.vocab import (
 from model_core.vm import StackVM
 from model_core.features import MT5FeatureEngineer
 from strategy_manager.signal import compute_target_positions_stateless
+from evaluation.sealed_oos_campaign import (
+    SEALED_REPORT_FORMAT,
+    normalize_cost_policy,
+)
 
 _H1_PER_YEAR = 6240
 DEFAULT_COMMISSION_PCT = 0.02  # 单边手续费 %
 DEFAULT_SLIPPAGE_PCT = 0.01    # 单边滑点 %
+_SEALED_REPORT_FIELDS = (
+    "format",
+    "symbol",
+    "data_sha256",
+    "strategy_sha256",
+    "evaluation_mode",
+    "test_start",
+    "test_end",
+    "commission_pct",
+    "slippage_pct",
+    "cost_rate",
+    "sharpe",
+)
 
 
 def decode_formula(tokens: list[int]) -> str:
@@ -45,11 +68,12 @@ def decode_formula(tokens: list[int]) -> str:
     return " -> ".join(names[t] if 0 <= t < len(names) else f"?{t}" for t in tokens)
 
 
-def load_strategy(path: Path) -> dict | None:
-    if not path.exists():
-        return None
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
+def load_strategy(path: Path, *, raw_bytes: bytes | None = None) -> dict | None:
+    if raw_bytes is None:
+        if not path.exists():
+            return None
+        raw_bytes = path.read_bytes()
+    data = json.loads(raw_bytes.decode("utf-8"))
     if isinstance(data, list):
         raise VocabVersionMismatchError(
             f"策略 {path} 是无兼容版本的旧格式；需重新训练/重建后回测"
@@ -119,8 +143,16 @@ def _validate_strategy_data_contract(
     score_start: str | None = None,
 ) -> dict:
     """验证训练身份与评估身份，并返回可审计评分区间。"""
-    if evaluation_mode not in {"auto", "replay", "out_of_sample", "diagnostic_overlap"}:
+    if evaluation_mode not in {
+        "auto",
+        "replay",
+        "out_of_sample",
+        "diagnostic_overlap",
+        "sealed_oos",
+    }:
         raise ValueError("evaluation_mode 不受支持")
+    if evaluation_mode == "sealed_oos" and not score_start:
+        raise ValueError("sealed_oos 必须显式提供 score_start")
     required = {
         "symbol": str,
         "timeframe": str,
@@ -199,7 +231,7 @@ def _validate_strategy_data_contract(
                     f"同一数据 hash 的 {field} 与评估 loader 不一致: "
                     f"{strategy[field]!r} != {value!r}"
                 )
-        if evaluation_mode == "out_of_sample":
+        if evaluation_mode in {"out_of_sample", "sealed_oos"}:
             raise ValueError("样本外回测要求评估数据 hash 与训练数据不同")
         if score_start:
             raise ValueError("训练集重放不接受 score_start")
@@ -224,7 +256,11 @@ def _validate_strategy_data_contract(
             if score_start_seconds <= training_end:
                 raise ValueError("样本外评分起点必须晚于训练数据结束时间")
             score_start_index = int(times.searchsorted(score_start_seconds, side="left"))
-            resolved_mode = "out_of_sample"
+            resolved_mode = (
+                "sealed_oos"
+                if evaluation_mode == "sealed_oos"
+                else "out_of_sample"
+            )
         if score_start_index > len(times) - 3:
             raise ValueError("评估数据没有足够的可评分样本")
 
@@ -252,6 +288,130 @@ def _validate_strategy_data_contract(
             ),
         },
     }
+
+
+def _validate_sealed_report_cli(
+    *,
+    evaluation_mode: str,
+    strategy_file: str | None,
+    sealed_report: str | None,
+    single_mode: bool,
+) -> Path | None:
+    """校验封存报告只能由显式单策略 sealed_oos 回测生成。"""
+    sealed_mode = evaluation_mode == "sealed_oos"
+    if sealed_mode and not sealed_report:
+        raise ValueError("sealed_oos 必须显式提供 --sealed-report")
+    if sealed_report and not sealed_mode:
+        raise ValueError("--sealed-report 仅允许与 --evaluation-mode sealed_oos 同时使用")
+    if not sealed_mode:
+        return None
+    if not strategy_file:
+        raise ValueError("sealed_oos 必须通过 --strategy-file 指定单个策略文件")
+    if single_mode:
+        raise ValueError("sealed_oos 不接受 --single，只接受 --strategy-file 单策略模式")
+    if not isinstance(sealed_report, str) or not sealed_report.strip():
+        raise ValueError("--sealed-report 必须是非空路径")
+    return Path(sealed_report)
+
+
+def _build_sealed_report_payload(
+    *,
+    results_map: dict,
+    evaluation_contract: dict,
+    data_sha256: str,
+    strategy_bytes: bytes,
+    commission_pct: float,
+    slippage_pct: float,
+) -> dict:
+    """生成封存评估器读取的严格带成本身份报告。"""
+    if evaluation_contract.get("evaluation_mode") != "sealed_oos":
+        raise ValueError("封存报告只接受 sealed_oos 评估结果")
+    if len(results_map) != 1:
+        raise ValueError("封存报告要求正好一个品种结果")
+    if re.fullmatch(r"[0-9a-f]{64}", data_sha256) is None:
+        raise ValueError("封存报告的评估数据 hash 非法")
+    if not isinstance(strategy_bytes, bytes) or not strategy_bytes:
+        raise ValueError("封存报告缺少策略文件原始字节")
+    costs = normalize_cost_policy(
+        commission_pct=commission_pct,
+        slippage_pct=slippage_pct,
+    )
+
+    symbol, result = next(iter(results_map.items()))
+    if not isinstance(symbol, str) or not symbol:
+        raise ValueError("封存报告的 symbol 必须是非空字符串")
+    try:
+        sharpe = float(result["sharpe"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("封存报告缺少合法的 Sharpe") from exc
+    if not math.isfinite(sharpe):
+        raise ValueError("封存报告的 Sharpe 必须是有限浮点数")
+    try:
+        actual_cost_rate = float(result["cost_rate"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("封存报告缺少回测实际使用的 cost_rate") from exc
+    if not math.isfinite(actual_cost_rate):
+        raise ValueError("封存报告的实际 cost_rate 必须是有限浮点数")
+    if actual_cost_rate != costs["cost_rate"]:
+        raise ValueError(
+            "封存报告声明的手续费/滑点与回测实际 cost_rate 不一致"
+        )
+
+    test_start = evaluation_contract.get("score_start")
+    test_end = evaluation_contract.get("score_end")
+    test_start_seconds = _utc_seconds(test_start, "test_start")
+    test_end_seconds = _utc_seconds(test_end, "test_end")
+    if test_start_seconds >= test_end_seconds:
+        raise ValueError("封存报告必须满足 test_start < test_end")
+
+    payload = {
+        "format": SEALED_REPORT_FORMAT,
+        "symbol": symbol,
+        "data_sha256": data_sha256,
+        "strategy_sha256": hashlib.sha256(strategy_bytes).hexdigest(),
+        "evaluation_mode": "sealed_oos",
+        "test_start": test_start,
+        "test_end": test_end,
+        **costs,
+        "sharpe": sharpe,
+    }
+    if tuple(payload) != _SEALED_REPORT_FIELDS:
+        raise RuntimeError("封存报告字段合同被意外修改")
+    return payload
+
+
+def _write_sealed_report_atomic(path: Path, payload: dict) -> None:
+    """先完整落盘临时文件，再以不覆盖的原子硬链接发布报告。"""
+    if tuple(payload) != _SEALED_REPORT_FIELDS:
+        raise ValueError("封存报告字段必须严格匹配带成本身份的字段合同")
+
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        raise FileExistsError(f"封存报告已存在，禁止覆盖: {target}")
+
+    encoded = (
+        json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+    ).encode("utf-8")
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        dir=target.parent,
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary_path, target)
+        except FileExistsError as exc:
+            raise FileExistsError(
+                f"封存报告已存在，禁止覆盖: {target}"
+            ) from exc
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 # ── 统计指标 ──────────────────────────────────────────────────────────────────
@@ -546,6 +706,7 @@ def main():
     data_file_arg = None
     evaluation_mode = "auto"
     score_start = None
+    sealed_report = None
     commission_pct = DEFAULT_COMMISSION_PCT
     slippage_pct = DEFAULT_SLIPPAGE_PCT
     for i, arg in enumerate(sys.argv):
@@ -561,9 +722,34 @@ def main():
             evaluation_mode = sys.argv[i + 1]
         elif arg == "--score-start" and i + 1 < len(sys.argv):
             score_start = sys.argv[i + 1]
+        elif arg == "--sealed-report":
+            if i + 1 >= len(sys.argv) or sys.argv[i + 1].startswith("--"):
+                print("[ERROR] --sealed-report 缺少输出路径")
+                sys.exit(1)
+            sealed_report = sys.argv[i + 1]
 
-    if commission_pct < 0 or slippage_pct < 0:
-        print("[ERROR] 手续费/滑点不能为负"); sys.exit(1)
+    try:
+        sealed_report_path = _validate_sealed_report_cli(
+            evaluation_mode=evaluation_mode,
+            strategy_file=strategy_file,
+            sealed_report=sealed_report,
+            single_mode=single_mode,
+        )
+        if sealed_report_path is not None and sealed_report_path.exists():
+            raise FileExistsError(
+                f"封存报告已存在，禁止覆盖: {sealed_report_path}"
+            )
+    except (ValueError, FileExistsError) as exc:
+        print(f"[ERROR] CLI 参数无效: {exc}")
+        sys.exit(1)
+
+    if (
+        not math.isfinite(commission_pct)
+        or not math.isfinite(slippage_pct)
+        or commission_pct < 0
+        or slippage_pct < 0
+    ):
+        print("[ERROR] 手续费/滑点必须是非负有限数字"); sys.exit(1)
     cost_rate_all = (commission_pct + slippage_pct) / 100.0
     print(
         f"\n交易成本（单边）: "
@@ -574,12 +760,15 @@ def main():
 
     # ── 2. 加载策略 ─────────────────────────────────────────────────
     strategy_data_file = None
+    strategy_bytes = None
     strategy_contracts: list[dict] = []
     print(f"\n{'='*62}")
     if strategy_file:
-        data = load_strategy(Path(strategy_file))
-        if data is None:
+        strategy_path = Path(strategy_file)
+        if not strategy_path.exists():
             print(f"[ERROR] 找不到: {strategy_file}"); sys.exit(1)
+        strategy_bytes = strategy_path.read_bytes()
+        data = load_strategy(strategy_path, raw_bytes=strategy_bytes)
         strategy_data_file = data.get("data_file")
         sym = data.get("symbol")
         if not sym:
@@ -754,6 +943,24 @@ def main():
             "cost_rate":    cost_rate,
         }
 
+    if sealed_report_path is not None:
+        try:
+            sealed_payload = _build_sealed_report_payload(
+                results_map=results_map,
+                evaluation_contract=evaluation_contract,
+                data_sha256=pm.data_sha256,
+                strategy_bytes=strategy_bytes,
+                commission_pct=commission_pct,
+                slippage_pct=slippage_pct,
+            )
+            _write_sealed_report_atomic(sealed_report_path, sealed_payload)
+        except (OSError, ValueError) as exc:
+            print(f"[ERROR] 封存报告生成失败: {exc}")
+            sys.exit(1)
+        print(f"  封存样本外报告已生成但未展示指标 → {sealed_report_path}")
+        print("完成。\n")
+        return
+
     # ── 5. 打印各品种统计 ─────────────────────────────────────────────
     print(f"\n{'='*62}")
     print(f"  多因子回测报告")
@@ -869,6 +1076,7 @@ def main():
     with open(rp, "w") as f:
         json.dump(report, f, indent=2, ensure_ascii=False)
     print(f"\n  JSON 报告已保存 → {rp}")
+
     print("完成。\n")
 
 

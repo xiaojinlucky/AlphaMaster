@@ -17,12 +17,12 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
 
-ROOT = Path("/hwdata/home/jinqc/Quant/AlphaMaster")
+ROOT = Path(__file__).resolve().parents[1]
 BASE_PYTHON = Path("/hwdata/home/jinqc/.local/bin/python3.11")
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from data_pipeline.dataset_contracts import TRAINING_SOURCE_IDS
+from data_pipeline.dataset_contracts import TRAINING_SOURCE_IDS, source_family
 
 RUN_ID_RE = re.compile(r"^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{8}$")
 JOB_ID_RE = re.compile(r"^[1-9][0-9]{0,18}$")
@@ -53,6 +53,7 @@ REQUIRED_SOURCE_FILES = (
     "train_file.py",
     "data_pipeline/dataset_contracts.py",
     "model_core/config.py",
+    "utils/training_runtime.py",
     "scripts/train_slurm_worker.py",
     "scripts/train_alphamaster.sbatch",
 )
@@ -252,18 +253,18 @@ def _verify_inputs(run_dir: Path) -> tuple[dict[str, Any], Path, str]:
     ):
         raise WorkerError("manifest columns 缺少训练列或包含重复项")
     timeframe = name_match.group("timeframe").upper()
-    if local_source == "ashare_local":
+    if source_family(str(local_source)) == "ashare":
         contract = ASHARE_PERIOD_CONTRACTS.get(timeframe)
         if contract is None:
-            raise WorkerError("ashare_local timeframe 不受支持")
+            raise WorkerError("A 股数据 timeframe 不受支持")
         expected_periods, expected_minimum = contract
         if periods_per_year != expected_periods:
-            raise WorkerError("ashare_local periods_per_year 不匹配")
+            raise WorkerError("A 股数据 periods_per_year 不匹配")
         if manifest.get("minimum_bars") != expected_minimum:
-            raise WorkerError("ashare_local minimum_bars 不匹配")
+            raise WorkerError("A 股数据 minimum_bars 不匹配")
         data_rows = manifest.get("data_rows")
         if isinstance(data_rows, bool) or not isinstance(data_rows, int) or data_rows < expected_minimum:
-            raise WorkerError("ashare_local 数据不足两个交易年")
+            raise WorkerError("A 股数据不足两个交易年")
     else:
         if manifest.get("minimum_bars") != GENERIC_MINIMUM_BARS:
             raise WorkerError(f"MT5/OKX minimum_bars 必须是 {GENERIC_MINIMUM_BARS}")
@@ -374,6 +375,7 @@ def _clean_training_env(run_dir: Path, cpus: int, source: Mapping[str, str]) -> 
         "MKL_NUM_THREADS": str(cpus),
         "OPENBLAS_NUM_THREADS": str(cpus),
         "NUMEXPR_NUM_THREADS": str(cpus),
+        "ALPHAMASTER_TRAINING_RUNTIME": "slurm_worker_v1",
     }
     for key in ("SLURM_JOB_ID", "SLURM_JOB_NAME", "SLURM_JOB_PARTITION", "SLURM_CPUS_PER_TASK", "SLURMD_NODENAME", "SLURM_JOB_NODELIST"):
         value = source.get(key)

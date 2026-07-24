@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500;600&family=Orbitron:wght@500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/style.css?v=31" />
+  <link rel="stylesheet" href="/static/style.css?v=32" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -84,7 +84,7 @@
     <div class="page active" id="page-train">
     <header class="page-header">
       <h1>01 模型训练</h1>
-      <p>选择本地 Parquet 数据文件，检查数据摘要后开始训练。</p>
+      <p>选择本地 Parquet 数据；模型训练固定提交到服务器单节点 Slurm，完成后自动回测并生成虚拟信号。</p>
     </header>
     <section class="panel launch-panel">
       <span class="hud-corner tl"></span><span class="hud-corner tr"></span>
@@ -107,8 +107,91 @@
           <button class="btn btn-secondary" id="importTrainingBtn" disabled title="上传 .zip 或 .pt，下次训练断点续训">导入训练</button>
           <input type="file" id="importTrainingFile" accept=".zip,.pt" hidden />
         </div>
-        <small class="field-hint notice-bar notice-warning">强制离线：只用本地 Parquet，不连接 MT5。命名：<code>{品种}_{周期}.parquet</code>，如 <code>XAUUSD_H1.parquet</code></small>
+        <small class="field-hint notice-bar notice-warning">训练数据从本机上传，模型计算只在服务器 Slurm 节点执行；本机不训练。命名：<code>{品种}_{周期}.parquet</code>，如 <code>600519_D1.parquet</code></small>
       </div>
+    </section>
+
+    <section class="panel pipeline-panel" id="pipelinePanel" aria-live="polite">
+      <span class="hud-corner tl"></span><span class="hud-corner tr"></span>
+      <span class="hud-corner bl"></span><span class="hud-corner br"></span>
+      <div class="panel-head">
+        <h2>大 A 落地流水线</h2>
+        <span class="hint" id="pipelineRunMeta">等待大 A 训练任务</span>
+      </div>
+      <div class="pipeline-stage-grid">
+        <article class="pipeline-stage" id="pipelineTrainingStage" data-state="pending">
+          <span class="pipeline-stage-index">01</span>
+          <div>
+            <strong>服务器训练</strong>
+            <p>等待单节点 Slurm 作业</p>
+          </div>
+          <span class="pipeline-stage-state">等待</span>
+        </article>
+        <article class="pipeline-stage" id="pipelineBacktestStage" data-state="pending">
+          <span class="pipeline-stage-index">02</span>
+          <div>
+            <strong>成本回测</strong>
+            <p>等待同一 run 的策略产物</p>
+          </div>
+          <span class="pipeline-stage-state">等待</span>
+        </article>
+        <article class="pipeline-stage" id="pipelineSignalStage" data-state="pending">
+          <span class="pipeline-stage-index">03</span>
+          <div>
+            <strong>虚拟信号</strong>
+            <p>等待通达信已收盘 K 线</p>
+          </div>
+          <span class="pipeline-stage-state">等待</span>
+        </article>
+      </div>
+      <div class="pipeline-outcome" id="pipelineOutcome">
+        <strong id="pipelineStatus">尚未开始</strong>
+        <span id="pipelineReplayNote">首轮自动回测用于验证工程闭环；同训练数据重放不等于样本外收益。</span>
+      </div>
+    </section>
+
+    <section class="panel batch-queue-panel" id="batchQueuePanel" data-state="empty" aria-live="polite">
+      <span class="hud-corner tl"></span><span class="hud-corner tr"></span>
+      <span class="hud-corner bl"></span><span class="hud-corner br"></span>
+      <div class="panel-head">
+        <h2>A50 龙头基线训练队列（50 只）</h2>
+        <span class="hint" id="batchQueueMeta">等待读取持久化队列</span>
+      </div>
+      <div class="batch-queue-summary">
+        <div class="batch-queue-progress">
+          <div class="batch-queue-progress-head">
+            <strong id="batchQueueStatus">尚未入队</strong>
+            <span id="batchQueueProgressText">0 / 50</span>
+          </div>
+          <div
+            class="batch-queue-progress-track"
+            id="batchQueueProgressTrack"
+            role="progressbar"
+            aria-label="A50 训练完成进度"
+            aria-valuemin="0"
+            aria-valuemax="50"
+            aria-valuenow="0"
+          >
+            <span class="batch-queue-progress-bar" id="batchQueueProgressBar"></span>
+          </div>
+          <p id="batchQueueActive">等待当前单节点任务结束后自动接续。</p>
+        </div>
+        <div class="batch-queue-budget">
+          <span>每只固定训练预算</span>
+          <strong id="batchQueueBudget">200 步 · 12 核 · 32G · 00:30:00</strong>
+          <small>服务器单节点顺序执行，本机只负责监控和后处理。</small>
+        </div>
+      </div>
+      <div class="batch-queue-counts" aria-label="训练队列状态统计">
+        <div><span>待训练</span><strong id="batchQueuedCount">0</strong></div>
+        <div><span>训练中</span><strong id="batchTrainingCount">0</strong></div>
+        <div><span>后处理</span><strong id="batchPostprocessCount">0</strong></div>
+        <div><span>已完成</span><strong id="batchReadyCount">0</strong></div>
+        <div><span>需处理</span><strong id="batchAttentionCount">0</strong></div>
+      </div>
+      <p class="batch-queue-note">
+        首轮基线队列只跑“服务器训练 → 同数据重放 → 虚拟信号”；重放结果不计入样本外 Sharpe 门槛。最终封存评估仍保持一次性、整批 50 只统一揭示。
+      </p>
     </section>
 
     <div class="split">
@@ -165,16 +248,16 @@
         <summary>训练说明：并行？最优分数 / 验证分数是什么？</summary>
         <ol class="bt-howto-list">
           <li>
-            <strong>单品种单周期就已经把 CPU 吃满了</strong>
-            <p>挖因子这一步计算很重：特征、公式搜索、回测验证会把机器算力用到接近满载。这时再并行开第二个品种或另一个周期，大家只是在抢同一批 CPU，谁也跑不快。</p>
+            <strong>模型训练固定走服务器单节点 Slurm</strong>
+            <p>本机只负责上传数据、监控作业、接收产物和展示结果。模型训练不会占用 Windows 本机算力；每个 run 固定申请一个计算节点。</p>
           </li>
           <li>
-            <strong>并行并不等于整体更快</strong>
-            <p>两路一起跑，往往各自都变慢，总完工时间通常不比「先训完一个再训下一个」更短，有时还更拖。所以默认一次只训一路，把算力集中用在当前任务上更划算。</p>
+            <strong>先测出一个节点的真实承载范围</strong>
+            <p>页面会记录实际计算节点、CPU 数、峰值内存、墙钟时间和累计 CPU 时间。后续根据真实用量提高训练步数和资源，不凭感觉限制服务器。</p>
           </li>
           <li>
-            <strong>只盯一个品种，更好观察训练情况</strong>
-            <p>曲线、日志、最优公式都只对应这一组数据，涨没涨分一眼能看清。多品种并行时页面和日志会搅在一起，反而不容易判断「这个品种还值不值得继续挖」。</p>
+            <strong>训练结束后自动继续，不停在策略 JSON</strong>
+            <p>大 A 训练成功后，系统会用同一 run 的策略完成含手续费和滑点的回测，再读取通达信最新已收盘 K 线，生成下单、加仓、减仓、离场、止盈或止损等虚拟动作。</p>
           </li>
           <li>
             <strong>最优分数是什么</strong>
@@ -190,9 +273,9 @@
             <p>绿色的最优分数只记「历史最好的那一次」，所以不会跟着掉下去，只会阶梯往上抬。锯齿本身多半是在重新探索，不等于训练坏了。</p>
           </li>
           <li>
-            <strong>重新训练有机会找出更好的量化因子</strong>
-            <p>本地后端的「开始训练」会接着项目检查点继续挖；Slurm 第一阶段每个 run 独立，网络中断只重连同一 run/job，不跨 run 续训。每次成功运行会成套发布同一 run 的检查点、训练曲线和策略，不与旧运行混用。</p>
-            <p>本地后端会保留已有最优策略作为分数下限；Slurm 为保证策略、检查点和曲线严格同源，会用最新成功 run 的整套结果替换上一套。代价是要再花一整轮算力，适合本轮训完后再开新 run。</p>
+            <strong>重新训练就是新的服务器 run</strong>
+            <p>每个 Slurm run 独立，网络中断只重连同一 run/job，不在本机接管训练，也不把两个 run 的策略、检查点和曲线混在一起。</p>
+            <p>新 run 成功后，系统会成套发布它的策略、检查点和训练曲线，再自动进入回测与虚拟信号；失败的 run 保留证据，不覆盖上一套成功产物。</p>
           </li>
         </ol>
       </details>
@@ -542,6 +625,8 @@
                 <li>再看大字把握：策略对这个方向有多坚决——一点把握 → 把握不大 → 一半把握 → 比较有把握 → 很有把握。半环亮得越满，把握越大。</li>
                 <li>若显示「没把握 / 先观望」，表示信号太弱，先别当买卖依据。</li>
                 <li>「因子」是内部算出来的分数，负的偏空、正的偏多，一般不用盯着它；看方向 + 把握就够了。</li>
+                <li>首版按普通 A 股账户<strong>只做多</strong>：负因子不会生成做空建议；空仓时观望，持仓时只会减仓或离场。</li>
+                <li>「最新动作」由虚拟仓位账本产生，包括买入、加仓、减仓、离场、止盈和止损；系统只发信号，不会连接券商或自动下单。</li>
                 <li>这不是「猜对的概率」，只是策略此刻有多坚决。</li>
               </ul>
             </li>
@@ -568,12 +653,24 @@
         </details>
       </section>
 
+      <section class="panel rt-signal-history-panel">
+        <span class="hud-corner tl"></span><span class="hud-corner tr"></span>
+        <span class="hud-corner bl"></span><span class="hud-corner br"></span>
+        <div class="panel-head">
+          <h2>最近交易信号</h2>
+          <span class="hint" id="rtSignalHistoryHint">等待首个可执行信号</span>
+        </div>
+        <div class="rt-signal-list" id="rtSignalFeed">
+          <div class="metric-empty">买入、加仓、减仓、离场、止盈或止损产生后，会记录在这里。</div>
+        </div>
+      </section>
+
       <section class="panel rt-feishu-panel">
         <span class="hud-corner tl"></span><span class="hud-corner tr"></span>
         <span class="hud-corner bl"></span><span class="hud-corner br"></span>
-        <h2>飞书转折提醒</h2>
+        <h2>飞书交易信号</h2>
         <p class="rt-feishu-desc">
-          仅在信号方向发生变化时推送文字提醒（例如看涨 → 不确定 / 看跌）。
+          买入、加仓、减仓、离场、止盈或止损事件产生后推送；继续持有和观望不打扰。
           在飞书群添加自定义机器人后，把 Webhook 地址填到下面。
         </p>
         <div class="rt-feishu-form">
@@ -595,7 +692,7 @@
             <button type="button" class="btn btn-feishu-help" id="rtFeishuHelpBtn">怎么使用飞书功能</button>
           </div>
         </div>
-        <small class="field-hint" id="rtFeishuHint">保存后，监控项方向转折时会自动推送到飞书群。</small>
+        <small class="field-hint" id="rtFeishuHint">保存后，新的可执行交易信号会自动推送到飞书群。</small>
       </section>
     </div><!-- /page-realtime -->
 
@@ -604,11 +701,14 @@
       <div class="modal-card modal-card-feishu-help" role="dialog" aria-labelledby="rtFeishuHelpTitle">
         <h3 id="rtFeishuHelpTitle">怎么使用飞书功能</h3>
         <div class="modal-body modal-body-feishu-help">
-          去问龙虾AlphaMaster这个项目怎么使用飞书功能，一步一步教我<br>
-          还是搞不定的话<br>
-          可以联系阿尔法本人QQ：564020069<br><br>
-          赞助49.9元可以帮你远程协助完成飞书设置<br><br>
-          如果之前已经支付过49.9元了，这次只需要赞助30元即可
+          <ol>
+            <li>在目标飞书群的“设置 → 群机器人”中添加“自定义机器人”。</li>
+            <li>复制机器人生成的 Webhook 地址；如果启用了签名校验，再复制签名密钥。</li>
+            <li>回到本页，粘贴 Webhook，勾选“启用飞书提醒”，然后保存。</li>
+            <li>点击“发送测试”。飞书群收到连通测试后，配置即生效。</li>
+            <li>之后只推送买入、加仓、减仓、离场、止盈和止损；继续持有或观望不推送。</li>
+          </ol>
+          <p>系统只接受飞书官方 open.feishu.cn 机器人地址，且不会在页面或接口中回显 Webhook 与签名密钥。</p>
         </div>
         <div class="modal-actions">
           <button type="button" class="btn btn-primary" data-close-feishu-help>知道了</button>
@@ -642,6 +742,6 @@
   </div>
 
   <script src="/static/bg.js?v=1"></script>
-  <script src="/static/app.js?v=65"></script>
+  <script src="/static/app.js?v=67"></script>
 </body>
 </html>

@@ -5,8 +5,9 @@ import threading
 
 from web.data_sources.base import DataSource
 
-# 前端下拉可见的数据源（okx / tongdaxin 实现保留，暂不展示）
+# 前端下拉可见的数据源（OKX 实现保留，暂不展示）
 SOURCE_KINDS: tuple[tuple[str, str], ...] = (
+    ("tongdaxin", "通达信"),
     ("mt5", "MT5"),
     ("tradingview", "TradingView"),
 )

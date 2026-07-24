@@ -1,6 +1,7 @@
 """持久化的 Slurm 训练状态机，接口兼容现有 Web 训练管理器。"""
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
@@ -8,6 +9,7 @@ import os
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import threading
 from datetime import datetime, timezone
@@ -24,7 +26,11 @@ from data_pipeline.a_share_data import (
     ASHARE_SOURCE_ID,
     ASHARE_SPECS_BY_TIMEFRAME,
 )
+from data_pipeline.a_share_akshare import AKSHARE_SLICE_SEALED_EVALUATION
 from data_pipeline.dataset_contracts import (
+    AKSHARE_HFQ_FORMAT,
+    AKSHARE_HFQ_SOURCE_ID,
+    AKSHARE_SOURCE,
     MT5_LEGACY_SOURCE,
     MT5_LEGACY_SOURCE_ID,
     OKX_LEGACY_SOURCE_ID,
@@ -45,14 +51,31 @@ from web.slurm_training_client import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+TRAINING_SOURCE_PATTERNS = (
+    "config.py",
+    "train_file.py",
+    "data_pipeline/*.py",
+    "model_core/*.py",
+    "strategy_manager/__init__.py",
+    "strategy_manager/signal.py",
+    "utils/train_logging.py",
+    "utils/training_runtime.py",
+    "scripts/slurm_control.py",
+    "scripts/train_slurm_worker.py",
+    "scripts/train_alphamaster.sbatch",
+)
 DATA_SOURCE_CONTRACTS = {
     **REMOTE_SOURCE_CONTRACTS,
     ASHARE_SOURCE: (ASHARE_SOURCE_ID, ASHARE_DATASET_FORMAT),
+    AKSHARE_SOURCE: (AKSHARE_HFQ_SOURCE_ID, AKSHARE_HFQ_FORMAT),
 }
 REQUIRED_DATA_COLUMNS = ("time", "open", "high", "low", "close", "tick_volume")
 LOCAL_RUNS_ROOT = PROJECT_ROOT / "local_runs"
 PUBLISHED_BUNDLE_FORMAT = "alphamaster_published_bundle_v1"
+RUN_ID_RE = re.compile(r"^run_\d{8}T\d{6}Z_[0-9a-f]{8}$")
+RECOVERY_UNKNOWN = "RECOVERY_UNKNOWN"
 ACTIVE_REMOTE_STATES = {
+    RECOVERY_UNKNOWN,
     "PREPARING",
     "UPLOADING",
     "SUBMITTING",
@@ -64,8 +87,27 @@ ACTIVE_REMOTE_STATES = {
     "DOWNLOADING",
 }
 TERMINAL_REMOTE_STATES = {"READY", "FAILED", "CANCELLED"}
-SLURM_PENDING = {"PENDING", "CONFIGURING", "REQUEUED", "RESIZING", "SUSPENDED"}
-SLURM_RUNNING = {"RUNNING", "COMPLETING", "STAGE_OUT"}
+SLURM_PENDING = {
+    "PENDING",
+    "CONFIGURING",
+    "EXPEDITING",
+    "POWER_UP_NODE",
+    "REQUEUED",
+    "REQUEUE_FED",
+    "REQUEUE_HOLD",
+    "RESV_DEL_HOLD",
+    "SPECIAL_EXIT",
+    "SUSPENDED",
+}
+SLURM_RUNNING = {
+    "RUNNING",
+    "COMPLETING",
+    "RESIZING",
+    "SIGNALING",
+    "STAGE_OUT",
+    "STOPPED",
+    "UPDATE_DB",
+}
 SLURM_FAILED = {
     "FAILED",
     "TIMEOUT",
@@ -96,10 +138,29 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _age_seconds(value: object) -> int | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return max(0, int((datetime.now(timezone.utc) - parsed).total_seconds()))
+
+
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(path.name + ".tmp")
     temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temp, path)
+
+
+def _atomic_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + ".tmp")
+    temp.write_text(content, encoding="utf-8")
     os.replace(temp, path)
 
 
@@ -131,22 +192,13 @@ def _git_commit() -> str:
 
 def _source_files() -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    excluded = {
-        ".git",
-        ".venv",
-        ".pytest_cache",
-        "local_runs",
-        "runs",
-        "scratch",
-        "tests",
-        "__pycache__",
-    }
-    candidates = list(PROJECT_ROOT.rglob("*.py"))
-    candidates.extend((PROJECT_ROOT / "scripts").glob("*.sbatch"))
+    candidates: set[Path] = set()
+    for pattern in TRAINING_SOURCE_PATTERNS:
+        candidates.update(PROJECT_ROOT.glob(pattern))
     for path in sorted(set(candidates)):
         rel = path.relative_to(PROJECT_ROOT)
-        if any(part in excluded for part in rel.parts):
-            continue
+        if not path.is_file():
+            raise RuntimeError(f"训练运行时源码缺失: {rel.as_posix()}")
         try:
             canonical = path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
         except (OSError, UnicodeDecodeError) as exc:
@@ -159,6 +211,24 @@ def _source_files() -> list[dict[str, Any]]:
     if not rows:
         raise RuntimeError("源码指纹列表为空")
     return rows
+
+
+def _source_files_sha256(rows: object) -> str:
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError("训练源码指纹列表为空或格式非法")
+    raw = json.dumps(
+        rows,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def current_training_source_sha256() -> str:
+    """当前将被上传到 Slurm 的完整训练源码身份。"""
+    return _source_files_sha256(_source_files())
 
 
 def _inspect_parquet_contract(data_file: Path) -> dict[str, Any]:
@@ -201,8 +271,11 @@ class SlurmTrainingManager:
         self.client = client or SlurmTrainingClient.from_environment()
         self.local_runs_root = (local_runs_root or LOCAL_RUNS_ROOT).resolve()
         self.local_runs_root.mkdir(parents=True, exist_ok=True)
+        self._snapshot_lock = threading.Lock()
+        self._log_lock = threading.Lock()
         self._lock = threading.RLock()
         self._job: dict[str, Any] | None = self._load_current_job()
+        self._cached_status = self._status_payload()
 
     @classmethod
     def from_environment(cls) -> "SlurmTrainingManager":
@@ -214,23 +287,164 @@ class SlurmTrainingManager:
     def _state_path(self, run_id: str) -> Path:
         return self.local_runs_root / run_id / "state.json"
 
+    @staticmethod
+    def _recovery_unknown_job(
+        error: str,
+        *,
+        run_id: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "run_id": run_id,
+            "slurm_job_id": None,
+            "backend": "slurm",
+            "remote_state": RECOVERY_UNKNOWN,
+            "started_at": None,
+            "updated_at": _utc_now(),
+            "finished_at": None,
+            "error": error,
+            "recovery_error": error,
+        }
+
     def _load_current_job(self) -> dict[str, Any] | None:
         pointer = self._current_pointer()
-        if not pointer.is_file():
-            return None
         try:
-            run_id = json.loads(pointer.read_text(encoding="utf-8")).get("run_id")
-            state_path = self._state_path(str(run_id))
-            data = json.loads(state_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, AttributeError):
+            pointer_stat = pointer.stat()
+        except FileNotFoundError:
+            if os.path.lexists(pointer):
+                return self._recovery_unknown_job(
+                    "训练状态恢复失败：current.json 是失效链接"
+                )
             return None
-        return data if isinstance(data, dict) else None
+        except OSError as exc:
+            return self._recovery_unknown_job(
+                f"训练状态恢复失败：无法检查 current.json（{exc}）"
+            )
+        if not stat.S_ISREG(pointer_stat.st_mode):
+            return self._recovery_unknown_job(
+                "训练状态恢复失败：current.json 不是普通文件"
+            )
+        try:
+            pointer_data = json.loads(pointer.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            return self._recovery_unknown_job(
+                f"训练状态恢复失败：current.json 无法读取或 JSON 损坏（{exc}）"
+            )
+        if not isinstance(pointer_data, dict):
+            return self._recovery_unknown_job(
+                "训练状态恢复失败：current.json 必须是 JSON 对象"
+            )
+        run_id = pointer_data.get("run_id")
+        if not isinstance(run_id, str) or RUN_ID_RE.fullmatch(run_id) is None:
+            return self._recovery_unknown_job(
+                "训练状态恢复失败：current.json 的 run_id 缺失或非法"
+            )
+
+        state_path = self._state_path(run_id)
+        try:
+            data = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            return self._recovery_unknown_job(
+                f"训练状态恢复失败：current.json 指向的 state.json "
+                f"缺失、无法读取或 JSON 损坏（{exc}）",
+                run_id=run_id,
+            )
+        remote_state = (
+            data.get("remote_state")
+            if isinstance(data, dict)
+            else None
+        )
+        required_text_fields = (
+            "data_file",
+            "symbol",
+            "timeframe",
+            "git_commit",
+        )
+        stored_source_sha256 = (
+            data.get("expected_source_sha256")
+            if isinstance(data, dict)
+            else None
+        )
+        if (
+            not isinstance(data, dict)
+            or data.get("run_id") != run_id
+            or not isinstance(remote_state, str)
+            or remote_state not in ALLOWED_TRANSITIONS
+            or data.get("backend") != "slurm"
+            or any(
+                not isinstance(data.get(field), str)
+                or not data[field].strip()
+                for field in required_text_fields
+            )
+            or re.fullmatch(r"[0-9a-f]{40}", data["git_commit"]) is None
+            or not isinstance(data.get("training_parameters"), dict)
+            or not isinstance(data.get("requested_resources"), dict)
+            or "slurm_job_id" not in data
+            or (
+                stored_source_sha256 is not None
+                and (
+                    not isinstance(stored_source_sha256, str)
+                    or re.fullmatch(
+                        r"[0-9a-f]{64}",
+                        stored_source_sha256,
+                    )
+                    is None
+                )
+            )
+            or (
+                remote_state
+                in {"PREPARING", "UPLOADING", "SUBMITTING"}
+                and stored_source_sha256 is None
+            )
+        ):
+            return self._recovery_unknown_job(
+                "训练状态恢复失败：current.json 指向的 state.json "
+                "结构或任务身份损坏",
+                run_id=run_id,
+            )
+        return data
 
     def _save(self) -> None:
         if not self._job:
             return
+        if self._job.get("remote_state") == RECOVERY_UNKNOWN:
+            raise RuntimeError("恢复错误快照不可写回训练状态")
         _atomic_json(self._state_path(self._job["run_id"]), self._job)
         _atomic_json(self._current_pointer(), {"run_id": self._job["run_id"]})
+        self._refresh_snapshot_cache()
+
+    def _status_payload(self) -> dict[str, Any]:
+        state = self._job.get("remote_state") if self._job else None
+        remote_status_age_seconds = (
+            _age_seconds(
+                self._job.get("remote_polled_at")
+                or self._job.get("started_at")
+            )
+            if self._job
+            else None
+        )
+        return {
+            "active": bool(state in ACTIVE_REMOTE_STATES),
+            "backend": "slurm",
+            "job": copy.deepcopy(self._public_job()),
+            "status_unknown": bool(state == RECOVERY_UNKNOWN),
+            "remote_status_age_seconds": remote_status_age_seconds,
+            "remote_status_stale": bool(
+                state == RECOVERY_UNKNOWN
+                or (
+                    state in {"PENDING", "RUNNING", "CANCELLING"}
+                    and (
+                        bool(self._job.get("last_poll_error"))
+                        or remote_status_age_seconds is None
+                        or remote_status_age_seconds > 120
+                    )
+                )
+            ),
+        }
+
+    def _refresh_snapshot_cache(self) -> None:
+        payload = self._status_payload()
+        with self._snapshot_lock:
+            self._cached_status = payload
 
     def _set_state(self, state: str, *, error: str | None = None) -> None:
         if not self._job:
@@ -260,6 +474,8 @@ class SlurmTrainingManager:
 
     @staticmethod
     def _legacy_state(remote_state: str) -> str:
+        if remote_state == RECOVERY_UNKNOWN:
+            return "failed"
         if remote_state in ACTIVE_REMOTE_STATES:
             return "running"
         if remote_state == "READY":
@@ -278,12 +494,64 @@ class SlurmTrainingManager:
     def status(self) -> dict[str, Any]:
         with self._lock:
             self._refresh_state()
-            state = self._job.get("remote_state") if self._job else None
-            return {
-                "active": bool(state in ACTIVE_REMOTE_STATES),
-                "backend": "slurm",
-                "job": self._public_job(),
-            }
+            return self._status_payload()
+
+    def snapshot(self) -> dict[str, Any]:
+        """只读最近一次已确认状态；不等待节点选择、SSH 或 Slurm。"""
+        with self._snapshot_lock:
+            return copy.deepcopy(self._cached_status)
+
+    def current_source_sha256(self) -> str:
+        return current_training_source_sha256()
+
+    @staticmethod
+    def _normalize_source_sha256(value: object) -> str:
+        normalized = str(value or "").strip().lower()
+        if re.fullmatch(r"[0-9a-f]{64}", normalized) is None:
+            raise RuntimeError(
+                "expected_source_sha256 必须是 64 位 SHA-256"
+            )
+        return normalized
+
+    def _resolve_expected_source_sha256(
+        self,
+        expected_source_sha256: str | None,
+    ) -> str:
+        current = current_training_source_sha256()
+        expected = (
+            current
+            if expected_source_sha256 is None
+            else self._normalize_source_sha256(expected_source_sha256)
+        )
+        if current != expected:
+            raise RuntimeError(
+                "当前训练源码 SHA-256 与 expected_source_sha256 不一致，"
+                "拒绝提交"
+            )
+        return expected
+
+    def _assert_dispatch_source_identity(self, action: str) -> None:
+        if not self._job:
+            raise RuntimeError("没有当前 Slurm 任务")
+        expected = self._normalize_source_sha256(
+            self._job.get("expected_source_sha256")
+        )
+        current = current_training_source_sha256()
+        if current != expected:
+            raise RuntimeError(
+                "训练源码 SHA-256 已漂移，"
+                f"拒绝在 {action} 前继续提交"
+            )
+
+    def run_source_sha256(self, run_id: str) -> str:
+        if RUN_ID_RE.fullmatch(str(run_id)) is None:
+            raise RuntimeError("训练源码身份的 run_id 非法")
+        manifest_path = self.local_runs_root / run_id / "run_manifest.json"
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError("无法读取 run 的训练源码身份") from exc
+        return _source_files_sha256(manifest.get("source_files"))
 
     def _load_data_manifest(self, data_file: Path) -> dict[str, Any]:
         manifest_path = data_file.with_suffix(".manifest.json")
@@ -345,41 +613,135 @@ class SlurmTrainingManager:
         expected_dataset_id = f"sha256:{digest}"
         if payload.get("dataset_id", expected_dataset_id) != expected_dataset_id:
             raise RuntimeError("数据 manifest 的 dataset_id 与文件哈希不匹配")
-        if source == ASHARE_SOURCE:
+        if source in {ASHARE_SOURCE, AKSHARE_SOURCE}:
             timeframe = str(payload.get("timeframe") or "").upper()
             spec = ASHARE_SPECS_BY_TIMEFRAME.get(timeframe)
             if spec is None:
-                raise RuntimeError("AShareLocal manifest 的 timeframe 不受支持")
+                raise RuntimeError("A 股 manifest 的 timeframe 不受支持")
             if payload.get("market") != "CN_A_SHARE":
-                raise RuntimeError("AShareLocal manifest 的 market 必须是 CN_A_SHARE")
+                raise RuntimeError("A 股 manifest 的 market 必须是 CN_A_SHARE")
             if payload.get("bar_timestamp_semantics") != "bar_close":
-                raise RuntimeError("AShareLocal manifest 必须声明 bar_close 时间语义")
+                raise RuntimeError("A 股 manifest 必须声明 bar_close 时间语义")
             if payload.get("source_timezone") != "Asia/Shanghai":
-                raise RuntimeError("AShareLocal manifest 的源时区必须是 Asia/Shanghai")
-            if payload.get("source_time_encoding") != (
-                "floor(china_local_wall_clock_unix_seconds/1000)"
-            ):
-                raise RuntimeError("AShareLocal manifest 的旧 time 编码声明不匹配")
+                raise RuntimeError("A 股 manifest 的源时区必须是 Asia/Shanghai")
             expected_close_times = [
                 value.strftime("%H:%M") for value in spec.close_times
             ]
             if payload.get("session_close_times") != expected_close_times:
-                raise RuntimeError("AShareLocal manifest 的收盘时刻表不匹配")
-            expected_source_filename = (
-                f"{payload.get('symbol')}_{spec.legacy_period}.parquet"
-            )
-            if payload.get("source_filename") != expected_source_filename:
-                raise RuntimeError("AShareLocal manifest 的 source_filename 不匹配")
-            if not isinstance(payload.get("source_sha256"), str) or re.fullmatch(
-                r"[0-9a-f]{64}", payload["source_sha256"]
-            ) is None:
-                raise RuntimeError("AShareLocal manifest 的 source_sha256 非法")
+                raise RuntimeError("A 股 manifest 的收盘时刻表不匹配")
             if payload.get("periods_per_year") != spec.periods_per_year:
-                raise RuntimeError("AShareLocal manifest 的 periods_per_year 不匹配")
+                raise RuntimeError("A 股 manifest 的 periods_per_year 不匹配")
             if payload.get("minimum_bars") != spec.minimum_bars:
-                raise RuntimeError("AShareLocal manifest 的 minimum_bars 不匹配")
+                raise RuntimeError("A 股 manifest 的 minimum_bars 不匹配")
             if int(payload["data_rows"]) < spec.minimum_bars:
-                raise RuntimeError("AShareLocal 数据不足两个交易年")
+                raise RuntimeError("A 股数据不足两个交易年")
+            if source == ASHARE_SOURCE:
+                if payload.get("source_time_encoding") != (
+                    "floor(china_local_wall_clock_unix_seconds/1000)"
+                ):
+                    raise RuntimeError(
+                        "AShareLocal manifest 的旧 time 编码声明不匹配"
+                    )
+                expected_source_filename = (
+                    f"{payload.get('symbol')}_{spec.legacy_period}.parquet"
+                )
+                if payload.get("source_filename") != expected_source_filename:
+                    raise RuntimeError(
+                        "AShareLocal manifest 的 source_filename 不匹配"
+                    )
+                if not isinstance(
+                    payload.get("source_sha256"),
+                    str,
+                ) or re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    payload["source_sha256"],
+                ) is None:
+                    raise RuntimeError(
+                        "AShareLocal manifest 的 source_sha256 非法"
+                    )
+            else:
+                if timeframe != "D1":
+                    raise RuntimeError("AKShare hfq 训练数据只支持 D1")
+                if payload.get("source_id") != AKSHARE_HFQ_SOURCE_ID:
+                    raise RuntimeError("AKShare hfq manifest 的 source_id 不匹配")
+                if payload.get("provider") != "AKShare":
+                    raise RuntimeError("AKShare hfq manifest 的 provider 不匹配")
+                if payload.get("provider_interface") != "stock_zh_a_daily":
+                    raise RuntimeError(
+                        "AKShare hfq manifest 的 provider_interface 不匹配"
+                    )
+                if payload.get("adjustment") != "hfq":
+                    raise RuntimeError("AKShare hfq manifest 的复权方式不匹配")
+                if payload.get("bar_completion") != "completed_trading_days_only":
+                    raise RuntimeError(
+                        "AKShare hfq manifest 必须只包含已完成交易日"
+                    )
+                if payload.get("adjustment_history_semantics") != (
+                    "cumulative_historical_factor_not_latest_price_normalized"
+                ):
+                    raise RuntimeError(
+                        "AKShare hfq manifest 的历史版本语义不匹配"
+                    )
+                derivation = payload.get("derivation")
+                if (
+                    isinstance(derivation, dict)
+                    and derivation.get("purpose")
+                    == AKSHARE_SLICE_SEALED_EVALUATION
+                ):
+                    raise RuntimeError("封存评估数据禁止进入模型训练")
+                version = payload.get("provider_version")
+                if not isinstance(version, str) or re.fullmatch(
+                    r"[0-9]+\.[0-9]+\.[0-9]+(?:[.+-].*)?",
+                    version,
+                ) is None:
+                    raise RuntimeError(
+                        "AKShare hfq manifest 的 provider_version 非法"
+                    )
+                source_hash = payload.get("source_response_sha256")
+                if not isinstance(source_hash, str) or re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    source_hash,
+                ) is None:
+                    raise RuntimeError(
+                        "AKShare hfq manifest 的来源响应哈希非法"
+                    )
+                request = payload.get("request")
+                canonical_symbol = str(payload.get("symbol") or "")
+                provider_prefix = (
+                    "sh"
+                    if canonical_symbol.startswith("6")
+                    else "sz"
+                    if canonical_symbol.startswith(("0", "3"))
+                    else ""
+                )
+                if not isinstance(request, dict) or request != {
+                    "canonical_symbol": canonical_symbol,
+                    "symbol": f"{provider_prefix}{canonical_symbol}",
+                    "start_date": request.get("start_date")
+                    if isinstance(request, dict)
+                    else None,
+                    "end_date": request.get("end_date")
+                    if isinstance(request, dict)
+                    else None,
+                    "adjust": "hfq",
+                }:
+                    raise RuntimeError("AKShare hfq manifest 的 request 不匹配")
+                if not provider_prefix:
+                    raise RuntimeError(
+                        "AKShare hfq manifest 的新浪股票代码前缀不受支持"
+                    )
+                for field in ("start_date", "end_date"):
+                    if re.fullmatch(
+                        r"[0-9]{8}",
+                        str(request.get(field) or ""),
+                    ) is None:
+                        raise RuntimeError(
+                            f"AKShare hfq manifest 的 request.{field} 非法"
+                        )
+                if request["start_date"] >= request["end_date"]:
+                    raise RuntimeError(
+                        "AKShare hfq manifest 的请求日期范围非法"
+                    )
             periods_per_year = spec.periods_per_year
             minimum_bars: int | None = spec.minimum_bars
         else:
@@ -430,6 +792,79 @@ class SlurmTrainingManager:
             "_source_id": source_id,
         }
 
+    @staticmethod
+    def _resolve_run_settings(
+        *,
+        from_scratch: bool,
+        train_steps: int | None,
+        cpus_per_task: int | None,
+        memory: str | None,
+        time_limit: str | None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        try:
+            resolved_steps = (
+                int(os.getenv("SLURM_TRAIN_STEPS", str(ModelConfig.TRAIN_STEPS)))
+                if train_steps is None
+                else train_steps
+            )
+            resolved_cpus = (
+                int(os.getenv("SLURM_CPUS_PER_TASK", "1"))
+                if cpus_per_task is None
+                else cpus_per_task
+            )
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("Slurm 训练步数或 CPU 数量不是整数") from exc
+        if (
+            isinstance(resolved_steps, bool)
+            or not isinstance(resolved_steps, int)
+            or not 1 <= resolved_steps <= 1_000_000
+        ):
+            raise RuntimeError("SLURM_TRAIN_STEPS 超出允许范围")
+        if (
+            isinstance(resolved_cpus, bool)
+            or not isinstance(resolved_cpus, int)
+            or not 1 <= resolved_cpus <= 64
+        ):
+            raise RuntimeError("SLURM_CPUS_PER_TASK 超出允许范围")
+
+        partition = os.getenv("SLURM_PARTITION", "cpu")
+        qos = os.getenv("SLURM_QOS", "normal")
+        resolved_time_limit = (
+            os.getenv("SLURM_TIME_LIMIT", "00:30:00")
+            if time_limit is None
+            else str(time_limit).strip()
+        )
+        resolved_memory = (
+            os.getenv("SLURM_MEMORY", "")
+            if memory is None
+            else str(memory).strip().upper()
+        )
+        if partition != "cpu" or qos != "normal":
+            raise RuntimeError("第一阶段只允许 cpu 分区和 normal QOS")
+        if not re.fullmatch(
+            r"(?:\d+-)?\d{2}:\d{2}:\d{2}",
+            resolved_time_limit,
+        ):
+            raise RuntimeError("SLURM_TIME_LIMIT 必须是 [D-]HH:MM:SS")
+        if resolved_memory and not re.fullmatch(
+            r"[1-9]\d*(?:K|M|G|T)",
+            resolved_memory,
+        ):
+            raise RuntimeError("SLURM_MEMORY 必须为空或使用 K/M/G/T 单位")
+        return (
+            {
+                "train_steps": resolved_steps,
+                "from_scratch": bool(from_scratch),
+            },
+            {
+                "partition": partition,
+                "qos": qos,
+                "cpus_per_task": resolved_cpus,
+                "memory": resolved_memory,
+                "time_limit": resolved_time_limit,
+            },
+        )
+
     def _build_run_manifest(
         self,
         *,
@@ -437,34 +872,12 @@ class SlurmTrainingManager:
         data_file: Path,
         symbol: str,
         timeframe: str,
-        from_scratch: bool,
+        training_parameters: dict[str, Any],
+        requested_resources: dict[str, Any],
     ) -> dict[str, Any]:
         data = self._load_data_manifest(data_file)
         if data.get("symbol") != symbol or data.get("timeframe") != timeframe:
             raise RuntimeError("请求的品种/周期与数据 manifest 不一致")
-        train_steps = int(os.getenv("SLURM_TRAIN_STEPS", str(ModelConfig.TRAIN_STEPS)))
-        cpus = int(os.getenv("SLURM_CPUS_PER_TASK", "1"))
-        if train_steps < 1 or train_steps > 1_000_000:
-            raise RuntimeError("SLURM_TRAIN_STEPS 超出允许范围")
-        if cpus < 1 or cpus > 64:
-            raise RuntimeError("SLURM_CPUS_PER_TASK 超出允许范围")
-        partition = os.getenv("SLURM_PARTITION", "cpu")
-        qos = os.getenv("SLURM_QOS", "normal")
-        time_limit = os.getenv("SLURM_TIME_LIMIT", "00:30:00")
-        memory = os.getenv("SLURM_MEMORY", "")
-        if partition != "cpu" or qos != "normal":
-            raise RuntimeError("第一阶段只允许 cpu 分区和 normal QOS")
-        if not re.fullmatch(r"(?:\d+-)?\d{2}:\d{2}:\d{2}", time_limit):
-            raise RuntimeError("SLURM_TIME_LIMIT 必须是 [D-]HH:MM:SS")
-        if memory and not re.fullmatch(r"[1-9]\d*(?:K|M|G|T)", memory):
-            raise RuntimeError("SLURM_MEMORY 必须为空或使用 K/M/G/T 单位")
-        requested_resources = {
-            "partition": partition,
-            "qos": qos,
-            "cpus_per_task": cpus,
-            "memory": memory,
-            "time_limit": time_limit,
-        }
         return {
             "run_id": run_id,
             "created_at": _utc_now(),
@@ -483,10 +896,7 @@ class SlurmTrainingManager:
             "minimum_bars": data.get("minimum_bars"),
             "git_commit": _git_commit(),
             "source_files": _source_files(),
-            "training_parameters": {
-                "train_steps": train_steps,
-                "from_scratch": bool(from_scratch),
-            },
+            "training_parameters": dict(training_parameters),
             "requested_resources": requested_resources,
             "local_source": data["_source_id"],
         }
@@ -499,23 +909,110 @@ class SlurmTrainingManager:
         mode: str = "ftmo",
         *,
         from_scratch: bool = False,
+        planned_run_id: str | None = None,
+        train_steps: int | None = None,
+        cpus_per_task: int | None = None,
+        memory: str | None = None,
+        time_limit: str | None = None,
+        expected_source_sha256: str | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             self._refresh_state()
+            if (
+                self._job
+                and self._job.get("remote_state") == RECOVERY_UNKNOWN
+            ):
+                raise RuntimeError(
+                    str(
+                        self._job.get("recovery_error")
+                        or "训练状态恢复失败，拒绝启动新任务"
+                    )
+                )
+            resolved_source_sha256 = (
+                self._resolve_expected_source_sha256(
+                    expected_source_sha256
+                )
+            )
+            path = Path(data_file).resolve()
+            (
+                training_parameters,
+                requested_resources,
+            ) = self._resolve_run_settings(
+                from_scratch=from_scratch,
+                train_steps=train_steps,
+                cpus_per_task=cpus_per_task,
+                memory=memory,
+                time_limit=time_limit,
+            )
+            if planned_run_id is not None:
+                planned_run_id = str(planned_run_id).strip()
+                if RUN_ID_RE.fullmatch(planned_run_id) is None:
+                    raise RuntimeError("planned_run_id 格式非法")
+                if self._job and self._job.get("run_id") == planned_run_id:
+                    stored_source_sha256 = self._job.get(
+                        "expected_source_sha256"
+                    )
+                    if (
+                        stored_source_sha256 is not None
+                        and self._normalize_source_sha256(
+                            stored_source_sha256
+                        )
+                        != resolved_source_sha256
+                    ):
+                        raise RuntimeError(
+                            "planned_run_id 已绑定不同的训练源码身份"
+                        )
+                    expected_parameters = self._job.get("training_parameters") or {}
+                    expected_resources = self._job.get("requested_resources") or {}
+                    if (
+                        Path(str(self._job.get("data_file") or "")).resolve() != path
+                        or self._job.get("symbol") != symbol
+                        or self._job.get("timeframe") != timeframe
+                        or expected_parameters != training_parameters
+                        or expected_resources != requested_resources
+                    ):
+                        raise RuntimeError(
+                            "planned_run_id 已绑定不同的训练输入或参数"
+                        )
+                    if (
+                        self._job.get("remote_state") == "FAILED"
+                        and not self._job.get("slurm_job_id")
+                    ):
+                        return self._retry_pre_submission(
+                            path=path,
+                            symbol=symbol,
+                            timeframe=timeframe,
+                            training_parameters=training_parameters,
+                            requested_resources=requested_resources,
+                            expected_source_sha256=resolved_source_sha256,
+                        )
+                    return self._public_job() or {}
             if self._job and self._job.get("remote_state") in ACTIVE_REMOTE_STATES:
                 raise RuntimeError(f"已有远程训练任务在运行: {self._job.get('run_id')}")
-            path = Path(data_file).resolve()
             if not path.is_file():
                 raise RuntimeError("训练数据文件不存在")
-            run_id = datetime.now(timezone.utc).strftime("run_%Y%m%dT%H%M%SZ_") + secrets.token_hex(4)
+            run_id = planned_run_id or (
+                datetime.now(timezone.utc).strftime("run_%Y%m%dT%H%M%SZ_")
+                + secrets.token_hex(4)
+            )
             run_dir = self.local_runs_root / run_id
+            if run_dir.exists():
+                raise RuntimeError(f"run_id 运行目录已存在，拒绝覆盖: {run_id}")
             manifest = self._build_run_manifest(
                 run_id=run_id,
                 data_file=path,
                 symbol=symbol,
                 timeframe=timeframe,
-                from_scratch=from_scratch,
+                training_parameters=training_parameters,
+                requested_resources=requested_resources,
             )
+            if (
+                _source_files_sha256(manifest.get("source_files"))
+                != resolved_source_sha256
+            ):
+                raise RuntimeError(
+                    "训练源码在 run manifest 构建期间发生漂移，拒绝提交"
+                )
             manifest_path = run_dir / "run_manifest.json"
             _atomic_json(manifest_path, manifest)
             self._job = {
@@ -536,6 +1033,7 @@ class SlurmTrainingManager:
                 "exit_code": None,
                 "error": None,
                 "git_commit": manifest["git_commit"],
+                "expected_source_sha256": resolved_source_sha256,
                 "training_parameters": manifest["training_parameters"],
                 "requested_resources": manifest["requested_resources"],
                 "cancel_requested": False,
@@ -546,6 +1044,77 @@ class SlurmTrainingManager:
                 raise RuntimeError(f"Slurm 任务提交失败: {self._job.get('error')}")
             return self._public_job() or {}
 
+    def _retry_pre_submission(
+        self,
+        *,
+        path: Path,
+        symbol: str,
+        timeframe: str,
+        training_parameters: dict[str, Any],
+        requested_resources: dict[str, Any],
+        expected_source_sha256: str,
+    ) -> dict[str, Any]:
+        """复用未取得 job ID 的 run；提交过的 run 永不在这里重投。"""
+        if (
+            not self._job
+            or self._job.get("remote_state") != "FAILED"
+            or self._job.get("slurm_job_id")
+        ):
+            raise RuntimeError("当前 run 不满足提交前恢复条件")
+        run_id = str(self._job["run_id"])
+        manifest_path = self.local_runs_root / run_id / "run_manifest.json"
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError("提交前恢复所需的 run manifest 无法读取") from exc
+        expected = {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "data_filename": path.name,
+            "data_sha256": sha256_file(path),
+            "source_files": _source_files(),
+            "training_parameters": training_parameters,
+            "requested_resources": requested_resources,
+        }
+        for field, value in expected.items():
+            if manifest.get(field) != value:
+                raise RuntimeError(
+                    f"提交前恢复拒绝：冻结的 {field} 已变化"
+                )
+        if (
+            _source_files_sha256(manifest.get("source_files"))
+            != expected_source_sha256
+        ):
+            raise RuntimeError("提交前恢复拒绝：冻结的训练源码身份已变化")
+
+        history = list(self._job.get("retry_history") or [])
+        history.append(
+            {
+                "failed_at": self._job.get("finished_at")
+                or self._job.get("updated_at"),
+                "error": self._job.get("error"),
+            }
+        )
+        self._job.update(
+            {
+                "remote_state": "PREPARING",
+                "started_at": _utc_now(),
+                "updated_at": _utc_now(),
+                "finished_at": None,
+                "exit_code": None,
+                "error": None,
+                "cancel_requested": False,
+                "expected_source_sha256": expected_source_sha256,
+                "retry_count": int(self._job.get("retry_count") or 0) + 1,
+                "retry_history": history[-20:],
+            }
+        )
+        self._save()
+        self._advance_pre_submission()
+        if self._job.get("remote_state") == "FAILED":
+            raise RuntimeError(f"Slurm 任务恢复失败: {self._job.get('error')}")
+        return self._public_job() or {}
+
     def _advance_pre_submission(self) -> None:
         if not self._job:
             return
@@ -553,10 +1122,12 @@ class SlurmTrainingManager:
             state = self._job.get("remote_state")
             run_id = self._job["run_id"]
             if state == "PREPARING":
+                self._assert_dispatch_source_identity("prepare")
                 self.client.prepare(run_id)
                 self._set_state("UPLOADING")
                 state = "UPLOADING"
             if state == "UPLOADING":
+                self._assert_dispatch_source_identity("upload")
                 data_file = Path(self._job["data_file"]).resolve()
                 manifest_file = self.local_runs_root / run_id / "run_manifest.json"
                 if not data_file.is_file() or not manifest_file.is_file():
@@ -577,6 +1148,7 @@ class SlurmTrainingManager:
                 self._set_state("SUBMITTING")
                 state = "SUBMITTING"
             if state == "SUBMITTING":
+                self._assert_dispatch_source_identity("submit")
                 job_id = self.client.submit(run_id)
                 self._job["slurm_job_id"] = job_id
                 self._set_state("SUBMITTED")
@@ -610,6 +1182,7 @@ class SlurmTrainingManager:
         try:
             remote = self.client.status(self._job["run_id"], job_id)
             slurm_state = str(remote.get("state") or "").upper().split("+")[0]
+            normalized_status = str(remote.get("status") or "").upper()
             self._job["slurm_state"] = slurm_state
             self._job["compute_node"] = remote.get("node")
             self._job["exit_code"] = remote.get("exit_code")
@@ -619,34 +1192,67 @@ class SlurmTrainingManager:
             self._job["allocated_cpus"] = remote.get("allocated_cpus")
             self._job["total_cpu"] = remote.get("total_cpu")
             self._job["max_rss"] = remote.get("max_rss")
+            self._job["remote_polled_at"] = _utc_now()
             self._job.pop("last_poll_error", None)
             self._save()
             if slurm_state in SLURM_PENDING:
+                effective_status = "PENDING"
+            elif slurm_state in SLURM_RUNNING:
+                effective_status = "RUNNING"
+            elif slurm_state == "COMPLETED":
+                effective_status = "COMPLETED"
+            elif slurm_state == "CANCELLED":
+                effective_status = "CANCELLED"
+            elif slurm_state in SLURM_FAILED:
+                effective_status = "FAILED"
+            elif normalized_status in {
+                "PENDING",
+                "RUNNING",
+                "COMPLETED",
+                "CANCELLED",
+                "FAILED",
+            }:
+                effective_status = normalized_status
+            else:
+                effective_status = ""
+
+            if effective_status == "PENDING":
                 if state == "CANCELLING":
                     self._request_cancel(refresh_on_client_error=False)
                     return
                 if state != "PENDING":
                     self._set_state("PENDING")
-            elif slurm_state in SLURM_RUNNING:
+            elif effective_status == "RUNNING":
                 if state == "CANCELLING":
                     self._request_cancel(refresh_on_client_error=False)
                     return
                 if state != "RUNNING":
                     self._set_state("RUNNING")
-            elif slurm_state == "COMPLETED":
+            elif effective_status == "COMPLETED":
                 self._set_state("COMPLETED")
                 self._download()
-            elif slurm_state == "CANCELLED":
+            elif effective_status == "CANCELLED":
                 self._set_state("CANCELLED")
-            elif slurm_state in SLURM_FAILED:
+            elif effective_status == "FAILED":
                 reason = remote.get("reason") or slurm_state
                 self._set_state("FAILED", error=f"Slurm {slurm_state}: {reason}")
-            elif slurm_state:
-                self._set_state("FAILED", error=f"未知 Slurm 终态: {slurm_state}")
+            elif slurm_state or normalized_status:
+                self._record_retryable_error(
+                    RuntimeError(
+                        "暂不识别的 Slurm 活动状态: "
+                        f"{normalized_status or slurm_state}"
+                    )
+                )
         except SlurmTransportError as exc:
             self._record_retryable_error(exc)
+        except SlurmClientError as exc:
+            # 查询失败只代表本轮没有取得可信观测，不能证明远端作业失败。
+            # 只有成功返回的 Slurm 明确终态才有权结束当前 run。
+            self._record_retryable_error(exc)
         except Exception as exc:
-            self._set_state("FAILED", error=f"Slurm 状态校验失败: {exc}")
+            self._record_retryable_error(
+                RuntimeError(f"Slurm 状态监控异常: {exc}")
+            )
 
     def _download(self) -> None:
         if not self._job or not self._job.get("slurm_job_id"):
@@ -682,6 +1288,12 @@ class SlurmTrainingManager:
     ) -> None:
         if not self._job:
             raise RuntimeError("没有当前 Slurm 任务")
+        manifest_run_id = manifest.get("run_id")
+        if (
+            manifest_run_id not in (None, "")
+            and manifest_run_id != self._job["run_id"]
+        ):
+            raise RuntimeError("结果 manifest 的 run_id 与当前 run 不匹配")
         run_manifest_path = self.local_runs_root / self._job["run_id"] / "run_manifest.json"
         try:
             expected = json.loads(run_manifest_path.read_text(encoding="utf-8"))
@@ -797,6 +1409,16 @@ class SlurmTrainingManager:
             strategy = json.loads(strategy_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise RuntimeError("回传策略不是合法 UTF-8 JSON") from exc
+        strategy_run_id = (
+            strategy.get("run_id")
+            if isinstance(strategy, dict)
+            else None
+        )
+        if (
+            strategy_run_id not in (None, "")
+            and strategy_run_id != self._job["run_id"]
+        ):
+            raise RuntimeError("回传策略 run_id 与当前 run 不匹配")
         formula = strategy.get("formula") if isinstance(strategy, dict) else None
         try:
             score = float(strategy.get("best_score"))
@@ -942,10 +1564,34 @@ class SlurmTrainingManager:
                 self._refresh_state()
             return self._job.get("remote_state") != "FAILED"
 
-    def stop(self) -> bool:
+    def stop(
+        self,
+        *,
+        expected_run_id: str | None = None,
+        expected_job_id: str | int | None = None,
+    ) -> bool:
         with self._lock:
+            if (
+                self._job
+                and self._job.get("remote_state") == RECOVERY_UNKNOWN
+            ):
+                raise RuntimeError(
+                    "训练状态恢复失败，拒绝取消未知任务"
+                )
             if not self._job or self._job.get("remote_state") not in ACTIVE_REMOTE_STATES:
                 return False
+            current_run_id = str(self._job.get("run_id") or "")
+            current_job_id = str(self._job.get("slurm_job_id") or "")
+            if (
+                expected_run_id is not None
+                and current_run_id != str(expected_run_id)
+            ):
+                raise RuntimeError("训练任务 run_id 已变化，拒绝取消")
+            if (
+                expected_job_id is not None
+                and current_job_id != str(expected_job_id)
+            ):
+                raise RuntimeError("训练任务 job_id 已变化，拒绝取消")
             state = self._job.get("remote_state")
             if state in {"COMPLETED", "DOWNLOADING"}:
                 self._refresh_state()
@@ -962,31 +1608,119 @@ class SlurmTrainingManager:
                 return True
             job_id = self._job.get("slurm_job_id")
             if not job_id:
-                self._set_state("FAILED", error="任务尚未获得 job ID，无法取消")
-                return False
+                self._job["cancel_requested"] = True
+                self._record_retryable_error(
+                    RuntimeError("取消请求等待 Slurm job ID 恢复")
+                )
+                return True
             return self._request_cancel()
 
-    def tail_log(self, lines: int = 200) -> list[str]:
+    def tail_log(
+        self,
+        lines: int = 200,
+        *,
+        expected_run_id: str | None = None,
+        expected_job_id: str | int | None = None,
+        final: bool = False,
+    ) -> list[str]:
         with self._lock:
             if not self._job:
                 return []
-            log_path = self.local_runs_root / self._job["run_id"] / "logs" / "tail.log"
-            rows: list[str] = []
-            if self._job.get("slurm_job_id"):
-                try:
-                    rows = self.client.tail(
-                        self._job["run_id"], self._job["slurm_job_id"], lines
-                    )
-                    log_path.parent.mkdir(parents=True, exist_ok=True)
-                    log_path.write_text("\n".join(rows) + ("\n" if rows else ""), encoding="utf-8")
-                except SlurmClientError:
-                    rows = []
-            if not rows and log_path.is_file():
-                rows = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-            return [strip_ansi(row) for row in rows[-max(1, min(int(lines), 500)):]]
+            run_id = str(self._job["run_id"])
+            if expected_run_id is not None and run_id != expected_run_id:
+                return []
+            log_path = self.local_runs_root / run_id / "logs" / "tail.log"
+            job_id = str(self._job.get("slurm_job_id") or "")
+            if (
+                expected_job_id is not None
+                and job_id != str(expected_job_id)
+            ):
+                return []
 
-    def parse_step_from_log(self) -> int | None:
-        for line in reversed(self.tail_log(80)):
+        rows: list[str] = []
+        if job_id:
+            with self._log_lock:
+                try:
+                    rows = self.client.tail(run_id, job_id, lines)
+                    _atomic_text(
+                        log_path,
+                        "\n".join(rows) + ("\n" if rows else ""),
+                    )
+                    with self._lock:
+                        if (
+                            self._job
+                            and str(self._job.get("run_id") or "") == run_id
+                            and str(self._job.get("slurm_job_id") or "") == job_id
+                        ):
+                            self._job.pop("last_log_poll_error", None)
+                            if final:
+                                self._job["final_log_refreshed_at"] = _utc_now()
+                            self._save()
+                except SlurmClientError as exc:
+                    with self._lock:
+                        if (
+                            self._job
+                            and str(self._job.get("run_id") or "") == run_id
+                            and str(self._job.get("slurm_job_id") or "") == job_id
+                        ):
+                            self._job["last_log_poll_error"] = str(exc)
+                            self._save()
+                    rows = []
+        if not rows and log_path.is_file():
+            rows = log_path.read_text(
+                encoding="utf-8",
+                errors="replace",
+            ).splitlines()
+        return [
+            strip_ansi(row)
+            for row in rows[-max(1, min(int(lines), 500)):]
+        ]
+
+    def cached_log_tail(
+        self,
+        lines: int = 200,
+        *,
+        run_id: str | None = None,
+    ) -> list[str]:
+        """只读本机日志缓存；不等待远程日志拉取。"""
+        resolved_run_id = str(run_id or "").strip()
+        if not resolved_run_id:
+            status = self.snapshot()
+            job = status.get("job") if isinstance(status, dict) else None
+            resolved_run_id = (
+                str(job.get("run_id") or "")
+                if isinstance(job, dict)
+                else ""
+            )
+        if not resolved_run_id:
+            return []
+        log_path = self.local_runs_root / resolved_run_id / "logs" / "tail.log"
+        if not log_path.is_file():
+            return []
+        try:
+            rows = log_path.read_text(
+                encoding="utf-8",
+                errors="replace",
+            ).splitlines()
+        except OSError:
+            return []
+        return [
+            strip_ansi(row)
+            for row in rows[-max(1, min(int(lines), 500)):]
+        ]
+
+    def parse_step_from_log(
+        self,
+        *,
+        refresh_remote: bool = True,
+        run_id: str | None = None,
+    ) -> int | None:
+        rows = (
+            self.tail_log(80, expected_run_id=run_id)
+            if refresh_remote
+            else self.cached_log_tail(80, run_id=run_id)
+        )
+        for line in reversed(rows):
             match = re.search(r"\[(\d+)/\d+\]", line)
             if match:
                 return int(match.group(1))

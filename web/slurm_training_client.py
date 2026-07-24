@@ -62,9 +62,9 @@ class SlurmTrainingClient:
         self.transfer_timeout = int(transfer_timeout)
         self.ssh = shutil.which("ssh")
         self.scp = shutil.which("scp")
-        self.powershell = shutil.which("powershell.exe") or shutil.which("powershell")
-        if not self.ssh or not self.scp or not self.powershell:
-            raise SlurmClientError("缺少系统 ssh、scp 或 powershell")
+        self.pwsh = shutil.which("pwsh.exe") or shutil.which("pwsh")
+        if not self.ssh or not self.scp or not self.pwsh:
+            raise SlurmClientError("缺少系统 ssh、scp 或 pwsh（PowerShell 7）")
 
     @classmethod
     def from_environment(cls) -> "SlurmTrainingClient":
@@ -118,7 +118,7 @@ class SlurmTrainingClient:
         try:
             proc = subprocess.run(
                 [
-                    self.powershell,
+                    self.pwsh,
                     "-NoProfile",
                     "-ExecutionPolicy",
                     "Bypass",

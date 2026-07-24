@@ -9,6 +9,3 @@ seaborn>=0.12.0
 
 # Chinese Stock Market Data (for times.py only)
 tushare>=1.2.89
-
-# Tongdaxin realtime quotes (Web UI data source)
-pytdx>=1.72

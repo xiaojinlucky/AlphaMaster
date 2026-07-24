@@ -14,7 +14,7 @@ import torch
 
 from config import Config
 from data_pipeline.a_share_data import ASHARE_SPECS_BY_TIMEFRAME
-from data_pipeline.dataset_contracts import TRAINING_SOURCE_IDS
+from data_pipeline.dataset_contracts import TRAINING_SOURCE_IDS, source_family
 from model_core.config import ModelConfig
 from model_core.vocab import FORMULA_VOCAB, VocabVersionMismatchError
 
@@ -116,11 +116,13 @@ def get_published_bundle(symbol: str) -> dict[str, Any] | None:
             or not isinstance(minimum_bars, int)
             or minimum_bars <= 0
             or (
-                local_source in TRAINING_SOURCE_IDS - {"ashare_local"}
+                isinstance(local_source, str)
+                and source_family(local_source) != "ashare"
                 and minimum_bars != Config.MIN_BARS
             )
             or (
-                local_source == "ashare_local"
+                isinstance(local_source, str)
+                and source_family(local_source) == "ashare"
                 and (
                     timeframe not in ASHARE_SPECS_BY_TIMEFRAME
                     or periods_per_year

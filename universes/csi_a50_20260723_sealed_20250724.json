@@ -1,0 +1,1170 @@
+{
+  "format": "alphamaster_a50_sealed_split_v1",
+  "universe_file": "universes/csi_a50_20260723.json",
+  "universe_contract_sha256": "987387945fba0cb778b648860bc7579a3cf49e9c3b788596464f714e968bb896",
+  "universe_snapshot_date": "20260723",
+  "source_id": "ashare_akshare_sina_hfq",
+  "requested_test_start": "20250724",
+  "test_start": "2025-07-24T07:00:00Z",
+  "test_end": "2026-07-23T07:00:00Z",
+  "common_test_bar_count": 224,
+  "minimum_symbol_test_bar_count": 232,
+  "maximum_symbol_test_bar_count": 242,
+  "warmup_bars": 252,
+  "symbol_count": 50,
+  "training_data_dir": "local_data/a_share_akshare_sina_hfq/20260723_train_pre_20250724",
+  "evaluation_data_dir": "local_data/a_share_akshare_sina_hfq/20260723_sealed_from_20250724",
+  "items": [
+    {
+      "symbol": "000333",
+      "name": "美的集团",
+      "parent_data_sha256": "06ad1c1e6093d776d676a21b78afdd975530f5aa33fd7b7501b982706a3fe257",
+      "training": {
+        "data_filename": "000333_D1.parquet",
+        "data_sha256": "074c9256a1d491d1c63f5ec4305366457e7a13e6b82f25c29aba918fd4a087eb",
+        "dataset_id": "sha256:074c9256a1d491d1c63f5ec4305366457e7a13e6b82f25c29aba918fd4a087eb",
+        "data_rows": 2271,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "000333_D1.parquet",
+        "data_sha256": "e3f91ce6a25a66d87a614b7d3ca34d4fb97ba41fe8addcc1eb1afe554698c95f",
+        "dataset_id": "sha256:e3f91ce6a25a66d87a614b7d3ca34d4fb97ba41fe8addcc1eb1afe554698c95f",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "000617",
+      "name": "中油资本",
+      "parent_data_sha256": "1f271fbbe329845bdd89a2bc408c1b503629f739d64d5be6734030fd81f08145",
+      "training": {
+        "data_filename": "000617_D1.parquet",
+        "data_sha256": "66a9bb626ed65fc1b0e5f0eaf168f69344e2bd3789e848dd47c2ac5e38e802af",
+        "dataset_id": "sha256:66a9bb626ed65fc1b0e5f0eaf168f69344e2bd3789e848dd47c2ac5e38e802af",
+        "data_rows": 2212,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "000617_D1.parquet",
+        "data_sha256": "b309b534b4e56aff9c286273bb8cfaf582c2057e0d2bebf1b83495bf265ef7cf",
+        "dataset_id": "sha256:b309b534b4e56aff9c286273bb8cfaf582c2057e0d2bebf1b83495bf265ef7cf",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "000725",
+      "name": "京东方A",
+      "parent_data_sha256": "071650c1dd619d5d81060873a147bd93f23db41d96153b9f921b973f32f0468a",
+      "training": {
+        "data_filename": "000725_D1.parquet",
+        "data_sha256": "2ad1cd1674dba4bc1cf73d2dcbc7962f1e29a04c01f0b3485cd45c0680a8365f",
+        "dataset_id": "sha256:2ad1cd1674dba4bc1cf73d2dcbc7962f1e29a04c01f0b3485cd45c0680a8365f",
+        "data_rows": 2321,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "000725_D1.parquet",
+        "data_sha256": "0448c21afd4894d156c534adeb2ae689c2627fa517f7c97bf4e276bdb0815099",
+        "dataset_id": "sha256:0448c21afd4894d156c534adeb2ae689c2627fa517f7c97bf4e276bdb0815099",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "000792",
+      "name": "盐湖股份",
+      "parent_data_sha256": "429d5f35697fce180f4d2daffd653e28d9d5238620ca751fbc6bdffaff565e87",
+      "training": {
+        "data_filename": "000792_D1.parquet",
+        "data_sha256": "6745686b748e12969f57b5c5c75be4e45362f9b6a18e11e82b03da87d87a3792",
+        "dataset_id": "sha256:6745686b748e12969f57b5c5c75be4e45362f9b6a18e11e82b03da87d87a3792",
+        "data_rows": 2002,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "000792_D1.parquet",
+        "data_sha256": "771ee2515cfddd5dabb4f60cb703c1023dec9feb3af79090200bc21ad4653fe3",
+        "dataset_id": "sha256:771ee2515cfddd5dabb4f60cb703c1023dec9feb3af79090200bc21ad4653fe3",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "000988",
+      "name": "华工科技",
+      "parent_data_sha256": "419c8ce7fe0e39537a502533bfe904e69c92302c5a7666a255a46189ad90d7ac",
+      "training": {
+        "data_filename": "000988_D1.parquet",
+        "data_sha256": "9e6a40d22de42d2c0765ac68437ad907f8c832c5277a0dd4ea3df144659202f3",
+        "dataset_id": "sha256:9e6a40d22de42d2c0765ac68437ad907f8c832c5277a0dd4ea3df144659202f3",
+        "data_rows": 2318,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "000988_D1.parquet",
+        "data_sha256": "359d9a1091b8478865f94b70a19749adec70b437897c4db054f5aa5ae03cb5a7",
+        "dataset_id": "sha256:359d9a1091b8478865f94b70a19749adec70b437897c4db054f5aa5ae03cb5a7",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "002027",
+      "name": "分众传媒",
+      "parent_data_sha256": "db88f225b012adc708d168eb57137f680f116b7eb4be208939cb7d3d13751334",
+      "training": {
+        "data_filename": "002027_D1.parquet",
+        "data_sha256": "3dbd55f6c97784a7711ee9d05a59cb104c37feb4bfe1017b7201764c4902aaae",
+        "dataset_id": "sha256:3dbd55f6c97784a7711ee9d05a59cb104c37feb4bfe1017b7201764c4902aaae",
+        "data_rows": 2321,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "002027_D1.parquet",
+        "data_sha256": "6e9da945386d59b58134eab8d4c8d3281589456f428a9b8dd150c36b95b405c2",
+        "dataset_id": "sha256:6e9da945386d59b58134eab8d4c8d3281589456f428a9b8dd150c36b95b405c2",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "002230",
+      "name": "科大讯飞",
+      "parent_data_sha256": "73410c816f819ba2e174c282d116c3d6a100dd6fd6ac2500c4de42a9feb804bf",
+      "training": {
+        "data_filename": "002230_D1.parquet",
+        "data_sha256": "e17cef71c65a4e5bc32d587685e6dcf75d04f7a057138549297c3320511a5763",
+        "dataset_id": "sha256:e17cef71c65a4e5bc32d587685e6dcf75d04f7a057138549297c3320511a5763",
+        "data_rows": 2273,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "002230_D1.parquet",
+        "data_sha256": "4eecf11e02a4b6fc9e222817c28259741d816625349d49e25f38e08ba99b064e",
+        "dataset_id": "sha256:4eecf11e02a4b6fc9e222817c28259741d816625349d49e25f38e08ba99b064e",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "002371",
+      "name": "北方华创",
+      "parent_data_sha256": "7a06142bf8db172db66a832c1e5f8804b5e801e9ec102d203921e18eaeb8b73b",
+      "training": {
+        "data_filename": "002371_D1.parquet",
+        "data_sha256": "ae3a62374de00a23dc01d8fa1cd352f807147716b4b481e89471869a19ecbe31",
+        "dataset_id": "sha256:ae3a62374de00a23dc01d8fa1cd352f807147716b4b481e89471869a19ecbe31",
+        "data_rows": 2311,
+        "data_start": "2016-01-11T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "002371_D1.parquet",
+        "data_sha256": "ee1eb83482de744d5866e3acdd7a6b1877535097ff07b6322f60a80aa7a31187",
+        "dataset_id": "sha256:ee1eb83482de744d5866e3acdd7a6b1877535097ff07b6322f60a80aa7a31187",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "002475",
+      "name": "立讯精密",
+      "parent_data_sha256": "aa21ed872f303eee9b6f573fccf9f05d12ee96d35804b58ddfe39c4a15e56f12",
+      "training": {
+        "data_filename": "002475_D1.parquet",
+        "data_sha256": "51acfc2fd560eb9c999c55f0e167e760fe548355028a240c8586f28fc22e32c6",
+        "dataset_id": "sha256:51acfc2fd560eb9c999c55f0e167e760fe548355028a240c8586f28fc22e32c6",
+        "data_rows": 2320,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "002475_D1.parquet",
+        "data_sha256": "de23877f180eae34b2988feabc9fd9fddbc789624a386803daba4cb083c22241",
+        "dataset_id": "sha256:de23877f180eae34b2988feabc9fd9fddbc789624a386803daba4cb083c22241",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "002594",
+      "name": "比亚迪",
+      "parent_data_sha256": "bd969e119d13c7f864e526b279f81a9b1f9d21e4b6416212bbf6f6e02f99a553",
+      "training": {
+        "data_filename": "002594_D1.parquet",
+        "data_sha256": "533ea95ba5588e7bce544e6605553da149894ea1b3fc4545e2b79581b12c5f83",
+        "dataset_id": "sha256:533ea95ba5588e7bce544e6605553da149894ea1b3fc4545e2b79581b12c5f83",
+        "data_rows": 2321,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "002594_D1.parquet",
+        "data_sha256": "4ebc6e33789637ec493ff8953ddf1ea134e26715810afeb718024e3d70d3cc29",
+        "dataset_id": "sha256:4ebc6e33789637ec493ff8953ddf1ea134e26715810afeb718024e3d70d3cc29",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "002602",
+      "name": "世纪华通",
+      "parent_data_sha256": "5f282bb870a2c6b6d88acedfff1c3e33813f04beaa83ad4304c9a786aaf58343",
+      "training": {
+        "data_filename": "002602_D1.parquet",
+        "data_sha256": "f49d1de05b38dcb9129f7d797639ffe7212fc78a3de88a9f31a9f9e9079401cf",
+        "dataset_id": "sha256:f49d1de05b38dcb9129f7d797639ffe7212fc78a3de88a9f31a9f9e9079401cf",
+        "data_rows": 2180,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "002602_D1.parquet",
+        "data_sha256": "2e585c2af2b690f3202409cbe02be7ab8eda66c5fa0c412f96867b3de62487bb",
+        "dataset_id": "sha256:2e585c2af2b690f3202409cbe02be7ab8eda66c5fa0c412f96867b3de62487bb",
+        "data_rows": 493,
+        "data_start": "2024-07-09T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "002625",
+      "name": "光启技术",
+      "parent_data_sha256": "5fba23c6519897757e329c6c0b87f000d377c4a9585ceaae82b0ee5d70ecf925",
+      "training": {
+        "data_filename": "002625_D1.parquet",
+        "data_sha256": "35978325e080a38657a7dbd6ea81ed0c1062f64a94eb2295751a95aa84975a4e",
+        "dataset_id": "sha256:35978325e080a38657a7dbd6ea81ed0c1062f64a94eb2295751a95aa84975a4e",
+        "data_rows": 2158,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "002625_D1.parquet",
+        "data_sha256": "a7f329eb4de094e8bcc24b2e365e69c717c10999ada5a752f3cb72f0a5c0e4f8",
+        "dataset_id": "sha256:a7f329eb4de094e8bcc24b2e365e69c717c10999ada5a752f3cb72f0a5c0e4f8",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "002714",
+      "name": "牧原股份",
+      "parent_data_sha256": "6a871cd63a7d636e100a82ed61d9033579b5b8b3fbcae30502dda760d547ac3e",
+      "training": {
+        "data_filename": "002714_D1.parquet",
+        "data_sha256": "0ab5ee9e292793e77e1667b32f28346638ec8364363ee784eb883cca53eae163",
+        "dataset_id": "sha256:0ab5ee9e292793e77e1667b32f28346638ec8364363ee784eb883cca53eae163",
+        "data_rows": 2311,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "002714_D1.parquet",
+        "data_sha256": "d560416affcd1a5a19d49a3a6958cb776a96446a61ff2fca82cf8b11ae2ea881",
+        "dataset_id": "sha256:d560416affcd1a5a19d49a3a6958cb776a96446a61ff2fca82cf8b11ae2ea881",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "300015",
+      "name": "爱尔眼科",
+      "parent_data_sha256": "bda49e9f881a009c9631b0a7bcd3a4d08fc1e91c41949d01553586227d5cdb01",
+      "training": {
+        "data_filename": "300015_D1.parquet",
+        "data_sha256": "61eac4c0ea5334bfff1e40aa8f793c496fd358c6d1bf7bbdc86492defcff38f5",
+        "dataset_id": "sha256:61eac4c0ea5334bfff1e40aa8f793c496fd358c6d1bf7bbdc86492defcff38f5",
+        "data_rows": 2305,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "300015_D1.parquet",
+        "data_sha256": "59e8364d4749511fb1f0afc5bac35e57c7e647ea1a20ad9e6d695d9800c86737",
+        "dataset_id": "sha256:59e8364d4749511fb1f0afc5bac35e57c7e647ea1a20ad9e6d695d9800c86737",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "300124",
+      "name": "汇川技术",
+      "parent_data_sha256": "0a0f0245464f5f3f24384d791617322b8af38fe87c9cb42b05926a4e084d3dfd",
+      "training": {
+        "data_filename": "300124_D1.parquet",
+        "data_sha256": "6dfcf54e03207bcaeb7d69ecf53b7d9a7bbfbeae0a60422d7fc5dc4ade8762b9",
+        "dataset_id": "sha256:6dfcf54e03207bcaeb7d69ecf53b7d9a7bbfbeae0a60422d7fc5dc4ade8762b9",
+        "data_rows": 2310,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "300124_D1.parquet",
+        "data_sha256": "8cff3efb718cb739e4d5c555d652e0b6a5e1dd1c14489d5c6c0dc0553784a659",
+        "dataset_id": "sha256:8cff3efb718cb739e4d5c555d652e0b6a5e1dd1c14489d5c6c0dc0553784a659",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "300274",
+      "name": "阳光电源",
+      "parent_data_sha256": "10d56a364d5380bc2ac69188d589ce573f3071e43ad8af9a4c04446123caff02",
+      "training": {
+        "data_filename": "300274_D1.parquet",
+        "data_sha256": "4e8e5f6421da3fa63c8e82a3a7c653e346f7a3d5b2f35661994363f78d99c1ea",
+        "dataset_id": "sha256:4e8e5f6421da3fa63c8e82a3a7c653e346f7a3d5b2f35661994363f78d99c1ea",
+        "data_rows": 2316,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "300274_D1.parquet",
+        "data_sha256": "5581298098bb8368ec74c0cdfbd98d394de1d0300e4bdab59d45b08091f6647d",
+        "dataset_id": "sha256:5581298098bb8368ec74c0cdfbd98d394de1d0300e4bdab59d45b08091f6647d",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "300308",
+      "name": "中际旭创",
+      "parent_data_sha256": "4eed14cd3185cf54cb841dd39b494338de43c35d035d88e814ce6bf6e257034a",
+      "training": {
+        "data_filename": "300308_D1.parquet",
+        "data_sha256": "d44cf055b69673ba12c6a5362329897cce64aaf2b095bc87d2cbb8a87aea06cb",
+        "dataset_id": "sha256:d44cf055b69673ba12c6a5362329897cce64aaf2b095bc87d2cbb8a87aea06cb",
+        "data_rows": 2177,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "300308_D1.parquet",
+        "data_sha256": "9f799a0a38b8a8c69dbec36234d97be304eb63702cb8060279632dc4d51843a0",
+        "dataset_id": "sha256:9f799a0a38b8a8c69dbec36234d97be304eb63702cb8060279632dc4d51843a0",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "300476",
+      "name": "胜宏科技",
+      "parent_data_sha256": "a3b97c99018d82b1919514491ccee848f390cb709868de46fd7cff442442f18c",
+      "training": {
+        "data_filename": "300476_D1.parquet",
+        "data_sha256": "a4cfc38dbc0314a39b2aac3114df952f4178be1f77ecdd347830fb505695a876",
+        "dataset_id": "sha256:a4cfc38dbc0314a39b2aac3114df952f4178be1f77ecdd347830fb505695a876",
+        "data_rows": 2316,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "300476_D1.parquet",
+        "data_sha256": "0b324aa56ef56ab35aab8e1dd012ab8bae01a435c4d37f7cd4aecd57128a6b3c",
+        "dataset_id": "sha256:0b324aa56ef56ab35aab8e1dd012ab8bae01a435c4d37f7cd4aecd57128a6b3c",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "300750",
+      "name": "宁德时代",
+      "parent_data_sha256": "e536f2bc3cf3869c9095d5a10c8a39d484659dc94e3ceaf236be5fb4a2e60927",
+      "training": {
+        "data_filename": "300750_D1.parquet",
+        "data_sha256": "1329d3224bc7e6f787dcd7c3bb9e810dcb8f61e5791d90e8a5ede5c07588e90e",
+        "dataset_id": "sha256:1329d3224bc7e6f787dcd7c3bb9e810dcb8f61e5791d90e8a5ede5c07588e90e",
+        "data_rows": 1728,
+        "data_start": "2018-06-11T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "300750_D1.parquet",
+        "data_sha256": "a92d4f350ba599b9097bfcba2bd9aaba21afb0bb007d9a488efa9a088d94284c",
+        "dataset_id": "sha256:a92d4f350ba599b9097bfcba2bd9aaba21afb0bb007d9a488efa9a088d94284c",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "300760",
+      "name": "迈瑞医疗",
+      "parent_data_sha256": "90b5f53931c1e0eb23e0e80bef3786b1ee30e77029f86a9c1c7f281fa374b57d",
+      "training": {
+        "data_filename": "300760_D1.parquet",
+        "data_sha256": "c300b820c24e2570c3a64b6b2a3560f2de282a0a3459a17afd99b4916e799c02",
+        "dataset_id": "sha256:c300b820c24e2570c3a64b6b2a3560f2de282a0a3459a17afd99b4916e799c02",
+        "data_rows": 1644,
+        "data_start": "2018-10-16T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "300760_D1.parquet",
+        "data_sha256": "9544c41ce0a1afe760db40ffd0f86b475d7e5ece3291d317a904368e4e4fe34d",
+        "dataset_id": "sha256:9544c41ce0a1afe760db40ffd0f86b475d7e5ece3291d317a904368e4e4fe34d",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "600019",
+      "name": "宝钢股份",
+      "parent_data_sha256": "7bd6254eec2e0e4b338f75aae83980223fde14cb9b5985d91eb8afb56c0e2913",
+      "training": {
+        "data_filename": "600019_D1.parquet",
+        "data_sha256": "60cf1e32e09c10119d86864173f7d28347df7c7364dc04ec706f5bf9d498fdd0",
+        "dataset_id": "sha256:60cf1e32e09c10119d86864173f7d28347df7c7364dc04ec706f5bf9d498fdd0",
+        "data_rows": 2229,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "600019_D1.parquet",
+        "data_sha256": "eca808298b49b0d49912b2235832e13df4dac1032b495c217a6f488a0d64b961",
+        "dataset_id": "sha256:eca808298b49b0d49912b2235832e13df4dac1032b495c217a6f488a0d64b961",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "600030",
+      "name": "中信证券",
+      "parent_data_sha256": "ca5c46c5e0fc4a3bd560fac37cf3356b068745ba7933b0aefe0c76811141587c",
+      "training": {
+        "data_filename": "600030_D1.parquet",
+        "data_sha256": "2396bf0d074cd15d98605cbb1cb8fac646d00306c5ca34904f3ac81a3a8063a2",
+        "dataset_id": "sha256:2396bf0d074cd15d98605cbb1cb8fac646d00306c5ca34904f3ac81a3a8063a2",
+        "data_rows": 2304,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "600030_D1.parquet",
+        "data_sha256": "94e04d0541abc1e3f04a2e623390e3fac9f01b48c92b17b6ca0d260aec2777ed",
+        "dataset_id": "sha256:94e04d0541abc1e3f04a2e623390e3fac9f01b48c92b17b6ca0d260aec2777ed",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "600031",
+      "name": "三一重工",
+      "parent_data_sha256": "10cc230bdc4d04a4e0f88d3924115c800399c8ebcdba5d2262eb0b992759aa6a",
+      "training": {
+        "data_filename": "600031_D1.parquet",
+        "data_sha256": "3aa9dc3de076ff1f74d2dbe4fd673b3f4478eb9950b3051fe8966340817ea689",
+        "dataset_id": "sha256:3aa9dc3de076ff1f74d2dbe4fd673b3f4478eb9950b3051fe8966340817ea689",
+        "data_rows": 2321,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "600031_D1.parquet",
+        "data_sha256": "b40c893fd7fd39ed3d1da2a936b47557b8571471cc95a8b0a9a90c3d9c909331",
+        "dataset_id": "sha256:b40c893fd7fd39ed3d1da2a936b47557b8571471cc95a8b0a9a90c3d9c909331",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "600036",
+      "name": "招商银行",
+      "parent_data_sha256": "a11ca83b543d7773813e438854e19aebf8b2f905f25381708c0ae0a7358bedcb",
+      "training": {
+        "data_filename": "600036_D1.parquet",
+        "data_sha256": "7832b20c30ed07bbf63bad37a27965abb20c49602b14e436be24d3f038505a2a",
+        "dataset_id": "sha256:7832b20c30ed07bbf63bad37a27965abb20c49602b14e436be24d3f038505a2a",
+        "data_rows": 2321,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "600036_D1.parquet",
+        "data_sha256": "21c0611ce78ef59722410d257da9050c8a6befadef74c2ec1defd6db92b5fca2",
+        "dataset_id": "sha256:21c0611ce78ef59722410d257da9050c8a6befadef74c2ec1defd6db92b5fca2",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "600048",
+      "name": "保利发展",
+      "parent_data_sha256": "31242d1a1ea73fff608657227e3cec2e777b38b8ddf5f6fec0acd1d235a98505",
+      "training": {
+        "data_filename": "600048_D1.parquet",
+        "data_sha256": "6eec4ace87b04f1d13b9197b390d029fbc8242a35a39ae6d143fa319fe39672b",
+        "dataset_id": "sha256:6eec4ace87b04f1d13b9197b390d029fbc8242a35a39ae6d143fa319fe39672b",
+        "data_rows": 2314,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "600048_D1.parquet",
+        "data_sha256": "a2931eec8d677cd28d8d4668d9ea9dec61f3a448a74dfd4874c498cc63fe3d55",
+        "dataset_id": "sha256:a2931eec8d677cd28d8d4668d9ea9dec61f3a448a74dfd4874c498cc63fe3d55",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "600111",
+      "name": "北方稀土",
+      "parent_data_sha256": "74d166e479395e49becc5959bf1ecdcd344fd0eff149d92ba1700a063632b305",
+      "training": {
+        "data_filename": "600111_D1.parquet",
+        "data_sha256": "de1d4445177ab2380357cac23eccc1c45058d557237b0bfbb3bfb0c1d8a8e2a6",
+        "dataset_id": "sha256:de1d4445177ab2380357cac23eccc1c45058d557237b0bfbb3bfb0c1d8a8e2a6",
+        "data_rows": 2321,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "600111_D1.parquet",
+        "data_sha256": "ea6650cf4f0d64128fee5d85340c1716697ceb400b97914b1df362b05bd3d735",
+        "dataset_id": "sha256:ea6650cf4f0d64128fee5d85340c1716697ceb400b97914b1df362b05bd3d735",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "600150",
+      "name": "中国船舶",
+      "parent_data_sha256": "3faeda4dd96c9745bb51397511034c7fc1780ef8cc036f05d26e450911b59fb2",
+      "training": {
+        "data_filename": "600150_D1.parquet",
+        "data_sha256": "8eac10c41020503642516aca9a47c981b04c7ce8b115aa4bacae9a6b8dd1f9f3",
+        "dataset_id": "sha256:8eac10c41020503642516aca9a47c981b04c7ce8b115aa4bacae9a6b8dd1f9f3",
+        "data_rows": 2184,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "600150_D1.parquet",
+        "data_sha256": "0b956f19c75cb8c03bddbe59ddb8ec41f9366166db3ef226a5d1ccfabe6ec49a",
+        "dataset_id": "sha256:0b956f19c75cb8c03bddbe59ddb8ec41f9366166db3ef226a5d1ccfabe6ec49a",
+        "data_rows": 490,
+        "data_start": "2024-06-26T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "600276",
+      "name": "恒瑞医药",
+      "parent_data_sha256": "5c620c5a6fe36069c47ee964f01cf25f198a9714148f78f5b3aae02915404170",
+      "training": {
+        "data_filename": "600276_D1.parquet",
+        "data_sha256": "b5d379fc6e945763c55cd5c51a8f0e798713f7d1fcdb9a955c076741826bd159",
+        "dataset_id": "sha256:b5d379fc6e945763c55cd5c51a8f0e798713f7d1fcdb9a955c076741826bd159",
+        "data_rows": 2320,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "600276_D1.parquet",
+        "data_sha256": "8a7e7a93e70f90a099860ccafbd89418519c86bd7985acc9c607bb01dd8cc764",
+        "dataset_id": "sha256:8a7e7a93e70f90a099860ccafbd89418519c86bd7985acc9c607bb01dd8cc764",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "600309",
+      "name": "万华化学",
+      "parent_data_sha256": "fc60ec89c88e5b80e7ec6724cc6cd90ef258246eaad07ae05427023f7ce4d679",
+      "training": {
+        "data_filename": "600309_D1.parquet",
+        "data_sha256": "b94382dd9c1db020d3d2182054306a1558130381cff0e29fbd65ecb705a3384b",
+        "dataset_id": "sha256:b94382dd9c1db020d3d2182054306a1558130381cff0e29fbd65ecb705a3384b",
+        "data_rows": 2196,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "600309_D1.parquet",
+        "data_sha256": "7aef4ad3bcd0618e2c6aae49e94d8908ed2c3a3ecdbd2fe57063b0aee7fe9f22",
+        "dataset_id": "sha256:7aef4ad3bcd0618e2c6aae49e94d8908ed2c3a3ecdbd2fe57063b0aee7fe9f22",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "600406",
+      "name": "国电南瑞",
+      "parent_data_sha256": "a4ef5993b3fdefd877c696ec04147af28277c8e30e5ab482af54a6246d2728ae",
+      "training": {
+        "data_filename": "600406_D1.parquet",
+        "data_sha256": "d39682591cdacbf117ea93f2f923f9c4f344113a627debc62d733c84958e49b8",
+        "dataset_id": "sha256:d39682591cdacbf117ea93f2f923f9c4f344113a627debc62d733c84958e49b8",
+        "data_rows": 2212,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "600406_D1.parquet",
+        "data_sha256": "4129839532b58a83b31083a7597309ca1b12aa3145bc5b3a9e503e4f1192e791",
+        "dataset_id": "sha256:4129839532b58a83b31083a7597309ca1b12aa3145bc5b3a9e503e4f1192e791",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "600415",
+      "name": "小商品城",
+      "parent_data_sha256": "6a2efec8a7dde877020be1d8fb4926d994a93ec37b568aab7d6914e879e4c5b9",
+      "training": {
+        "data_filename": "600415_D1.parquet",
+        "data_sha256": "bb81cfbc2b0b56a2e873c36e6c509223901005a5a6501aeaa5776dce93d9acf5",
+        "dataset_id": "sha256:bb81cfbc2b0b56a2e873c36e6c509223901005a5a6501aeaa5776dce93d9acf5",
+        "data_rows": 2321,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "600415_D1.parquet",
+        "data_sha256": "22317bafcf002e31f43480ce1fe8f60a96ffc84bb867e38fe645b8899738b907",
+        "dataset_id": "sha256:22317bafcf002e31f43480ce1fe8f60a96ffc84bb867e38fe645b8899738b907",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "600436",
+      "name": "片仔癀",
+      "parent_data_sha256": "5c5c722c31d93c04528065bc8fa31d8ced8b353d598de8ae3ea419f79486e04d",
+      "training": {
+        "data_filename": "600436_D1.parquet",
+        "data_sha256": "ea359b01e6391c827e2225d4fae948e5ea01d40fd2a53faad81ccda711cd291d",
+        "dataset_id": "sha256:ea359b01e6391c827e2225d4fae948e5ea01d40fd2a53faad81ccda711cd291d",
+        "data_rows": 2321,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "600436_D1.parquet",
+        "data_sha256": "6d695a596abcd1ca8e8e9d989b581662e59cc413faf2a06b3dd719dd38083938",
+        "dataset_id": "sha256:6d695a596abcd1ca8e8e9d989b581662e59cc413faf2a06b3dd719dd38083938",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "600519",
+      "name": "贵州茅台",
+      "parent_data_sha256": "e22366b6b31a3dc9d2fa604c5dd81e7dbd051442a23b894e0a2025b225110fe5",
+      "training": {
+        "data_filename": "600519_D1.parquet",
+        "data_sha256": "00ec684399c5608746d4e14aad63791754abcbdeefa5fa7112d03358b552491b",
+        "dataset_id": "sha256:00ec684399c5608746d4e14aad63791754abcbdeefa5fa7112d03358b552491b",
+        "data_rows": 2321,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "600519_D1.parquet",
+        "data_sha256": "99803e9257b7e2c8557de1e2e5c92c4669d5fa710addbcc491aff01b450f3ed8",
+        "dataset_id": "sha256:99803e9257b7e2c8557de1e2e5c92c4669d5fa710addbcc491aff01b450f3ed8",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "600585",
+      "name": "海螺水泥",
+      "parent_data_sha256": "b510e516ee0fdbc9016a9e319da6d3ceaff4db315683fd6b669624a34f9b91d5",
+      "training": {
+        "data_filename": "600585_D1.parquet",
+        "data_sha256": "5e2a34dd715df25edc72acf772d8e5f80934ac98bfc44f12943e2ccb2a5bf39f",
+        "dataset_id": "sha256:5e2a34dd715df25edc72acf772d8e5f80934ac98bfc44f12943e2ccb2a5bf39f",
+        "data_rows": 2321,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "600585_D1.parquet",
+        "data_sha256": "665f6cdb7fd4922f249d54d3f03fff2b4bb09dc8561d07cca1a46bac1da8ba21",
+        "dataset_id": "sha256:665f6cdb7fd4922f249d54d3f03fff2b4bb09dc8561d07cca1a46bac1da8ba21",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "600660",
+      "name": "福耀玻璃",
+      "parent_data_sha256": "fc0b60ef4ff8564c5f1ff2dc4fb92edfef7bdfd764274ca0bd03fbb13d39684b",
+      "training": {
+        "data_filename": "600660_D1.parquet",
+        "data_sha256": "031a2583a677907d933756ef0a3cc995bb3bfd5e48f4cb173fafe9e15bad3ef0",
+        "dataset_id": "sha256:031a2583a677907d933756ef0a3cc995bb3bfd5e48f4cb173fafe9e15bad3ef0",
+        "data_rows": 2321,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "600660_D1.parquet",
+        "data_sha256": "f939d5018fcc146b0e7780f23e6e7e57dd0c10ceab2a86a601c079649bf28ec0",
+        "dataset_id": "sha256:f939d5018fcc146b0e7780f23e6e7e57dd0c10ceab2a86a601c079649bf28ec0",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "600887",
+      "name": "伊利股份",
+      "parent_data_sha256": "090e618bfb3f341cc1da0c7936d484a272195dee3b40115a1833df6a6dc93781",
+      "training": {
+        "data_filename": "600887_D1.parquet",
+        "data_sha256": "1f71b9e8e3e4d539138605bb23a85d7693374cdaf3c4fd98b1931ade125bded6",
+        "dataset_id": "sha256:1f71b9e8e3e4d539138605bb23a85d7693374cdaf3c4fd98b1931ade125bded6",
+        "data_rows": 2297,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "600887_D1.parquet",
+        "data_sha256": "e692dd9b2903947e2b7eec8ada611b4117ccb7b8fe268f84f5dc12f38c1b7963",
+        "dataset_id": "sha256:e692dd9b2903947e2b7eec8ada611b4117ccb7b8fe268f84f5dc12f38c1b7963",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "600893",
+      "name": "航发动力",
+      "parent_data_sha256": "90a30fc9f706a0dff2f0bcfa114c05e12c98a93e64a4d6dde4b170928573c994",
+      "training": {
+        "data_filename": "600893_D1.parquet",
+        "data_sha256": "7df21784c526b488a8fdcdce2bcbf65232419c919abc81546528d903cdb10442",
+        "dataset_id": "sha256:7df21784c526b488a8fdcdce2bcbf65232419c919abc81546528d903cdb10442",
+        "data_rows": 2290,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "600893_D1.parquet",
+        "data_sha256": "1fdc16dddc2e588d04e60e1d220d3e58d1a965db8aff09b9a35d0dc2c1afc91b",
+        "dataset_id": "sha256:1fdc16dddc2e588d04e60e1d220d3e58d1a965db8aff09b9a35d0dc2c1afc91b",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "600900",
+      "name": "长江电力",
+      "parent_data_sha256": "b8d226c8749034bd8db5029efbefd3f103c2d2d2a4911b95480d7dc296dc6380",
+      "training": {
+        "data_filename": "600900_D1.parquet",
+        "data_sha256": "1cb0c7d87057fcb0556aa01b362d1c7908be00742580dca850a626eb910ffca1",
+        "dataset_id": "sha256:1cb0c7d87057fcb0556aa01b362d1c7908be00742580dca850a626eb910ffca1",
+        "data_rows": 2304,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "600900_D1.parquet",
+        "data_sha256": "42ab2176f62c5f375c4acbec68df91dfef6b87e45ee451463063e4cceae0ea52",
+        "dataset_id": "sha256:42ab2176f62c5f375c4acbec68df91dfef6b87e45ee451463063e4cceae0ea52",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "600941",
+      "name": "中国移动",
+      "parent_data_sha256": "31a21bb4d5a0d1ce1cb7d74a6dcbeb7bdcb55efc5b9c2d36ed3e7b11f58cc0a4",
+      "training": {
+        "data_filename": "600941_D1.parquet",
+        "data_sha256": "02735c37277a3374df64b54a2112faf47fd85b6c1acbee25996cca1e3591dbba",
+        "dataset_id": "sha256:02735c37277a3374df64b54a2112faf47fd85b6c1acbee25996cca1e3591dbba",
+        "data_rows": 859,
+        "data_start": "2022-01-05T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "600941_D1.parquet",
+        "data_sha256": "83f56ef34abd7d5f6d695978e305722a46e9fd4e6df100a9017d01541412bb41",
+        "dataset_id": "sha256:83f56ef34abd7d5f6d695978e305722a46e9fd4e6df100a9017d01541412bb41",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "601088",
+      "name": "中国神华",
+      "parent_data_sha256": "605ae655475453ffd8da035b8f185371dede8a7cd44dc0c78dd4fb78631dade7",
+      "training": {
+        "data_filename": "601088_D1.parquet",
+        "data_sha256": "672a6bd16e164efffe64db2ab377792c35fbc61344c82b01e5cdd398977948bf",
+        "dataset_id": "sha256:672a6bd16e164efffe64db2ab377792c35fbc61344c82b01e5cdd398977948bf",
+        "data_rows": 2257,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "601088_D1.parquet",
+        "data_sha256": "f4792dfdcda57b0f1337d205492be44453e78a001679a4918d8df60677d6c0b8",
+        "dataset_id": "sha256:f4792dfdcda57b0f1337d205492be44453e78a001679a4918d8df60677d6c0b8",
+        "data_rows": 484,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "601318",
+      "name": "中国平安",
+      "parent_data_sha256": "cc442a6729a8098484975b3fd51e8e9dbe3649a63c6efd970119b8f1262fea77",
+      "training": {
+        "data_filename": "601318_D1.parquet",
+        "data_sha256": "f1f7056588cc54a45ebd671abec4bee0d5a99ae3ea2c5d04e804b666da093e6e",
+        "dataset_id": "sha256:f1f7056588cc54a45ebd671abec4bee0d5a99ae3ea2c5d04e804b666da093e6e",
+        "data_rows": 2321,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "601318_D1.parquet",
+        "data_sha256": "26bc661674353b4abab2ce35ab153a4d11ff1525330363ad8b4826ec3b0ab44b",
+        "dataset_id": "sha256:26bc661674353b4abab2ce35ab153a4d11ff1525330363ad8b4826ec3b0ab44b",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "601668",
+      "name": "中国建筑",
+      "parent_data_sha256": "d26c58928411c5764c14b204db9d374b4596091e3b554397a41ec33b07ac8dc6",
+      "training": {
+        "data_filename": "601668_D1.parquet",
+        "data_sha256": "1231b01f1afb314814b39b993129e5318f55f18fd058e419fb3c3d93f445527b",
+        "dataset_id": "sha256:1231b01f1afb314814b39b993129e5318f55f18fd058e419fb3c3d93f445527b",
+        "data_rows": 2321,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "601668_D1.parquet",
+        "data_sha256": "7b97d9b34f685e8cb3907ccbc5ebb9f051b0bd92fa06e26cc8407fb3867049cb",
+        "dataset_id": "sha256:7b97d9b34f685e8cb3907ccbc5ebb9f051b0bd92fa06e26cc8407fb3867049cb",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "601816",
+      "name": "京沪高铁",
+      "parent_data_sha256": "45b282391b9b895fcaeaad67046856dd2ed62ea6dfe69626e146084b225f3c7f",
+      "training": {
+        "data_filename": "601816_D1.parquet",
+        "data_sha256": "5e7c74e65b74aff08a96d18a9e062aced4cc1a331a8f55c238288bf21572ce55",
+        "dataset_id": "sha256:5e7c74e65b74aff08a96d18a9e062aced4cc1a331a8f55c238288bf21572ce55",
+        "data_rows": 1336,
+        "data_start": "2020-01-16T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "601816_D1.parquet",
+        "data_sha256": "fbfaf7d0c5eb226888274aadaf437caeed28db01b13537ee65141261503c259f",
+        "dataset_id": "sha256:fbfaf7d0c5eb226888274aadaf437caeed28db01b13537ee65141261503c259f",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "601857",
+      "name": "中国石油",
+      "parent_data_sha256": "6635ace64f798de27d1d2a1bd05e58fb5e9c63115d3be2c91bcb69c5794ab226",
+      "training": {
+        "data_filename": "601857_D1.parquet",
+        "data_sha256": "d4ff7842e351bc009e94933dc8fe5ec88de72e675d5aab2302547c3afa445c59",
+        "dataset_id": "sha256:d4ff7842e351bc009e94933dc8fe5ec88de72e675d5aab2302547c3afa445c59",
+        "data_rows": 2321,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "601857_D1.parquet",
+        "data_sha256": "ca0aec7b9453263e88d91539325169137374b23dc239a16b4874a58a599cb230",
+        "dataset_id": "sha256:ca0aec7b9453263e88d91539325169137374b23dc239a16b4874a58a599cb230",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "601888",
+      "name": "中国中免",
+      "parent_data_sha256": "c2b187f54a74c1b52ca9412db80a7652851359b66449319175ee260daf29cfaa",
+      "training": {
+        "data_filename": "601888_D1.parquet",
+        "data_sha256": "1716ec3a534cc5aa6b7678a16f77b80ad7a7f50f460ec6858c7f0e0b95714be7",
+        "dataset_id": "sha256:1716ec3a534cc5aa6b7678a16f77b80ad7a7f50f460ec6858c7f0e0b95714be7",
+        "data_rows": 2321,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "601888_D1.parquet",
+        "data_sha256": "b1b9e5c1781b688a8a1eaf7e6a64157ee5cf2931c918f7bff3bce89c83e4f7a0",
+        "dataset_id": "sha256:b1b9e5c1781b688a8a1eaf7e6a64157ee5cf2931c918f7bff3bce89c83e4f7a0",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "601899",
+      "name": "紫金矿业",
+      "parent_data_sha256": "1801f6496a00797944849b8d9aabece4aebf261936dd5acaeee082181bced2b5",
+      "training": {
+        "data_filename": "601899_D1.parquet",
+        "data_sha256": "763966cf60c311deba02ddbc2bc8202aa8b870d0e114c4c7cebde9215086da8d",
+        "dataset_id": "sha256:763966cf60c311deba02ddbc2bc8202aa8b870d0e114c4c7cebde9215086da8d",
+        "data_rows": 2315,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "601899_D1.parquet",
+        "data_sha256": "f09252a71c2b758fb49eb25cc7bf5869d422fbfbd0ea5550025a700acc4f3729",
+        "dataset_id": "sha256:f09252a71c2b758fb49eb25cc7bf5869d422fbfbd0ea5550025a700acc4f3729",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "603259",
+      "name": "药明康德",
+      "parent_data_sha256": "b2b39b61ea4e423307ad8276c860ecd16ae0cf29d5bf7591084ff31bc8fb2f4d",
+      "training": {
+        "data_filename": "603259_D1.parquet",
+        "data_sha256": "f0420cac07a121b5934c45490fc8545b66051a6b84a74813b9cf78c3fb14b36c",
+        "dataset_id": "sha256:f0420cac07a121b5934c45490fc8545b66051a6b84a74813b9cf78c3fb14b36c",
+        "data_rows": 1752,
+        "data_start": "2018-05-08T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "603259_D1.parquet",
+        "data_sha256": "6170506b3e4eab0454045d2a2dec32a8ff9707e6811bcfc220484b06909e5cfd",
+        "dataset_id": "sha256:6170506b3e4eab0454045d2a2dec32a8ff9707e6811bcfc220484b06909e5cfd",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "603993",
+      "name": "洛阳钼业",
+      "parent_data_sha256": "9aff9033607ab279f43da49aca167619d074376361ca33146529d749309535cd",
+      "training": {
+        "data_filename": "603993_D1.parquet",
+        "data_sha256": "81f225c4417553445297c71d49eebcf06d055367cf3960747a392c7d34e14fb5",
+        "dataset_id": "sha256:81f225c4417553445297c71d49eebcf06d055367cf3960747a392c7d34e14fb5",
+        "data_rows": 2302,
+        "data_start": "2016-01-04T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "603993_D1.parquet",
+        "data_sha256": "811b88a3dd652db5caa739fe85e0d890020da867da7e708d853eb7b9bf37a2e0",
+        "dataset_id": "sha256:811b88a3dd652db5caa739fe85e0d890020da867da7e708d853eb7b9bf37a2e0",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "605499",
+      "name": "东鹏饮料",
+      "parent_data_sha256": "cc09299f02b116e31561c925fa9a1bc739f0f16edf6a40728bdd1414cfbde0dd",
+      "training": {
+        "data_filename": "605499_D1.parquet",
+        "data_sha256": "1307d0d57d6a3e4cf87e485afa92ee60f4236e0dddc9db20b6f2aa1cb15e16f6",
+        "dataset_id": "sha256:1307d0d57d6a3e4cf87e485afa92ee60f4236e0dddc9db20b6f2aa1cb15e16f6",
+        "data_rows": 1009,
+        "data_start": "2021-05-27T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "605499_D1.parquet",
+        "data_sha256": "2d437ddc741fda07278907473384621820b66a03f7356da1941618bd393b7032",
+        "dataset_id": "sha256:2d437ddc741fda07278907473384621820b66a03f7356da1941618bd393b7032",
+        "data_rows": 494,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    },
+    {
+      "symbol": "688981",
+      "name": "中芯国际",
+      "parent_data_sha256": "af79a0f00602561da0cf630a960031e25a7433189d0356bafe4d1b9f8f226110",
+      "training": {
+        "data_filename": "688981_D1.parquet",
+        "data_sha256": "c5f994d4f14e351b3f1f554192c85633bf5e00e25f5131990da3039cc1b81d58",
+        "dataset_id": "sha256:c5f994d4f14e351b3f1f554192c85633bf5e00e25f5131990da3039cc1b81d58",
+        "data_rows": 1218,
+        "data_start": "2020-07-16T07:00:00Z",
+        "data_end": "2025-07-23T07:00:00Z"
+      },
+      "sealed_evaluation": {
+        "data_filename": "688981_D1.parquet",
+        "data_sha256": "d4156ee71b406665c1e3fa597b2e1724e26f2d5c16e4cfe2ebc4b75f51621240",
+        "dataset_id": "sha256:d4156ee71b406665c1e3fa597b2e1724e26f2d5c16e4cfe2ebc4b75f51621240",
+        "data_rows": 488,
+        "data_start": "2024-07-10T07:00:00Z",
+        "data_end": "2026-07-23T07:00:00Z",
+        "score_start": "2025-07-24T07:00:00Z",
+        "warmup_bars": 252
+      }
+    }
+  ],
+  "contract_sha256": "ec5a9549587802b3f0f82fd566d953315b3ecbf0a42d24f21795a8978a60cf73"
+}

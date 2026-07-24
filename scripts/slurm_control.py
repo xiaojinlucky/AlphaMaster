@@ -20,7 +20,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
 
-ROOT = Path("/hwdata/home/jinqc/Quant/AlphaMaster")
+ROOT = Path(__file__).resolve().parents[1]
 SLURM_BIN = Path("/opt/gridview/slurm/bin")
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -52,6 +52,7 @@ REQUIRED_SOURCE_FILES = (
     "train_file.py",
     "data_pipeline/dataset_contracts.py",
     "model_core/config.py",
+    "utils/training_runtime.py",
     "scripts/train_slurm_worker.py",
     "scripts/train_alphamaster.sbatch",
 )

@@ -26,7 +26,7 @@ _DEFAULT = {
     "bt_slippage_pct": 0.01,
     # 实时分析监控清单：[{source, symbol, timeframe, strategy_file}, ...]
     "realtime_watches": [],
-    # 飞书机器人（信号转折提醒，仅文本）
+    # 飞书机器人（只做多交易动作提醒，仅文本）
     "feishu_enabled": False,
     "feishu_webhook_url": "",
     "feishu_secret": "",

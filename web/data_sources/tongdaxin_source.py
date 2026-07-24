@@ -24,8 +24,14 @@ _CAT = {
     "30m": 2,
     "1h": 3,
     "1d": 9,
-    "1w": 5,
-    "1M": 6,
+}
+_BAR_SECONDS = {
+    "1m": 60,
+    "5m": 300,
+    "15m": 900,
+    "30m": 1800,
+    "1h": 3600,
+    "1d": 86400,
 }
 
 _PRESETS = ["600519", "000001", "300750", "601318", "000858", "sh000001", "sz399006"]
@@ -151,7 +157,7 @@ class TongdaxinSource(DataSource):
             self.connect()
             try:
                 raw = self._fetch_raw(cat, market, code, want, is_index)
-            except Exception as exc:
+            except Exception:
                 # 连接可能失效，重连一次
                 self._api = None
                 self.connect()
@@ -168,10 +174,22 @@ class TongdaxinSource(DataSource):
             )
 
         bars: list[Bar] = []
+        close_times: set[int] = set()
+        now = time.time()
+        period_s = _BAR_SECONDS[timeframe]
         for r in raw:
+            close_ts = _parse_dt(r.get("datetime", ""))
+            if close_ts <= 0:
+                raise DataSourceUnavailable("通达信返回无法解析的 K 线时间")
+            if close_ts in close_times:
+                raise DataSourceUnavailable("通达信返回重复的 K 线时间")
+            close_times.add(close_ts)
+            if drop_forming and close_ts > now:
+                continue
             bars.append(
                 Bar(
-                    ts=_parse_dt(r.get("datetime", "")),
+                    # pytdx 返回收盘时间；项目统一 Bar 合同使用开盘时间。
+                    ts=close_ts - period_s,
                     open=float(r["open"]),
                     high=float(r["high"]),
                     low=float(r["low"]),
@@ -181,8 +199,6 @@ class TongdaxinSource(DataSource):
                 )
             )
         bars.sort(key=lambda b: b.ts)  # 保证升序
-        if drop_forming and bars:
-            now = time.time()
-            while bars and int(bars[-1].ts) > now:
-                bars.pop()
+        if not bars:
+            raise DataSourceUnavailable(f"通达信没有已收盘 K 线：{symbol}")
         return bars[-n:]

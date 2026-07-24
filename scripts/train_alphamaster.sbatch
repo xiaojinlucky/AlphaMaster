@@ -2,9 +2,6 @@
 set -euo pipefail
 umask 077
 
-readonly ROOT="/hwdata/home/jinqc/Quant/AlphaMaster"
-readonly PYTHON="${ROOT}/.venv/bin/python"
-readonly WORKER="${ROOT}/scripts/train_slurm_worker.py"
 readonly RUN_ID="${1:-}"
 
 if [[ ! "${RUN_ID}" =~ ^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{8}$ ]]; then
@@ -12,11 +9,17 @@ if [[ ! "${RUN_ID}" =~ ^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{8}$ ]]; then
     exit 2
 fi
 
-readonly RUN_DIR="${ROOT}/runs/${RUN_ID}"
-if [[ ! -d "${RUN_DIR}" || -L "${RUN_DIR}" ]]; then
+readonly SUBMIT_DIR="${PWD}"
+readonly RUN_DIR="$(pwd -P)"
+if [[ ! -d "${SUBMIT_DIR}" || -L "${SUBMIT_DIR}" ]] \
+    || [[ "$(basename -- "${RUN_DIR}")" != "${RUN_ID}" ]] \
+    || [[ "$(basename -- "$(dirname -- "${RUN_DIR}")")" != "runs" ]]; then
     echo "run directory is missing or unsafe" >&2
     exit 2
 fi
+readonly ROOT="$(cd -- "${RUN_DIR}/../.." && pwd -P)"
+readonly PYTHON="${ROOT}/.venv/bin/python"
+readonly WORKER="${ROOT}/scripts/train_slurm_worker.py"
 if [[ ! -x "${PYTHON}" || ! -f "${WORKER}" || -L "${WORKER}" ]]; then
     echo "fixed worker runtime is unavailable" >&2
     exit 2

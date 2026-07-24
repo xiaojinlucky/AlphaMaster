@@ -1,7 +1,20 @@
 """Shared pytest fixtures."""
 from __future__ import annotations
 
+import os
+import tempfile
+from pathlib import Path
+
 import pytest
+
+
+_PYTEST_RUNTIME = tempfile.TemporaryDirectory(
+    prefix="alphamaster-pytest-runtime-"
+)
+_PYTEST_RUNTIME_DIR = Path(_PYTEST_RUNTIME.name)
+os.environ["ALPHAMASTER_TRAINING_QUEUE_DB"] = str(
+    _PYTEST_RUNTIME_DIR / "training_queue.sqlite3"
+)
 
 
 @pytest.fixture(autouse=True)

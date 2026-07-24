@@ -1,0 +1,413 @@
+{
+  "format": "alphamaster_csi_a50_universe_v1",
+  "index_code": "930050",
+  "index_name": "中证A50",
+  "index_name_en": "CSI A50",
+  "snapshot_date": "20260723",
+  "constituent_count": 50,
+  "source_url": "https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/file/autofile/cons/930050cons.xls",
+  "source_xls_sha256": "172c1ebfa12f2916a3606ee492f1d0e74d940b572bc49d27c4b41f41268694be",
+  "constituents": [
+    {
+      "symbol": "000333",
+      "name": "美的集团",
+      "name_en": "Midea Group CO., LTD",
+      "exchange": "SZSE",
+      "exchange_name": "深圳证券交易所",
+      "exchange_name_en": "Shenzhen Stock Exchange"
+    },
+    {
+      "symbol": "000617",
+      "name": "中油资本",
+      "name_en": "CNPC Capital Company Limited",
+      "exchange": "SZSE",
+      "exchange_name": "深圳证券交易所",
+      "exchange_name_en": "Shenzhen Stock Exchange"
+    },
+    {
+      "symbol": "000725",
+      "name": "京东方A",
+      "name_en": "BOE Technology Group Co Ltd",
+      "exchange": "SZSE",
+      "exchange_name": "深圳证券交易所",
+      "exchange_name_en": "Shenzhen Stock Exchange"
+    },
+    {
+      "symbol": "000792",
+      "name": "盐湖股份",
+      "name_en": "Qinghai Salt Lake Industry Co Ltd",
+      "exchange": "SZSE",
+      "exchange_name": "深圳证券交易所",
+      "exchange_name_en": "Shenzhen Stock Exchange"
+    },
+    {
+      "symbol": "000988",
+      "name": "华工科技",
+      "name_en": "Huagong Tech Co Ltd",
+      "exchange": "SZSE",
+      "exchange_name": "深圳证券交易所",
+      "exchange_name_en": "Shenzhen Stock Exchange"
+    },
+    {
+      "symbol": "002027",
+      "name": "分众传媒",
+      "name_en": "Focus Media Information Technology Co., Ltd.",
+      "exchange": "SZSE",
+      "exchange_name": "深圳证券交易所",
+      "exchange_name_en": "Shenzhen Stock Exchange"
+    },
+    {
+      "symbol": "002230",
+      "name": "科大讯飞",
+      "name_en": "Iflytek Co.,Ltd.",
+      "exchange": "SZSE",
+      "exchange_name": "深圳证券交易所",
+      "exchange_name_en": "Shenzhen Stock Exchange"
+    },
+    {
+      "symbol": "002371",
+      "name": "北方华创",
+      "name_en": "NAURA Technology Group Co.,Ltd.",
+      "exchange": "SZSE",
+      "exchange_name": "深圳证券交易所",
+      "exchange_name_en": "Shenzhen Stock Exchange"
+    },
+    {
+      "symbol": "002475",
+      "name": "立讯精密",
+      "name_en": "Luxshare Precision Industry Co., Ltd.",
+      "exchange": "SZSE",
+      "exchange_name": "深圳证券交易所",
+      "exchange_name_en": "Shenzhen Stock Exchange"
+    },
+    {
+      "symbol": "002594",
+      "name": "比亚迪",
+      "name_en": "BYD Co Ltd",
+      "exchange": "SZSE",
+      "exchange_name": "深圳证券交易所",
+      "exchange_name_en": "Shenzhen Stock Exchange"
+    },
+    {
+      "symbol": "002602",
+      "name": "世纪华通",
+      "name_en": "ZHEJIANG CENTURY HUATONG GROUP CO., LTD",
+      "exchange": "SZSE",
+      "exchange_name": "深圳证券交易所",
+      "exchange_name_en": "Shenzhen Stock Exchange"
+    },
+    {
+      "symbol": "002625",
+      "name": "光启技术",
+      "name_en": "Kuang-Chi Technologies Co., Ltd.",
+      "exchange": "SZSE",
+      "exchange_name": "深圳证券交易所",
+      "exchange_name_en": "Shenzhen Stock Exchange"
+    },
+    {
+      "symbol": "002714",
+      "name": "牧原股份",
+      "name_en": "MUYUAN FOODS GROUP CO., LTD.",
+      "exchange": "SZSE",
+      "exchange_name": "深圳证券交易所",
+      "exchange_name_en": "Shenzhen Stock Exchange"
+    },
+    {
+      "symbol": "300015",
+      "name": "爱尔眼科",
+      "name_en": "Aier Eye Hospital Group Co Ltd",
+      "exchange": "SZSE",
+      "exchange_name": "深圳证券交易所",
+      "exchange_name_en": "Shenzhen Stock Exchange"
+    },
+    {
+      "symbol": "300124",
+      "name": "汇川技术",
+      "name_en": "Shenzhen Inovance Technology Co Ltd",
+      "exchange": "SZSE",
+      "exchange_name": "深圳证券交易所",
+      "exchange_name_en": "Shenzhen Stock Exchange"
+    },
+    {
+      "symbol": "300274",
+      "name": "阳光电源",
+      "name_en": "Sungrow Power Supply Co Ltd",
+      "exchange": "SZSE",
+      "exchange_name": "深圳证券交易所",
+      "exchange_name_en": "Shenzhen Stock Exchange"
+    },
+    {
+      "symbol": "300308",
+      "name": "中际旭创",
+      "name_en": "ZHONGJI INNOLIGHT CO., LTD.",
+      "exchange": "SZSE",
+      "exchange_name": "深圳证券交易所",
+      "exchange_name_en": "Shenzhen Stock Exchange"
+    },
+    {
+      "symbol": "300476",
+      "name": "胜宏科技",
+      "name_en": "Victory Giant Technology (HuiZhou)Co.,Ltd.",
+      "exchange": "SZSE",
+      "exchange_name": "深圳证券交易所",
+      "exchange_name_en": "Shenzhen Stock Exchange"
+    },
+    {
+      "symbol": "300750",
+      "name": "宁德时代",
+      "name_en": "Contemporary Amperex Technology Co., Limited.",
+      "exchange": "SZSE",
+      "exchange_name": "深圳证券交易所",
+      "exchange_name_en": "Shenzhen Stock Exchange"
+    },
+    {
+      "symbol": "300760",
+      "name": "迈瑞医疗",
+      "name_en": "Shenzhen Mindray Bio-Medical Electronics Co., Ltd.",
+      "exchange": "SZSE",
+      "exchange_name": "深圳证券交易所",
+      "exchange_name_en": "Shenzhen Stock Exchange"
+    },
+    {
+      "symbol": "600019",
+      "name": "宝钢股份",
+      "name_en": "Baoshan Iron &Steel Co Ltd",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "600030",
+      "name": "中信证券",
+      "name_en": "CITIC Securities Co Ltd",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "600031",
+      "name": "三一重工",
+      "name_en": "Sany Heavy Industry Co Ltd",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "600036",
+      "name": "招商银行",
+      "name_en": "China Merchants Bank Co Ltd",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "600048",
+      "name": "保利发展",
+      "name_en": "Poly Developments and Holdings Group Co., Ltd.",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "600111",
+      "name": "北方稀土",
+      "name_en": "China Northern Rare Earth (Group) High-Tech Co.,Ltd",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "600150",
+      "name": "中国船舶",
+      "name_en": "China CSSC Holdings Limited",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "600276",
+      "name": "恒瑞医药",
+      "name_en": "Jiangsu Hengrui Medicine Co Ltd",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "600309",
+      "name": "万华化学",
+      "name_en": "Wanhua Chemical Group Co., Ltd.",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "600406",
+      "name": "国电南瑞",
+      "name_en": "NARI Technology Co., Ltd.",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "600415",
+      "name": "小商品城",
+      "name_en": "Zhejiang China Commodities City Group Co Ltd",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "600436",
+      "name": "片仔癀",
+      "name_en": "Zhangzhou Pientzehuang Pharmaceutical Co Ltd",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "600519",
+      "name": "贵州茅台",
+      "name_en": "Kweichow Moutai Co Ltd",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "600585",
+      "name": "海螺水泥",
+      "name_en": "Anhui Conch Cement Co Ltd",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "600660",
+      "name": "福耀玻璃",
+      "name_en": "Fuyao Glass Industry Group Co.,Ltd",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "600887",
+      "name": "伊利股份",
+      "name_en": "Inner Mongolia Yili Industrial Group Co Ltd",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "600893",
+      "name": "航发动力",
+      "name_en": "AVIC AVIATION ENGINE CORPORATION PLC.",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "600900",
+      "name": "长江电力",
+      "name_en": "China Yangtze Power Co Ltd",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "600941",
+      "name": "中国移动",
+      "name_en": "China Mobile Limited",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "601088",
+      "name": "中国神华",
+      "name_en": "China Shenhua Energy Co Ltd",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "601318",
+      "name": "中国平安",
+      "name_en": "Ping An Insurance (Group) Company of China Ltd",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "601668",
+      "name": "中国建筑",
+      "name_en": "China State Construction Engineering Co Ltd",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "601816",
+      "name": "京沪高铁",
+      "name_en": "Beijing-Shanghai High Speed Railway Co.,Ltd",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "601857",
+      "name": "中国石油",
+      "name_en": "PetroChina Co Ltd",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "601888",
+      "name": "中国中免",
+      "name_en": "China Tourism Group Duty Free Corporation Limited",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "601899",
+      "name": "紫金矿业",
+      "name_en": "Zijin Mining Group Co Ltd",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "603259",
+      "name": "药明康德",
+      "name_en": "WuXi AppTec Co., Ltd.",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "603993",
+      "name": "洛阳钼业",
+      "name_en": "China Molybdenum Co., Ltd.",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "605499",
+      "name": "东鹏饮料",
+      "name_en": "Eastroc Beverage (Group) Co.,Ltd.",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    },
+    {
+      "symbol": "688981",
+      "name": "中芯国际",
+      "name_en": "Semiconductor Manufacturing International Corporation",
+      "exchange": "SSE",
+      "exchange_name": "上海证券交易所",
+      "exchange_name_en": "Shanghai Stock Exchange"
+    }
+  ],
+  "contract_sha256": "987387945fba0cb778b648860bc7579a3cf49e9c3b788596464f714e968bb896"
+}
