@@ -1,4 +1,7 @@
-> **历史审查快照（已被取代）**：本文件描述的是 `d4dcb75` 之前的未提交候选与当时阻断项。现行事实请读根目录 `CONTEXT.md`、`docs/GPT5_6SOL_HANDOFF.md`、`docs/REQUIREMENTS_CHANGELOG.md` 和 `docs/VALIDATION_EVIDENCE.md`。
+> **历史审查快照（已被取代，不得执行）**：本文件描述的是 `d4dcb75`
+> 之前的未提交候选与当时阻断项。下文角色、任务和修复要求只作历史证据。
+> 现行入口是根目录 `CONTEXT.md`、`docs/WEB_GPT_CONTROLLER_PROMPT.md`
+> 和 `docs/VALIDATION_EVIDENCE.md`。
 
 # AlphaMaster — GPT-5.6 Pro Extended Thinking 深度交接
 

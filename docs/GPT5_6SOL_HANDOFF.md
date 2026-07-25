@@ -1,10 +1,10 @@
 # GPT-5.6-sol 移交说明
 
-> 历史专项快照：本文件记录 200-bar 标准化与未来函数审计背景。当前方向以根目录 `CONTEXT.md`、`docs/PORTFOLIO_CONTROLLER_V1.md` 和 `docs/BIOMNI_PORTFOLIO_REVIEW_PROMPT.md` 为准。
+> 历史专项快照：本文件记录 200-bar 标准化与未来函数审计背景。下文的角色、任务、GitHub MCP、单工单和确认要求均不得执行。当前方向只以根目录 `CONTEXT.md` 和 `docs/WEB_GPT_CONTROLLER_PROMPT.md` 为准。
 
 ## 1. 项目定位
 
-AlphaMaster 是基于原始公开仓库的公开轻量二次开发项目；持续公开是仓库所有者为网页版 GPT 与 BioMNI 协作作出的明确决定。现有核心路线保持为：
+AlphaMaster 是基于原始公开仓库的公开轻量二次开发项目；持续公开是仓库所有者为网页版 GPT 审核作出的明确决定。现有核心路线保持为：
 
 ```text
 AlphaGPT 生成公式
@@ -106,13 +106,14 @@ Windows 选择 Parquet
 - 本轮只读规划，不连接服务器、不启动训练、不修改仓库、不创建 PR。
 - 大模型供应商能力正在独立项目中先行修复；本轮不得为 AlphaMaster 重复规划或提交供应商代码。
 
-## 8. 网页版 GPT 的任务
+## 8. 当时的网页版 GPT 任务（已废止，不得执行）
 
 1. 使用 GitHub MCP 完整读取 `docs/GPT_WEB_PRO_EXTENDED_TASK.md` 规定的文件。
 2. 先核对 StackVM/JUMP 因果修复和旧产物失败关闭是否仍有可复现缺口。
 3. 系统审计数据对齐、特征/算子、信号、目标收益、PnL、walk-forward 和候选选择是否存在其他未来函数或过拟合。
 4. 对已确认问题逐项核实代码证据，并按影响历史成绩真实性和实盘一致性的优先级排序。
-5. 只输出一张最小工单、禁止项和二元硬验收，不直接编码或运行。
+5. 当时要求只输出一张最小工单；该串行规则已被当前两条并行交付主线取代。
 6. 首轮只问一个真正改变实现的业务问题；已由代码和文档确认的事项不要重复询问。
 
-启动提示词见 `docs/GPT_WEB_PRO_EXTENDED_TASK.md`。
+当前启动提示词见 `docs/WEB_GPT_CONTROLLER_PROMPT.md`；历史
+`docs/GPT_WEB_PRO_EXTENDED_TASK.md` 只作审计背景。

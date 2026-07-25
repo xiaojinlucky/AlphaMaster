@@ -1,4 +1,6 @@
-> **历史提示词（已被取代）**：现行网页版总控入口为 `docs/GPT_WEB_PRO_EXTENDED_TASK.md`。
+> **历史提示词（已被取代，不得执行）**：现行网页版总控入口为
+> `docs/WEB_GPT_CONTROLLER_PROMPT.md`；`docs/GPT_WEB_PRO_EXTENDED_TASK.md`
+> 也只是历史未来函数专项。
 
 # 给 GPT-5.6 Pro Extended Thinking 的提示词
 
