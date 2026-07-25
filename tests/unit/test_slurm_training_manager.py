@@ -12,11 +12,14 @@ from io import BytesIO
 from pathlib import Path
 
 import pytest
+import numpy as np
+import pandas as pd
 import torch
 
 import web.progress as progress_module
 import web.slurm_training_manager as manager_module
 import web.training_package as package_module
+from data_pipeline.free_stockdb_data import build_free_stockdb_qfq_manifest
 from model_core.alphagpt import AlphaGPT
 from scripts import slurm_control as control_module
 
@@ -252,6 +255,10 @@ class FakeClient:
             "local_source",
             "periods_per_year",
             "minimum_bars",
+            "data_source_manifest_filename",
+            "data_source_manifest_sha256",
+            "data_source_manifest_size",
+            "data_source_manifest",
             "scoring_contract_version",
             "source_files",
             "training_parameters",
@@ -1901,3 +1908,109 @@ def test_cancel_race_with_natural_completion_downloads_result(
     assert current["run_id"] == job["run_id"]
     assert current["remote_state"] == "READY"
     assert client.download_calls == 1
+
+
+def _free_stockdb_dataset(tmp_path: Path) -> tuple[Path, pd.DataFrame, dict]:
+    data_file = tmp_path / "600519_D1.parquet"
+    dates = pd.bdate_range(
+        "2022-01-04",
+        periods=500,
+        tz="Asia/Shanghai",
+    )
+    closes = dates + pd.Timedelta(hours=15)
+    prices = 100.0 + np.arange(len(dates), dtype=np.float32) * 0.01
+    frame = pd.DataFrame(
+        {
+            "time": (
+                closes.tz_convert("UTC")
+                .astype("datetime64[ns, UTC]")
+                .astype("int64")
+                // 1_000_000_000
+            ).astype(np.int64),
+            "open": prices,
+            "high": prices + np.float32(0.2),
+            "low": prices - np.float32(0.2),
+            "close": prices + np.float32(0.1),
+            "tick_volume": np.arange(len(dates), dtype=np.int64) + 10_000,
+        }
+    )
+    frame.to_parquet(data_file, index=False)
+    source_snapshot = tmp_path / ".sync_manifest.json"
+    source_snapshot.write_text(
+        json.dumps({"generated_at": 1_784_957_450}),
+        encoding="utf-8",
+    )
+    extraction_script = tmp_path / "extract_free_stockdb.py"
+    extraction_script.write_text(
+        "print('extract free-stockdb')\n",
+        encoding="utf-8",
+    )
+    source_manifest = build_free_stockdb_qfq_manifest(
+        data_file,
+        source_as_of="2026-07-24",
+        provider_release="v0.2.1-more-power",
+        source_snapshot_manifest=source_snapshot,
+        extraction_script=extraction_script,
+        qfq_factor_points=3,
+    )
+    data_file.with_suffix(".manifest.json").write_text(
+        json.dumps(source_manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return data_file, frame, source_manifest
+
+
+def test_free_stockdb_source_manifest_enters_frozen_run_identity(
+    tmp_path: Path,
+) -> None:
+    data_file, _frame, source_manifest = _free_stockdb_dataset(tmp_path)
+    manager = object.__new__(manager_module.SlurmTrainingManager)
+
+    run_manifest = manager._build_run_manifest(
+        run_id="run_20260725T120000Z_deadbeef",
+        data_file=data_file,
+        symbol="600519",
+        timeframe="D1",
+        training_parameters={"train_steps": 10, "from_scratch": True},
+        requested_resources={
+            "partition": "cpu",
+            "qos": "normal",
+            "cpus_per_task": 1,
+            "memory": "8G",
+            "time_limit": "00:10:00",
+        },
+        git_commit="a" * 40,
+    )
+
+    sidecar = data_file.with_suffix(".manifest.json")
+    assert (
+        run_manifest["data_source_manifest_filename"]
+        == manager_module.DATA_SOURCE_MANIFEST_FILENAME
+    )
+    assert run_manifest["data_source_manifest_sha256"] == hashlib.sha256(
+        sidecar.read_bytes()
+    ).hexdigest()
+    assert run_manifest["data_source_manifest_size"] == sidecar.stat().st_size
+    assert run_manifest["data_source_manifest"] == source_manifest
+
+
+@pytest.mark.parametrize("corruption", ["midnight", "unsorted", "nan"])
+def test_free_stockdb_slurm_preflight_reuses_strict_validator(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    data_file, frame, _source_manifest = _free_stockdb_dataset(tmp_path)
+    damaged = frame.copy()
+    if corruption == "midnight":
+        damaged["time"] = damaged["time"] - 15 * 60 * 60
+    elif corruption == "unsorted":
+        timestamps = damaged["time"].to_numpy(copy=True)
+        timestamps[10], timestamps[11] = timestamps[11], timestamps[10]
+        damaged["time"] = timestamps
+    else:
+        damaged.loc[10, "close"] = np.nan
+    damaged.to_parquet(data_file, index=False)
+
+    manager = object.__new__(manager_module.SlurmTrainingManager)
+    with pytest.raises(RuntimeError):
+        manager._load_data_manifest(data_file)

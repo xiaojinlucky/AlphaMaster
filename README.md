@@ -161,7 +161,7 @@ Linux Slurm Worker 使用独立的 `requirements-linux-worker.lock`，不安装 
 
 ## Windows Parquet（A 股 / MT5 / OKX）→ Slurm CPU 训练
 
-支持严格转换后的本机 A 股 Parquet、MT5 已收盘 K 线或经过来源清单校验的 OKX Parquet，通过本机 Web 控制台提交到 Slurm。`login-node` 仅作为 SSH 配置中的跳板，不运行命令；每次远端操作先调用节点选择器确定健康的交互入口，真正的训练节点始终由 Slurm 调度。
+支持严格转换后的本机 A 股 Parquet、MT5 已收盘 K 线或经过来源清单校验的 OKX Parquet，通过本机 Web 控制台提交到 Slurm。free-stockdb 前复权日线使用独立来源 `ashare_free_stockdb_qfq`，当前只接受 D1，并且必须携带绑定文件哈希、源快照、抽取脚本、复权方式、15:00 收盘语义和成交量单位的 sidecar；成交量按原始股数保存，不随价格前复权调整。该来源不能冒充旧 `ashare_local` 或 AKShare 数据。`login-node` 仅作为 SSH 配置中的跳板，不运行命令；每次远端操作先调用节点选择器确定健康的交互入口，真正的训练节点始终由 Slurm 调度。
 
 ```powershell
 # 1. 从当前已登录的 MT5 导出准确品种/周期；默认排除未收盘 bar

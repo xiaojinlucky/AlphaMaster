@@ -14,6 +14,26 @@
 - 该同步不走 2,000 次在线测试额度，因此未启用沪深 300 在线兜底。
 - 数据保存在 `G:\QuantData\free-stockdb\package\stockdb\data`，未进入
   AlphaMaster Git；更新器、监控器和数据库进程均已退出。
+- 当前 300 只沪深300成分的规范 D1 v2 位于
+  `G:\QuantData\free-stockdb\am_exports\20260724_csi300_am_inputs_v2`：
+  273 只通过 AlphaMaster 训练合同，27 只因历史不足、缺前复权因子或
+  前复权连续性异常而隔离。项目新增独立来源
+  `ashare_free_stockdb_qfq`，不允许冒充 `ashare_local` 或 AKShare。
+  这 273 只只允许做单股探索训练和工程验证；正式历史沪深300组合回测
+  仍缺 649 个历史成分，并且当前前复权连续性尚未完成独立权威源复核。
+- FreeStockDB sidecar 现在以固定文件名、SHA-256、大小和完整来源 payload
+  随 Parquet 上传；远端控制器和 Worker 再次校验后，原子物化到数据文件
+  旁供统一严格 loader 读取。来源身份继续进入 result/published manifest，
+  不再出现“本机预检通过、远端因缺 sidecar 必然失败”的断链。
+- 在线接口实测只能证明“测试期累计超过 2,000 次后被阻断”；没有证据
+  支持“每天 2,000 次”、每日重置或一分钟线另有独立额度。作者
+  2026-07-23 新增 43 个全量接口，明确要求至少使用当日版本，并要求这些
+  在线接口只作补充查询、不要批量扫描。当前归档
+  `free-stockdb-windows-v0.2.1-more-power.zip` 为 3,910,405 字节，
+  SHA-256 是
+  `07e6b2eefd92e9c1a7cf2ecfb3fc80ea87ad97e4a4dce58d8486415100ab03fd`，
+  与作者 GitHub Latest Release 资产逐字节一致，无需重新下载或覆盖；
+  未来升级需先在隔离目录比对和验证。
 
 ## 2026-07-24 卡死任务续接
 

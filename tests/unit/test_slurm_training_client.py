@@ -125,6 +125,61 @@ def test_remote_validation_failure_is_not_retryable(
     assert not isinstance(caught.value, client_module.SlurmTransportError)
 
 
+def test_upload_inputs_transfers_fixed_data_source_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client()
+    monkeypatch.setattr(client, "select_compute_host", lambda: "compute-node-11")
+    data_file = tmp_path / "600519_D1.parquet"
+    run_manifest = tmp_path / "run_manifest.json"
+    source_manifest = tmp_path / "600519_D1.manifest.json"
+    data_file.write_bytes(b"PAR1-free-stockdb")
+    run_manifest.write_text("{}", encoding="utf-8")
+    source_manifest.write_text('{"source":"FreeStockDB"}', encoding="utf-8")
+    source_hash = hashlib.sha256(source_manifest.read_bytes()).hexdigest()
+    scp_commands: list[list[str]] = []
+    remote_calls: list[tuple[str, ...]] = []
+
+    def fake_run(command, **_kwargs):
+        scp_commands.append(list(command))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def fake_remote_call(*args: str):
+        remote_calls.append(tuple(args))
+        return {"finalized": True}
+
+    monkeypatch.setattr(client_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(client, "_remote_call", fake_remote_call)
+
+    result = client.upload_inputs(
+        run_id="run_20260714T120000Z_deadbeef",
+        data_file=data_file,
+        manifest_file=run_manifest,
+        data_sha256=hashlib.sha256(data_file.read_bytes()).hexdigest(),
+        data_source_manifest_file=source_manifest,
+        data_source_manifest_sha256=source_hash,
+        data_source_manifest_size=source_manifest.stat().st_size,
+    )
+
+    assert result["finalized"] is True
+    assert len(scp_commands) == 3
+    assert scp_commands[2][-1].endswith(
+        "/input/data_source_manifest.json.partial"
+    )
+    assert remote_calls == [
+        (
+            "finalize-upload",
+            "run_20260714T120000Z_deadbeef",
+            "600519_D1.parquet",
+            hashlib.sha256(data_file.read_bytes()).hexdigest(),
+            str(data_file.stat().st_size),
+            source_hash,
+            str(source_manifest.stat().st_size),
+        )
+    ]
+
+
 def test_download_rejects_manifest_path_traversal(tmp_path: Path, monkeypatch) -> None:
     client = _client()
     monkeypatch.setattr(

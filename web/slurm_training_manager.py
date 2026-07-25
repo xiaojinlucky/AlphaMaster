@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import pyarrow.parquet as pq
+import pandas as pd
 import torch
 
 from config import Config
@@ -31,6 +32,9 @@ from data_pipeline.dataset_contracts import (
     AKSHARE_HFQ_FORMAT,
     AKSHARE_HFQ_SOURCE_ID,
     AKSHARE_SOURCE,
+    FREE_STOCKDB_QFQ_FORMAT,
+    FREE_STOCKDB_QFQ_SOURCE_ID,
+    FREE_STOCKDB_SOURCE,
     MT5_LEGACY_SOURCE,
     MT5_LEGACY_SOURCE_ID,
     OKX_LEGACY_SOURCE_ID,
@@ -39,11 +43,13 @@ from data_pipeline.dataset_contracts import (
     infer_periods_per_year,
     resolve_okx_source_id,
 )
+from data_pipeline.free_stockdb_data import load_free_stockdb_qfq_manifest
 from model_core.config import ModelConfig
 from model_core.target_contract import SCORING_CONTRACT_VERSION
 from model_core.vocab import FORMULA_VOCAB, VOCAB_VERSION
 from utils.train_logging import strip_ansi
 from web.slurm_training_client import (
+    DATA_SOURCE_MANIFEST_FILENAME,
     SlurmClientError,
     SlurmTrainingClient,
     SlurmTransportError,
@@ -68,6 +74,10 @@ DATA_SOURCE_CONTRACTS = {
     **REMOTE_SOURCE_CONTRACTS,
     ASHARE_SOURCE: (ASHARE_SOURCE_ID, ASHARE_DATASET_FORMAT),
     AKSHARE_SOURCE: (AKSHARE_HFQ_SOURCE_ID, AKSHARE_HFQ_FORMAT),
+    FREE_STOCKDB_SOURCE: (
+        FREE_STOCKDB_QFQ_SOURCE_ID,
+        FREE_STOCKDB_QFQ_FORMAT,
+    ),
 }
 REQUIRED_DATA_COLUMNS = ("time", "open", "high", "low", "close", "tick_volume")
 LOCAL_RUNS_ROOT = Path(
@@ -605,6 +615,27 @@ class SlurmTrainingManager:
             raise RuntimeError("数据 manifest 的 format 与 source 不匹配")
         if payload.get("time_unit") != "unix_seconds":
             raise RuntimeError("数据 manifest 的 time_unit 必须是 unix_seconds")
+        data_source_manifest_sha256: str | None = None
+        data_source_manifest_size: int | None = None
+        data_source_manifest_payload: dict[str, Any] | None = None
+        if source == FREE_STOCKDB_SOURCE:
+            manifest_hash_before = sha256_file(manifest_path)
+            try:
+                frame = pd.read_parquet(data_file)
+                validated = load_free_stockdb_qfq_manifest(data_file, frame)
+            except Exception as exc:
+                raise RuntimeError(str(exc)) from exc
+            if validated is None:
+                raise RuntimeError("free-stockdb 来源 manifest 未通过严格校验")
+            manifest_hash_after = sha256_file(manifest_path)
+            if manifest_hash_after != manifest_hash_before or validated != payload:
+                raise RuntimeError("free-stockdb 来源 manifest 在校验期间发生漂移")
+            data_source_manifest_size = manifest_path.stat().st_size
+            if not 0 < data_source_manifest_size <= 1024 * 1024:
+                raise RuntimeError("free-stockdb 来源 manifest 大小非法")
+            data_source_manifest_sha256 = manifest_hash_after
+            data_source_manifest_payload = validated
+            payload = validated
         if source == MT5_LEGACY_SOURCE:
             if payload.get("source_family") != "MetaTrader5":
                 raise RuntimeError("旧 MT5 manifest 的 source_family 不匹配")
@@ -637,7 +668,7 @@ class SlurmTrainingManager:
         expected_dataset_id = f"sha256:{digest}"
         if payload.get("dataset_id", expected_dataset_id) != expected_dataset_id:
             raise RuntimeError("数据 manifest 的 dataset_id 与文件哈希不匹配")
-        if source in {ASHARE_SOURCE, AKSHARE_SOURCE}:
+        if source in {ASHARE_SOURCE, AKSHARE_SOURCE, FREE_STOCKDB_SOURCE}:
             timeframe = str(payload.get("timeframe") or "").upper()
             spec = ASHARE_SPECS_BY_TIMEFRAME.get(timeframe)
             if spec is None:
@@ -683,7 +714,7 @@ class SlurmTrainingManager:
                     raise RuntimeError(
                         "AShareLocal manifest 的 source_sha256 非法"
                     )
-            else:
+            elif source == AKSHARE_SOURCE:
                 if timeframe != "D1":
                     raise RuntimeError("AKShare hfq 训练数据只支持 D1")
                 if payload.get("source_id") != AKSHARE_HFQ_SOURCE_ID:
@@ -809,12 +840,26 @@ class SlurmTrainingManager:
                 and source_id not in {OKX_SOURCE_ID, OKX_LEGACY_SOURCE_ID}
             ):
                 raise RuntimeError("OKX manifest 的来源身份映射错误")
-        return {
+        result = {
             **payload,
             "periods_per_year": periods_per_year,
             "minimum_bars": minimum_bars,
             "_source_id": source_id,
         }
+        if data_source_manifest_payload is not None:
+            result.update(
+                {
+                    "_data_source_manifest_filename": (
+                        DATA_SOURCE_MANIFEST_FILENAME
+                    ),
+                    "_data_source_manifest_sha256": (
+                        data_source_manifest_sha256
+                    ),
+                    "_data_source_manifest_size": data_source_manifest_size,
+                    "_data_source_manifest": data_source_manifest_payload,
+                }
+            )
+        return result
 
     @staticmethod
     def _resolve_run_settings(
@@ -903,6 +948,12 @@ class SlurmTrainingManager:
         data = self._load_data_manifest(data_file)
         if data.get("symbol") != symbol or data.get("timeframe") != timeframe:
             raise RuntimeError("请求的品种/周期与数据 manifest 不一致")
+        source_manifest_filename = data.get(
+            "_data_source_manifest_filename"
+        )
+        source_manifest_sha256 = data.get("_data_source_manifest_sha256")
+        source_manifest_size = data.get("_data_source_manifest_size")
+        source_manifest_payload = data.get("_data_source_manifest")
         return {
             "run_id": run_id,
             "created_at": _utc_now(),
@@ -919,6 +970,10 @@ class SlurmTrainingManager:
             "dataset_id": data.get("dataset_id") or f"sha256:{data['data_sha256']}",
             "periods_per_year": int(data["periods_per_year"]),
             "minimum_bars": data.get("minimum_bars"),
+            "data_source_manifest_filename": source_manifest_filename,
+            "data_source_manifest_sha256": source_manifest_sha256,
+            "data_source_manifest_size": source_manifest_size,
+            "data_source_manifest": source_manifest_payload,
             "git_commit": git_commit,
             "scoring_contract_version": SCORING_CONTRACT_VERSION,
             "source_files": _source_files(),
@@ -1123,6 +1178,20 @@ class SlurmTrainingManager:
                 raise RuntimeError(
                     f"提交前恢复拒绝：冻结的 {field} 已变化"
                 )
+        source_manifest_sha256 = manifest.get(
+            "data_source_manifest_sha256"
+        )
+        if source_manifest_sha256 is not None:
+            source_manifest_path = path.with_suffix(".manifest.json")
+            if not source_manifest_path.is_file():
+                raise RuntimeError("提交前恢复拒绝：来源 manifest 已缺失")
+            if sha256_file(source_manifest_path) != source_manifest_sha256:
+                raise RuntimeError("提交前恢复拒绝：来源 manifest 哈希已变化")
+            if (
+                source_manifest_path.stat().st_size
+                != manifest.get("data_source_manifest_size")
+            ):
+                raise RuntimeError("提交前恢复拒绝：来源 manifest 大小已变化")
         if (
             _source_files_sha256(manifest.get("source_files"))
             != expected_source_sha256
@@ -1186,6 +1255,18 @@ class SlurmTrainingManager:
                     data_file=data_file,
                     manifest_file=manifest_file,
                     data_sha256=data_sha256,
+                    data_source_manifest_file=(
+                        data_file.with_suffix(".manifest.json")
+                        if manifest.get("data_source_manifest_filename")
+                        == DATA_SOURCE_MANIFEST_FILENAME
+                        else None
+                    ),
+                    data_source_manifest_sha256=manifest.get(
+                        "data_source_manifest_sha256"
+                    ),
+                    data_source_manifest_size=manifest.get(
+                        "data_source_manifest_size"
+                    ),
                 )
                 self._set_state("SUBMITTING")
                 state = "SUBMITTING"
@@ -1369,6 +1450,10 @@ class SlurmTrainingManager:
             "local_source",
             "periods_per_year",
             "minimum_bars",
+            "data_source_manifest_filename",
+            "data_source_manifest_sha256",
+            "data_source_manifest_size",
+            "data_source_manifest",
             "git_commit",
             "scoring_contract_version",
             "source_files",
@@ -1568,6 +1653,16 @@ class SlurmTrainingManager:
             "local_source": manifest["local_source"],
             "periods_per_year": manifest["periods_per_year"],
             "minimum_bars": manifest.get("minimum_bars"),
+            "data_source_manifest_filename": manifest.get(
+                "data_source_manifest_filename"
+            ),
+            "data_source_manifest_sha256": manifest.get(
+                "data_source_manifest_sha256"
+            ),
+            "data_source_manifest_size": manifest.get(
+                "data_source_manifest_size"
+            ),
+            "data_source_manifest": manifest.get("data_source_manifest"),
             "data_filename": manifest["data_filename"],
             "data_sha256": manifest["data_sha256"],
             "data_rows": manifest["data_rows"],

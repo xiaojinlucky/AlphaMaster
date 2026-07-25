@@ -143,6 +143,104 @@ def test_prepare_and_finalize_are_idempotent(isolated_root: Path) -> None:
     assert len((run_dir / "input" / "run_manifest.sha256").read_text().strip()) == 64
 
 
+def test_finalize_free_stockdb_source_manifest_with_fixed_name(
+    isolated_root: Path,
+) -> None:
+    filename = "600519_D1.parquet"
+    prepared = sc.prepare_run(RUN_ID, filename)
+    data = b"PAR1-free-stockdb"
+    data_hash = hashlib.sha256(data).hexdigest()
+    source_manifest = {
+        "source": "FreeStockDB",
+        "format": "alphamaster_ashare_free_stockdb_qfq_dataset_v1",
+        "source_id": "ashare_free_stockdb_qfq",
+        "symbol": "600519",
+        "timeframe": "D1",
+        "data_filename": filename,
+        "data_sha256": data_hash,
+        "dataset_id": f"sha256:{data_hash}",
+        "data_rows": 500,
+        "data_start": "2022-01-04T07:00:00Z",
+        "data_end": "2023-12-04T07:00:00Z",
+        "columns": ["time", "open", "high", "low", "close", "tick_volume"],
+        "periods_per_year": 242,
+        "minimum_bars": 484,
+    }
+    source_bytes = json.dumps(
+        source_manifest,
+        ensure_ascii=False,
+    ).encode("utf-8")
+    source_hash = hashlib.sha256(source_bytes).hexdigest()
+    run_manifest = _manifest(data)
+    run_manifest.update(
+        {
+            "symbol": "600519",
+            "timeframe": "D1",
+            "data_filename": filename,
+            "data_rows": 500,
+            "data_start": source_manifest["data_start"],
+            "data_end": source_manifest["data_end"],
+            "dataset_id": source_manifest["dataset_id"],
+            "local_source": "ashare_free_stockdb_qfq",
+            "periods_per_year": 242,
+            "minimum_bars": 484,
+            "data_source_manifest_filename": (
+                sc.DATA_SOURCE_MANIFEST_FILENAME
+            ),
+            "data_source_manifest_sha256": source_hash,
+            "data_source_manifest_size": len(source_bytes),
+            "data_source_manifest": source_manifest,
+        }
+    )
+    Path(prepared["data_partial"]).write_bytes(data)
+    Path(prepared["manifest_partial"]).write_text(
+        json.dumps(run_manifest),
+        encoding="utf-8",
+    )
+    Path(prepared["data_source_manifest_partial"]).write_bytes(source_bytes)
+
+    result = sc.finalize_upload(
+        RUN_ID,
+        filename,
+        size_bytes=len(data),
+        sha256=data_hash,
+        data_source_manifest_sha256=source_hash,
+        data_source_manifest_size_bytes=len(source_bytes),
+    )
+
+    fixed_sidecar = (
+        isolated_root
+        / "runs"
+        / RUN_ID
+        / "input"
+        / sc.DATA_SOURCE_MANIFEST_FILENAME
+    )
+    assert result["data_source_manifest_sha256"] == source_hash
+    assert fixed_sidecar.read_bytes() == source_bytes
+    assert not fixed_sidecar.with_suffix(".json.partial").exists()
+
+    input_dir = fixed_sidecar.parent
+    (input_dir / f"{filename}.partial").write_bytes(
+        (input_dir / filename).read_bytes()
+    )
+    (input_dir / "run_manifest.json.partial").write_bytes(
+        (input_dir / "run_manifest.json").read_bytes()
+    )
+    (input_dir / f"{sc.DATA_SOURCE_MANIFEST_FILENAME}.partial").write_bytes(
+        fixed_sidecar.read_bytes()
+    )
+    retried = sc.finalize_upload(
+        RUN_ID,
+        filename,
+        size_bytes=len(data),
+        sha256=data_hash,
+        data_source_manifest_sha256=source_hash,
+        data_source_manifest_size_bytes=len(source_bytes),
+    )
+    assert retried["finalized"] is True
+    assert not any(input_dir.glob("*.partial"))
+
+
 def test_finalize_cleans_identical_partials_after_response_loss(isolated_root: Path) -> None:
     run_dir, manifest = _finalized_run(isolated_root)
     input_dir = run_dir / "input"

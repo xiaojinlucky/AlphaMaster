@@ -31,12 +31,18 @@ from data_pipeline.dataset_contracts import (
     AKSHARE_HFQ_SOURCE_ID,
     AKSHARE_SOURCE,
     DATA_SOURCE_IDS,
+    FREE_STOCKDB_QFQ_SOURCE_ID,
+    FREE_STOCKDB_SOURCE,
     GENERIC_SOURCE_CONTRACTS,
     MT5_LEGACY_SOURCE_ID,
     OKX_LEGACY_SOURCE_ID,
     OKX_SOURCE_ID,
     infer_periods_per_year,
     resolve_okx_source_id,
+)
+from data_pipeline.free_stockdb_data import (
+    FreeStockDBDataError,
+    load_free_stockdb_qfq_manifest,
 )
 from data_pipeline.data_manager import MT5DataManager
 from model_core.features import MT5FeatureEngineer
@@ -237,8 +243,19 @@ def _resolve_training_contract(
     elif payload is not None and payload.get("source") == AKSHARE_SOURCE:
         a_share_manifest = load_akshare_hfq_manifest(path, frame)
         a_share_source_id = AKSHARE_HFQ_SOURCE_ID
+    elif payload is not None and payload.get("source") == FREE_STOCKDB_SOURCE:
+        try:
+            a_share_manifest = load_free_stockdb_qfq_manifest(path, frame)
+        except FreeStockDBDataError as exc:
+            raise ValueError(str(exc)) from exc
+        a_share_source_id = FREE_STOCKDB_QFQ_SOURCE_ID
     elif canonical_a_share_name and payload is not None:
         raise ValueError("六位 A 股规范文件必须使用受支持且有效的 A 股 manifest")
+    elif (
+        canonical_a_share_name
+        and expected_source_id == FREE_STOCKDB_QFQ_SOURCE_ID
+    ):
+        raise ValueError("free-stockdb A 股数据必须携带来源 manifest")
     elif canonical_a_share_name and expected_source_id not in {
         ASHARE_SOURCE_ID,
         AKSHARE_HFQ_SOURCE_ID,

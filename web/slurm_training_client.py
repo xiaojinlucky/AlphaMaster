@@ -25,6 +25,8 @@ DATA_FILE_RE = re.compile(
 )
 SAFE_REMOTE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_./:-]+$")
 TRAINING_HISTORY_RE = re.compile(r"^training_history_[A-Za-z0-9._-]+\.json$")
+DATA_SOURCE_MANIFEST_FILENAME = "data_source_manifest.json"
+MAX_SOURCE_MANIFEST_BYTES = 1024 * 1024
 
 
 def sha256_file(path: Path) -> str:
@@ -219,6 +221,9 @@ class SlurmTrainingClient:
         data_file: Path,
         manifest_file: Path,
         data_sha256: str,
+        data_source_manifest_file: Path | None = None,
+        data_source_manifest_sha256: str | None = None,
+        data_source_manifest_size: int | None = None,
     ) -> dict[str, Any]:
         run_id = self.validate_run_id(run_id)
         filename = self.validate_data_filename(data_file.name)
@@ -226,12 +231,52 @@ class SlurmTrainingClient:
             raise SlurmClientError("本机上传文件不存在")
         if not re.fullmatch(r"[0-9a-f]{64}", data_sha256):
             raise SlurmClientError("数据 SHA-256 非法")
+        source_values = (
+            data_source_manifest_file,
+            data_source_manifest_sha256,
+            data_source_manifest_size,
+        )
+        has_source_manifest = all(value is not None for value in source_values)
+        if any(value is not None for value in source_values) and not has_source_manifest:
+            raise SlurmClientError("来源 manifest 文件、哈希和大小必须同时提供")
+        if has_source_manifest:
+            assert data_source_manifest_file is not None
+            assert data_source_manifest_sha256 is not None
+            assert data_source_manifest_size is not None
+            if not data_source_manifest_file.is_file():
+                raise SlurmClientError("本机来源 manifest 不存在")
+            if (
+                isinstance(data_source_manifest_size, bool)
+                or not isinstance(data_source_manifest_size, int)
+                or not 0 < data_source_manifest_size <= MAX_SOURCE_MANIFEST_BYTES
+            ):
+                raise SlurmClientError("来源 manifest 大小非法")
+            if data_source_manifest_file.stat().st_size != data_source_manifest_size:
+                raise SlurmClientError("来源 manifest 大小与声明不匹配")
+            if (
+                re.fullmatch(r"[0-9a-f]{64}", data_source_manifest_sha256)
+                is None
+            ):
+                raise SlurmClientError("来源 manifest SHA-256 非法")
+            if sha256_file(data_source_manifest_file) != data_source_manifest_sha256:
+                raise SlurmClientError("来源 manifest SHA-256 与文件不匹配")
         host = self.select_compute_host()
         remote_input = f"{self.remote_root}/runs/{run_id}/input"
-        transfers = (
+        transfers = [
             (data_file, f"{host}:{remote_input}/{filename}.partial"),
             (manifest_file, f"{host}:{remote_input}/run_manifest.json.partial"),
-        )
+        ]
+        if has_source_manifest:
+            assert data_source_manifest_file is not None
+            transfers.append(
+                (
+                    data_source_manifest_file,
+                    (
+                        f"{host}:{remote_input}/"
+                        f"{DATA_SOURCE_MANIFEST_FILENAME}.partial"
+                    ),
+                )
+            )
         for local_path, remote_spec in transfers:
             try:
                 proc = subprocess.run(
@@ -258,13 +303,23 @@ class SlurmTrainingClient:
                 raise SlurmTransportError("SCP 上传中断") from exc
             if proc.returncode != 0:
                 raise SlurmTransportError((proc.stderr or "SCP 上传失败").strip()[-1200:])
-        return self._remote_call(
+        finalize_args = [
             "finalize-upload",
             run_id,
             filename,
             data_sha256,
             str(data_file.stat().st_size),
-        )
+        ]
+        if has_source_manifest:
+            assert data_source_manifest_sha256 is not None
+            assert data_source_manifest_size is not None
+            finalize_args.extend(
+                [
+                    data_source_manifest_sha256,
+                    str(data_source_manifest_size),
+                ]
+            )
+        return self._remote_call(*finalize_args)
 
     def submit(self, run_id: str) -> str:
         payload = self._remote_call("submit", self.validate_run_id(run_id))

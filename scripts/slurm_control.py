@@ -25,7 +25,12 @@ SLURM_BIN = Path("/opt/gridview/slurm/bin")
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from data_pipeline.dataset_contracts import TRAINING_SOURCE_IDS
+from data_pipeline.dataset_contracts import (
+    FREE_STOCKDB_QFQ_FORMAT,
+    FREE_STOCKDB_QFQ_SOURCE_ID,
+    FREE_STOCKDB_SOURCE,
+    TRAINING_SOURCE_IDS,
+)
 
 RUN_ID_RE = re.compile(r"^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{8}$")
 JOB_ID_RE = re.compile(r"^[1-9][0-9]{0,18}$")
@@ -43,6 +48,7 @@ REQUIRED_DATA_COLUMNS = {"time", "open", "high", "low", "close", "tick_volume"}
 
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_DATA_BYTES = 64 * 1024**3
+DATA_SOURCE_MANIFEST_FILENAME = "data_source_manifest.json"
 MIN_MEMORY_MIB = 512
 MAX_MEMORY_MIB = 512 * 1024
 MAX_TAIL_LINES = 1000
@@ -312,6 +318,49 @@ def _validate_manifest(manifest: Mapping[str, Any], run_id: str, filename: str) 
         raise ControlError("manifest columns 缺少训练列或包含重复项")
     if manifest.get("local_source") not in ALLOWED_LOCAL_SOURCES:
         raise ControlError("manifest local_source 不受支持")
+    source_manifest_fields = (
+        manifest.get("data_source_manifest_filename"),
+        manifest.get("data_source_manifest_sha256"),
+        manifest.get("data_source_manifest_size"),
+        manifest.get("data_source_manifest"),
+    )
+    if manifest.get("local_source") == FREE_STOCKDB_QFQ_SOURCE_ID:
+        if manifest.get("data_source_manifest_filename") != DATA_SOURCE_MANIFEST_FILENAME:
+            raise ControlError("free-stockdb 来源 manifest 文件名不匹配")
+        validate_sha256(manifest.get("data_source_manifest_sha256"))
+        source_manifest_size = manifest.get("data_source_manifest_size")
+        if (
+            isinstance(source_manifest_size, bool)
+            or not isinstance(source_manifest_size, int)
+            or not 0 < source_manifest_size <= MAX_MANIFEST_BYTES
+        ):
+            raise ControlError("free-stockdb 来源 manifest 大小非法")
+        source_manifest = manifest.get("data_source_manifest")
+        if not isinstance(source_manifest, dict):
+            raise ControlError("free-stockdb 来源 manifest 身份缺失")
+        expected_source_fields = {
+            "source": FREE_STOCKDB_SOURCE,
+            "format": FREE_STOCKDB_QFQ_FORMAT,
+            "source_id": FREE_STOCKDB_QFQ_SOURCE_ID,
+            "symbol": manifest.get("symbol"),
+            "timeframe": manifest.get("timeframe"),
+            "data_filename": filename,
+            "data_sha256": manifest.get("data_sha256"),
+            "dataset_id": manifest.get("dataset_id"),
+            "data_rows": manifest.get("data_rows"),
+            "data_start": manifest.get("data_start"),
+            "data_end": manifest.get("data_end"),
+            "columns": manifest.get("columns"),
+            "periods_per_year": manifest.get("periods_per_year"),
+            "minimum_bars": manifest.get("minimum_bars"),
+        }
+        for field, expected in expected_source_fields.items():
+            if source_manifest.get(field) != expected:
+                raise ControlError(
+                    f"free-stockdb 来源 manifest 的 {field} 与 run manifest 不一致"
+                )
+    elif any(value is not None for value in source_manifest_fields):
+        raise ControlError("非 free-stockdb run 不接受来源 manifest 输入")
 
     training = manifest.get("training_parameters")
     if not isinstance(training, dict):
@@ -371,6 +420,9 @@ def prepare_run(run_id: str, filename: str | None = None) -> dict[str, Any]:
         "run_dir": str(run_dir),
         "data_partial": str(run_dir / "input" / f"{filename}.partial") if filename else None,
         "manifest_partial": str(run_dir / "input" / "run_manifest.json.partial"),
+        "data_source_manifest_partial": str(
+            run_dir / "input" / f"{DATA_SOURCE_MANIFEST_FILENAME}.partial"
+        ),
     }
 
 
@@ -380,6 +432,8 @@ def finalize_upload(
     *,
     size_bytes: int,
     sha256: str,
+    data_source_manifest_sha256: str | None = None,
+    data_source_manifest_size_bytes: int | None = None,
 ) -> dict[str, Any]:
     filename = validate_filename(filename)
     expected_hash = validate_sha256(sha256)
@@ -418,18 +472,77 @@ def finalize_upload(
     if not manifest_candidates:
         raise ControlError("上传 manifest 不存在")
     manifest_hashes: set[str] = set()
+    validated_manifest: dict[str, Any] | None = None
     for source in manifest_candidates:
         candidate = _read_json(source, "上传 manifest")
-        _validate_manifest(candidate, run_id, filename)
+        candidate = _validate_manifest(candidate, run_id, filename)
         if validate_sha256(candidate["data_sha256"]) != expected_hash:
             raise ControlError("manifest 与命令声明的数据 SHA-256 不匹配")
         manifest_size = candidate.get("data_size", candidate.get("data_size_bytes"))
         if manifest_size is not None and manifest_size != size_bytes:
             raise ControlError("manifest data_size_bytes 不匹配")
         manifest_hashes.add(_sha256_file(source))
+        validated_manifest = candidate
     if len(manifest_hashes) != 1:
         raise ControlError("manifest partial 与正式文件内容不一致")
     manifest_hash = next(iter(manifest_hashes))
+    if validated_manifest is None:
+        raise ControlError("上传 manifest 未通过校验")
+
+    expected_source_hash = validated_manifest.get(
+        "data_source_manifest_sha256"
+    )
+    expected_source_size = validated_manifest.get("data_source_manifest_size")
+    source_manifest_partial = (
+        input_dir / f"{DATA_SOURCE_MANIFEST_FILENAME}.partial"
+    )
+    source_manifest_final = input_dir / DATA_SOURCE_MANIFEST_FILENAME
+    source_manifest_candidates = [
+        path
+        for path in (source_manifest_final, source_manifest_partial)
+        if path.exists()
+    ]
+    if expected_source_hash is None:
+        if (
+            data_source_manifest_sha256 is not None
+            or data_source_manifest_size_bytes is not None
+            or source_manifest_candidates
+        ):
+            raise ControlError("当前 run 不接受来源 manifest")
+    else:
+        if (
+            data_source_manifest_sha256 is None
+            or data_source_manifest_size_bytes is None
+        ):
+            raise ControlError("free-stockdb 上传缺少来源 manifest 身份参数")
+        declared_source_hash = validate_sha256(data_source_manifest_sha256)
+        if declared_source_hash != expected_source_hash:
+            raise ControlError("来源 manifest SHA-256 与 run manifest 不匹配")
+        if (
+            isinstance(data_source_manifest_size_bytes, bool)
+            or not isinstance(data_source_manifest_size_bytes, int)
+            or data_source_manifest_size_bytes != expected_source_size
+        ):
+            raise ControlError("来源 manifest 大小与 run manifest 不匹配")
+        if not source_manifest_candidates:
+            raise ControlError("上传来源 manifest 不存在")
+        source_manifest_hashes: set[str] = set()
+        for source in source_manifest_candidates:
+            actual_source_size = _require_regular_file(
+                source,
+                "上传来源 manifest",
+                max_bytes=MAX_MANIFEST_BYTES,
+            )
+            if actual_source_size != data_source_manifest_size_bytes:
+                raise ControlError("上传来源 manifest 大小与声明不匹配")
+            if _sha256_file(source) != declared_source_hash:
+                raise ControlError("上传来源 manifest SHA-256 不匹配")
+            source_payload = _read_json(source, "上传来源 manifest")
+            if source_payload != validated_manifest["data_source_manifest"]:
+                raise ControlError("上传来源 manifest 与 run manifest 冻结内容不一致")
+            source_manifest_hashes.add(declared_source_hash)
+        if len(source_manifest_hashes) != 1:
+            raise ControlError("来源 manifest partial 与正式文件内容不一致")
 
     if not data_final.exists():
         os.replace(data_partial, data_final)
@@ -441,6 +554,12 @@ def finalize_upload(
         os.chmod(manifest_final, 0o600)
     elif manifest_partial.exists():
         manifest_partial.unlink()
+    if expected_source_hash is not None:
+        if not source_manifest_final.exists():
+            os.replace(source_manifest_partial, source_manifest_final)
+            os.chmod(source_manifest_final, 0o600)
+        elif source_manifest_partial.exists():
+            source_manifest_partial.unlink()
     if marker.get("data_filename") is None:
         marker["data_filename"] = filename
         _atomic_write_json(run_dir / ".run_control.json", marker)
@@ -451,6 +570,8 @@ def finalize_upload(
         "data_filename": filename,
         "data_size_bytes": size_bytes,
         "data_sha256": expected_hash,
+        "data_source_manifest_sha256": expected_source_hash,
+        "data_source_manifest_size_bytes": expected_source_size,
         "run_manifest_sha256": manifest_hash,
         "finalized": True,
     }
@@ -824,6 +945,8 @@ def _parser() -> argparse.ArgumentParser:
     finalize.add_argument("filename")
     finalize.add_argument("sha256")
     finalize.add_argument("size_bytes", type=int)
+    finalize.add_argument("data_source_manifest_sha256", nargs="?")
+    finalize.add_argument("data_source_manifest_size_bytes", type=int, nargs="?")
 
     submit = sub.add_parser("submit")
     submit.add_argument("run_id")
@@ -858,6 +981,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.filename,
                 size_bytes=args.size_bytes,
                 sha256=args.sha256,
+                data_source_manifest_sha256=(
+                    args.data_source_manifest_sha256
+                ),
+                data_source_manifest_size_bytes=(
+                    args.data_source_manifest_size_bytes
+                ),
             )
         elif args.command == "submit":
             result = submit_run(args.run_id)

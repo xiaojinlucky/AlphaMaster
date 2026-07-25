@@ -111,6 +111,72 @@ def _write_checkpoint(run_dir: Path, manifest: dict, symbol: str) -> Path:
     return path
 
 
+def test_free_stockdb_source_manifest_is_materialized_for_train_file(
+    prepared_run,
+) -> None:
+    run_dir, _python, manifest = prepared_run
+    old_data_path = run_dir / "input" / manifest["data_filename"]
+    data_path = run_dir / "input" / "600519_D1.parquet"
+    old_data_path.replace(data_path)
+    data_hash = _sha(data_path)
+    source_manifest = {
+        "source": "FreeStockDB",
+        "format": "alphamaster_ashare_free_stockdb_qfq_dataset_v1",
+        "source_id": "ashare_free_stockdb_qfq",
+        "symbol": "600519",
+        "timeframe": "D1",
+        "data_filename": data_path.name,
+        "data_sha256": data_hash,
+        "dataset_id": f"sha256:{data_hash}",
+        "data_rows": 500,
+        "data_start": "2022-01-04T07:00:00Z",
+        "data_end": "2023-12-04T07:00:00Z",
+        "columns": ["time", "open", "high", "low", "close", "tick_volume"],
+        "periods_per_year": 242,
+        "minimum_bars": 484,
+    }
+    source_path = (
+        run_dir / "input" / worker.DATA_SOURCE_MANIFEST_FILENAME
+    )
+    source_path.write_text(
+        json.dumps(source_manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    manifest.update(
+        {
+            "symbol": "600519",
+            "timeframe": "D1",
+            "data_filename": data_path.name,
+            "data_sha256": data_hash,
+            "dataset_id": source_manifest["dataset_id"],
+            "data_rows": 500,
+            "data_start": source_manifest["data_start"],
+            "data_end": source_manifest["data_end"],
+            "local_source": "ashare_free_stockdb_qfq",
+            "periods_per_year": 242,
+            "minimum_bars": 484,
+            "data_source_manifest_filename": (
+                worker.DATA_SOURCE_MANIFEST_FILENAME
+            ),
+            "data_source_manifest_sha256": _sha(source_path),
+            "data_source_manifest_size": source_path.stat().st_size,
+            "data_source_manifest": source_manifest,
+        }
+    )
+    manifest_path = run_dir / "input" / "run_manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    (run_dir / "input" / "run_manifest.sha256").write_text(
+        _sha(manifest_path) + "\n",
+        encoding="ascii",
+    )
+
+    loaded, loaded_data_path, _manifest_hash = worker._verify_inputs(run_dir)
+
+    canonical_sidecar = loaded_data_path.with_suffix(".manifest.json")
+    assert loaded["data_source_manifest_sha256"] == _sha(source_path)
+    assert canonical_sidecar.read_bytes() == source_path.read_bytes()
+
+
 def test_success_manifest_hashes_only_whitelisted_artifacts(prepared_run) -> None:
     run_dir, python, manifest = prepared_run
     calls: list[tuple[list[str], dict]] = []

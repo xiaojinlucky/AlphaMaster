@@ -22,7 +22,13 @@ BASE_PYTHON = Path("/hwdata/home/jinqc/.local/bin/python3.11")
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from data_pipeline.dataset_contracts import TRAINING_SOURCE_IDS, source_family
+from data_pipeline.dataset_contracts import (
+    FREE_STOCKDB_QFQ_FORMAT,
+    FREE_STOCKDB_QFQ_SOURCE_ID,
+    FREE_STOCKDB_SOURCE,
+    TRAINING_SOURCE_IDS,
+    source_family,
+)
 from model_core.target_contract import SCORING_CONTRACT_VERSION
 
 RUN_ID_RE = re.compile(r"^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{8}$")
@@ -48,6 +54,7 @@ GENERIC_MINIMUM_BARS = 3_000  # 必须与根 config.Config.MIN_BARS 保持一致
 
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_DATA_BYTES = 64 * 1024**3
+DATA_SOURCE_MANIFEST_FILENAME = "data_source_manifest.json"
 MAX_ARTIFACT_BYTES = 8 * 1024**3
 MAX_ARTIFACT_TOTAL_BYTES = 32 * 1024**3
 REQUIRED_SOURCE_FILES = (
@@ -163,6 +170,36 @@ def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
             os.fsync(handle.fileno())
         os.replace(temp, path)
         os.chmod(path, 0o600)
+    finally:
+        if temp.exists():
+            temp.unlink()
+
+
+def _materialize_data_source_manifest(
+    source: Path,
+    destination: Path,
+    *,
+    expected_sha256: str,
+) -> None:
+    payload = source.read_bytes()
+    if hashlib.sha256(payload).hexdigest() != expected_sha256:
+        raise WorkerError("来源 manifest 在物化前发生漂移")
+    if destination.exists():
+        _require_file(destination, "训练数据 sidecar", MAX_MANIFEST_BYTES)
+        if _sha256_file(destination) != expected_sha256:
+            raise WorkerError("训练数据 sidecar 已存在但身份不匹配")
+        return
+    temp = destination.with_name(
+        f".{destination.name}.{secrets.token_hex(8)}.tmp"
+    )
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, destination)
+        os.chmod(destination, 0o600)
     finally:
         if temp.exists():
             temp.unlink()
@@ -294,6 +331,74 @@ def _verify_inputs(run_dir: Path) -> tuple[dict[str, Any], Path, str]:
     expected_data_hash = _validate_sha256(manifest.get("data_sha256"), "数据哈希")
     if _sha256_file(data_path) != expected_data_hash:
         raise WorkerError("训练数据 SHA-256 不匹配")
+    source_manifest_fields = (
+        manifest.get("data_source_manifest_filename"),
+        manifest.get("data_source_manifest_sha256"),
+        manifest.get("data_source_manifest_size"),
+        manifest.get("data_source_manifest"),
+    )
+    if local_source == FREE_STOCKDB_QFQ_SOURCE_ID:
+        if (
+            manifest.get("data_source_manifest_filename")
+            != DATA_SOURCE_MANIFEST_FILENAME
+        ):
+            raise WorkerError("free-stockdb 来源 manifest 文件名不匹配")
+        expected_source_hash = _validate_sha256(
+            manifest.get("data_source_manifest_sha256"),
+            "来源 manifest 哈希",
+        )
+        expected_source_size = manifest.get("data_source_manifest_size")
+        if (
+            isinstance(expected_source_size, bool)
+            or not isinstance(expected_source_size, int)
+            or not 0 < expected_source_size <= MAX_MANIFEST_BYTES
+        ):
+            raise WorkerError("来源 manifest 大小非法")
+        source_manifest = manifest.get("data_source_manifest")
+        if not isinstance(source_manifest, dict):
+            raise WorkerError("free-stockdb 来源 manifest 身份缺失")
+        expected_source_fields = {
+            "source": FREE_STOCKDB_SOURCE,
+            "format": FREE_STOCKDB_QFQ_FORMAT,
+            "source_id": FREE_STOCKDB_QFQ_SOURCE_ID,
+            "symbol": manifest.get("symbol"),
+            "timeframe": manifest.get("timeframe"),
+            "data_filename": filename,
+            "data_sha256": manifest.get("data_sha256"),
+            "dataset_id": manifest.get("dataset_id"),
+            "data_rows": manifest.get("data_rows"),
+            "data_start": manifest.get("data_start"),
+            "data_end": manifest.get("data_end"),
+            "columns": manifest.get("columns"),
+            "periods_per_year": manifest.get("periods_per_year"),
+            "minimum_bars": manifest.get("minimum_bars"),
+        }
+        for field, expected in expected_source_fields.items():
+            if source_manifest.get(field) != expected:
+                raise WorkerError(
+                    f"free-stockdb 来源 manifest 的 {field} 与 run manifest 不一致"
+                )
+        source_manifest_path = (
+            run_dir / "input" / DATA_SOURCE_MANIFEST_FILENAME
+        )
+        actual_source_size = _require_file(
+            source_manifest_path,
+            "来源 manifest",
+            MAX_MANIFEST_BYTES,
+        )
+        if actual_source_size != expected_source_size:
+            raise WorkerError("来源 manifest 大小不匹配")
+        if _sha256_file(source_manifest_path) != expected_source_hash:
+            raise WorkerError("来源 manifest SHA-256 不匹配")
+        if _read_json(source_manifest_path, "来源 manifest") != source_manifest:
+            raise WorkerError("来源 manifest 与 run manifest 冻结内容不一致")
+        _materialize_data_source_manifest(
+            source_manifest_path,
+            data_path.with_suffix(".manifest.json"),
+            expected_sha256=expected_source_hash,
+        )
+    elif any(value is not None for value in source_manifest_fields):
+        raise WorkerError("非 free-stockdb run 不接受来源 manifest 输入")
 
     commit = manifest.get("git_commit")
     if not isinstance(commit, str) or not GIT_COMMIT_RE.fullmatch(commit):
@@ -557,6 +662,18 @@ def run_worker(
         "local_source": manifest.get("local_source") if manifest else None,
         "periods_per_year": manifest.get("periods_per_year") if manifest else None,
         "minimum_bars": manifest.get("minimum_bars") if manifest else None,
+        "data_source_manifest_filename": (
+            manifest.get("data_source_manifest_filename") if manifest else None
+        ),
+        "data_source_manifest_sha256": (
+            manifest.get("data_source_manifest_sha256") if manifest else None
+        ),
+        "data_source_manifest_size": (
+            manifest.get("data_source_manifest_size") if manifest else None
+        ),
+        "data_source_manifest": (
+            manifest.get("data_source_manifest") if manifest else None
+        ),
         "requested_resources": manifest.get("requested_resources") if manifest else None,
         "training_parameters": manifest.get("training_parameters") if manifest else None,
         "compute_node": node,
