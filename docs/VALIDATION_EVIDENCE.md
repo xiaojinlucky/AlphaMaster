@@ -2,6 +2,25 @@
 
 本文件只记录已经得到最终汇总的验证。没有最终汇总、仅有 Mock、仅到达外部端点或仍待提交的事项都单独标明。
 
+## 0.00000 2026-07-26 网页版 GPT 审核与本机只读复审
+
+- 网页版 GPT 固定读取公开规划快照
+  `e0fb283afeeb783d53371bc52071aaccad1d5091`，对目标实现提交
+  `b3bbefef6aa14ca314a3f3db6ad8babb9d595ea2` 的 FreeStockDB D1 /
+  Slurm sidecar 限定范围给出 `PASS`，对系统阶段给出 `RETURN`，并输出
+  `WEB_GPT_DIRECTION_PLAN_READY_FOR_CODEX_LOCALIZATION`。
+- 该外部审核没有完成强制文件补读；纠偏附录也明确承认当时无法重新获得
+  GitHub 只读接口。因此不能把它记录成完整独立代码审计，只能记录为外部
+  方向审核。
+- 本机三路只读对抗审查分别完成工单依赖、Skill/模块映射和证据等级核对。
+  结果为：依赖审查发现 `1` 个 blocker（RND-04 缺历史成交状态和账本适配
+  的产出者），已通过拆成 04A/04B/04C 修正；Skill 映射 `0` blocker；
+  证据分级发现 `5` 组误判，已在本地化工单中全部降级或拆分。
+- 现役本地化结果和硬边界见
+  `docs/WEB_GPT_REVIEW_AND_WORK_ORDERS_20260726.md`。本轮没有执行工单，
+  没有连接 SSH/Slurm、写数据库、恢复队列、运行训练/回测、下载数据或
+  揭示 sealed OOS；这些事项仍不能记为完成。
+
 ## 0.0000 2026-07-26 WEB-only 审核与发布规则核验
 
 - 用户已明确：当前 goal 只使用网页版 GPT 审核，不再使用 BioMNI 总控；
