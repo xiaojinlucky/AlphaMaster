@@ -6,6 +6,7 @@ pytdx>=1.72
 akshare==1.18.64
 xlrd==2.0.1
 pyarrow>=14
+h5py==3.16.0
 scipy>=1.11
 matplotlib>=3.7
 MetaTrader5>=5.0.45
