@@ -483,6 +483,11 @@ def test_two_managers_share_one_postprocess_lease(
 
 
 def test_run_lease_is_exclusive_across_processes(tmp_path: Path) -> None:
+    """2026-07-27 环境类修复：原 timeout=20 秒过紧——子进程需冷启动 Python 并
+    import 整条 web.a_share_pipeline 依赖链（空载实测 ~2.7s，机器被训练批次/
+    Web 控制台占满时实测可超 20s，触发 TimeoutExpired 闪断）。超时只是防挂死
+    护栏，放宽到 120s；互斥断言（第二进程抢锁必须返回 False）强度不变。
+    """
     lock_path = tmp_path / "pipeline.lock"
     lease = pipeline_module._RunLease(lock_path)
     assert lease.acquire() is True
@@ -499,7 +504,7 @@ def test_run_lease_is_exclusive_across_processes(tmp_path: Path) -> None:
             capture_output=True,
             text=True,
             check=True,
-            timeout=20,
+            timeout=120,
         )
     finally:
         lease.release()

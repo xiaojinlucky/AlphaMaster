@@ -51,7 +51,10 @@ def _make_raw_dict(
 # Validates: Requirements 3.3, 4.2, 4.4
 
 
-@settings(max_examples=100)
+# deadline=None：compute_features 在 65 特征下单次 15~100ms（空载实测），
+# 机器被训练批次占满时会超出 hypothesis 默认 200ms/例 的 deadline 造成闪断；
+# deadline 是性能护栏而非正确性断言，放宽不降低断言强度（2026-07-27）。
+@settings(max_examples=100, deadline=None)
 @given(
     n=st.integers(min_value=1, max_value=8),
     t=st.integers(min_value=20, max_value=200),
@@ -59,17 +62,20 @@ def _make_raw_dict(
 def test_property3_feature_tensor_shape(n: int, t: int):
     """
     For any N symbols and T timesteps, MT5FeatureEngineer.compute_features()
-    must return a tensor of shape exactly [N, 10, T].
+    must return a tensor of shape exactly [N, F, T] where
+    F == MT5FeatureEngineer.INPUT_DIM（由特征注册层派生）。
 
-    Feature count was upgraded from 6 to 10 (added ATR, RVOL, RET20, AC1).
+    2026-07-27 对齐 fork 当前特征语义：特征库已扩展至 65，旧断言的 20（docstring
+    甚至还停在 10）对应上游旧版；F 改为从被测模块常量推导，防再漂移。
 
     Validates: Requirements 3.3, 4.2, 4.4
     """
     raw_dict = _make_raw_dict(n, t)
     features = MT5FeatureEngineer.compute_features(raw_dict)
 
-    assert features.shape == (n, 20, t), (
-        f"Expected shape ({n}, 20, {t}), got {tuple(features.shape)}"
+    expected_f = MT5FeatureEngineer.INPUT_DIM
+    assert features.shape == (n, expected_f, t), (
+        f"Expected shape ({n}, {expected_f}, {t}), got {tuple(features.shape)}"
     )
 
 
@@ -190,7 +196,10 @@ def extreme_ohlcv_strategy(draw):
     }
 
 
-@settings(max_examples=100)
+# deadline=None：同 property3——65 特征的 compute_features 每例 15~100ms（空载），
+# 高负载下超 hypothesis 默认 200ms deadline 即 DeadlineExceeded 闪断（历史失败
+# 即此机制：断言本身在当前代码上稳过，2026-07-27 定向暴力扫描极端域 0 违例）。
+@settings(max_examples=100, deadline=None)
 @given(raw_dict=extreme_ohlcv_strategy())
 def test_property4_feature_values_bounded_no_nan_inf(raw_dict: dict):
     """

@@ -6,7 +6,9 @@
 - TS_RANK_5/10/20 值域 ∈ [0, 1)
 - TS_CORR_10 在常数输入时输出 0
 - 所有算子对边界值（全零、极大值 1e8）无 NaN / Inf
-- len(OPS_CONFIG) == 28（原 22 + 新增 6 个趋势/动量算子）
+- len(OPS_CONFIG) 与词表算子段一致（2026-07-27 对齐 fork 当前语义：算子库已
+  多轮演进——22 → 28 → 66 → 07-04 移除二值算子后 62，旧硬编码断言随版本反复
+  漂移，改为与 FORMULA_VOCAB 交叉推导）
 
 需求：F2.1~F2.6
 """
@@ -34,10 +36,19 @@ def rand_input() -> torch.Tensor:
 
 # ── 1. OPS_CONFIG 长度验证 ───────────────────────────────────────────────────────
 class TestOpsConfigLength:
-    def test_ops_config_length_equals_22(self):
-        """OPS_CONFIG 共 28 个算子（原 12 基础 + 10 时序 + 6 趋势/动量）"""
-        assert len(OPS_CONFIG) == 28, (
-            f"OPS_CONFIG 长度应为 28，实际为 {len(OPS_CONFIG)}"
+    def test_ops_config_length_matches_vocab(self):
+        """OPS_CONFIG 长度与词表算子段一致（跨模块推导，不再硬编码）。
+
+        2026-07-27 对齐 fork 当前词表语义：原名 test_ops_config_length_equals_22、
+        断言 ==28（名称与断言已各漂移一次），07-03 扩到 66、07-04 移除二值算子
+        （23a5b1e）后为 62。绝对计数不再硬编码，改为与 FORMULA_VOCAB.operator_names
+        交叉校验；时序算子的名称与位置由下方 test_ts_op_names 锁定。
+        """
+        from model_core.vocab import FORMULA_VOCAB
+
+        assert len(OPS_CONFIG) == len(FORMULA_VOCAB.operator_names), (
+            f"OPS_CONFIG 长度 {len(OPS_CONFIG)} 与词表算子段 "
+            f"{len(FORMULA_VOCAB.operator_names)} 不一致"
         )
 
     def test_new_ops_count_equals_10(self):

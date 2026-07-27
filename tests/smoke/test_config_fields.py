@@ -3,7 +3,9 @@
 
 断言：
 - FEATURE_NAMES 不含 LIQ_SCORE / FOMO（旧 Solana 特有因子）
-- Config.INPUT_DIM == 6
+- 根 config.Config.INPUT_DIM 保持冻结遗留值 20（仅存于不可达兜底分支）
+- len(FEATURE_NAMES) 与活口径 ModelConfig.INPUT_DIM / MT5FeatureEngineer.INPUT_DIM
+  一致（2026-07-27 对齐 fork 当前特征语义，当前 65）
 
 注意：task 5.1 会将 vocab.py 更新为新的 MT5 特征名称。
       此测试使用 try/except 优雅处理旧版 vocab.py 中仍含旧字段的情形。
@@ -95,7 +97,16 @@ class TestFeatureNamesSmoke:
         )
 
     def test_feature_names_length_matches_input_dim(self):
-        """FEATURE_NAMES 的长度应等于 Config.INPUT_DIM（20）"""
+        """FEATURE_NAMES 的长度应等于**活口径**的 INPUT_DIM（模型/特征工程侧）。
+
+        2026-07-27 对齐 fork 当前特征语义：特征库已扩展至 65，训练/推理链路的
+        输入维数权威源是 model_core.config.ModelConfig.INPUT_DIM（由
+        FORMULA_VOCAB.feature_count 派生）与 MT5FeatureEngineer.INPUT_DIM（由
+        FEATURE_REGISTRY 派生）。旧断言比对的根 config.Config.INPUT_DIM==20 是
+        上游旧版遗留死值——生产链路里它只出现在 data_pipeline/data_manager.py:175
+        的 ImportError 兜底分支（model_core.features 存在时不可达），不参与任何
+        活路径；根 config.py 属训练批次冻结文件，其注释勘误记入批次后工单。
+        """
         feature_names = _get_feature_names()
         if feature_names is None:
             pytest.skip("model_core.vocab.FEATURE_NAMES not available yet (pending task 5.1)")
@@ -104,7 +115,14 @@ class TestFeatureNamesSmoke:
                 "vocab.py still contains old Solana features — "
                 "pending task 5.1 (MT5FeatureEngineer implementation)"
             )
-        assert len(feature_names) == Config.INPUT_DIM, (
-            f"Expected len(FEATURE_NAMES) == {Config.INPUT_DIM}, "
-            f"got {len(feature_names)}: {feature_names}"
+        from model_core.config import ModelConfig
+        from model_core.features import MT5FeatureEngineer
+
+        assert len(feature_names) == ModelConfig.INPUT_DIM, (
+            f"Expected len(FEATURE_NAMES) == ModelConfig.INPUT_DIM "
+            f"({ModelConfig.INPUT_DIM}), got {len(feature_names)}: {feature_names}"
+        )
+        assert len(feature_names) == MT5FeatureEngineer.INPUT_DIM, (
+            f"Expected len(FEATURE_NAMES) == MT5FeatureEngineer.INPUT_DIM "
+            f"({MT5FeatureEngineer.INPUT_DIM}), got {len(feature_names)}"
         )

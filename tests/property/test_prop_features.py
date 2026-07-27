@@ -14,7 +14,7 @@ Property 2: PRESSURE and AC1 Value Range Constraint
 import torch
 from hypothesis import given, settings, strategies as st
 
-from model_core.features import MT5FeatureEngineer
+from model_core.features import FEATURE_NAMES, MT5FeatureEngineer
 
 
 # ── Shared OHLCV generator ─────────────────────────────────────────────────────
@@ -80,22 +80,29 @@ def ohlcv_strategy(draw, min_T: int = 21) -> dict:
     N=st.integers(min_value=1, max_value=10),
     T=st.integers(min_value=21, max_value=200),
 )
-@settings(max_examples=50)
+# deadline=None：65 特征的 compute_features 每例 15~100ms（空载实测），高负载下
+# 超 hypothesis 默认 200ms deadline 即闪断；deadline 是性能护栏，放宽不降低断言
+# 强度（2026-07-27）。
+@settings(max_examples=50, deadline=None)
 def test_compute_features_shape_and_nan_free(N: int, T: int):
     """
     Property 1: compute_features Output Shape and NaN Safety Invariant
 
     For any N ∈ [1, 10] and T ∈ [21, 200] with positive OHLCV inputs,
-    compute_features must return a tensor of shape [N, 10, T] with no NaN/Inf.
+    compute_features must return a tensor of shape [N, F, T] with no NaN/Inf,
+    where F == MT5FeatureEngineer.INPUT_DIM（特征注册层派生）。
+
+    2026-07-27 对齐 fork 当前特征语义：特征库已扩展至 65，旧断言的 20 对应
+    上游旧版；F 改为从被测模块常量推导，防再漂移。
 
     **Validates: Requirements F1.1, F1.2, F1.10**
     """
     raw_dict = _make_ohlcv(N, T)
     out = MT5FeatureEngineer.compute_features(raw_dict)
 
-    # Shape invariant: 20 features (expanded from 10)
-    assert out.shape == (N, 20, T), (
-        f"Expected shape ({N}, 20, {T}), got {tuple(out.shape)}"
+    expected_f = MT5FeatureEngineer.INPUT_DIM
+    assert out.shape == (N, expected_f, T), (
+        f"Expected shape ({N}, {expected_f}, {T}), got {tuple(out.shape)}"
     )
 
     # NaN safety
@@ -117,24 +124,29 @@ def test_compute_features_shape_and_nan_free(N: int, T: int):
     N=st.integers(min_value=1, max_value=10),
     T=st.integers(min_value=21, max_value=200),
 )
-@settings(max_examples=50)
+# deadline=None：同上——历史失败机制是高负载下 compute_features 超 200ms 默认
+# deadline 的 DeadlineExceeded 闪断，断言本身在当前代码上稳过（2026-07-27）。
+@settings(max_examples=50, deadline=None)
 def test_pressure_and_ac1_in_range(N: int, T: int):
     """
     Property 2: PRESSURE and AC1 Value Range Constraint
 
-    For any valid OHLCV input, the PRESSURE feature (index 3) and AC1 feature
-    (index 9) must have all values ∈ [-1.0, 1.0].
+    For any valid OHLCV input, the PRESSURE and AC1 features must have all
+    values ∈ [-1.0, 1.0].
 
     PRESSURE is normalised via clamp(-1, 1) per F4.1.
     AC1 is normalised via clamp(-1, 1) per F4.4.
+
+    2026-07-27 对齐 fork 当前特征语义：特征索引不再硬编码（docstring 旧注 3/9、
+    代码旧注 12/13 均为历史口径），改由 FEATURE_NAMES.index() 动态定位。
 
     **Validates: Requirements F4.1, F4.4**
     """
     raw_dict = _make_ohlcv(N, T)
     out = MT5FeatureEngineer.compute_features(raw_dict)
 
-    pressure = out[:, 12, :]  # PRESSURE — index 12 in 20-feature vocab
-    ac1      = out[:, 13, :]  # AC1      — index 13 in 20-feature vocab
+    pressure = out[:, FEATURE_NAMES.index("PRESSURE"), :]
+    ac1      = out[:, FEATURE_NAMES.index("AC1"), :]
 
     # PRESSURE ∈ [-1.0, 1.0]
     assert (pressure >= -1.0).all(), (

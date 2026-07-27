@@ -13,7 +13,7 @@ import os
 # 确保项目根目录在 sys.path 中
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from model_core.features import MT5FeatureEngineer
+from model_core.features import FEATURE_NAMES, MT5FeatureEngineer
 
 
 # ─── 测试用 OHLCV fixture ─────────────────────────────────────────────────────
@@ -45,13 +45,19 @@ def _make_raw_dict(N: int = 3, T: int = 50, seed: int = 42) -> dict:
 # ─── 1. 输出形状 ──────────────────────────────────────────────────────────────
 
 class TestComputeFeaturesShape:
-    """compute_features 输出形状应为 [N, 20, T]（扩展自10，需求 F1.1, F1.2）"""
+    """compute_features 输出形状应为 [N, F, T]，F 从特征注册层推导。
+
+    2026-07-27 对齐 fork 当前特征语义：特征库已扩展至 65（8 大类），旧断言
+    的 20 对应上游旧版。F 不再硬编码，统一从 MT5FeatureEngineer.INPUT_DIM
+    （features.py 尾部由 FEATURE_REGISTRY 动态派生）推导，防再漂移。
+    """
 
     def test_output_shape_default(self):
         raw = _make_raw_dict(N=3, T=50)
         out = MT5FeatureEngineer.compute_features(raw)
-        assert out.shape == (3, 20, 50), (
-            f"Expected shape (3, 20, 50), got {tuple(out.shape)}"
+        expected_f = MT5FeatureEngineer.INPUT_DIM
+        assert out.shape == (3, expected_f, 50), (
+            f"Expected shape (3, {expected_f}, 50), got {tuple(out.shape)}"
         )
 
     def test_output_ndim(self):
@@ -59,11 +65,20 @@ class TestComputeFeaturesShape:
         out = MT5FeatureEngineer.compute_features(raw)
         assert out.ndim == 3
 
-    def test_feature_dim_equals_10(self):
-        """feature 维度固定为 20，对应 INPUT_DIM（需求 F1.7）"""
+    def test_feature_dim_matches_registry(self):
+        """feature 维度 == INPUT_DIM == len(FEATURE_NAMES)（需求 F1.7）。
+
+        2026-07-27 对齐 fork 当前特征语义：原名 test_feature_dim_equals_10、
+        断言 ==20（名称与断言已各漂移一次），当前特征数 65。改为从
+        MT5FeatureEngineer.INPUT_DIM 与 FEATURE_NAMES 双源推导并互检。
+        """
         raw = _make_raw_dict(N=3, T=50)
         out = MT5FeatureEngineer.compute_features(raw)
-        assert out.shape[1] == 20
+        assert MT5FeatureEngineer.INPUT_DIM == len(FEATURE_NAMES), (
+            f"INPUT_DIM={MT5FeatureEngineer.INPUT_DIM} 与 "
+            f"len(FEATURE_NAMES)={len(FEATURE_NAMES)} 不一致"
+        )
+        assert out.shape[1] == MT5FeatureEngineer.INPUT_DIM
 
     def test_time_dim_preserved(self):
         """T 维度应与输入完全一致（需求 F1.1）"""

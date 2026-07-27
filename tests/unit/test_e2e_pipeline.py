@@ -4,10 +4,12 @@ tests/unit/test_e2e_pipeline.py -- 端到端流水线集成测试（Task 14.1）
 验证整条流水线可以端到端运行（requirements 3.1, 4.1, 5.2, 6.1, 7.3, 7.4, 7.8）：
   features → vm → evaluator（score/prune/report/select）→ vocab/version 校验
 
-关键数字（当前扩展后）：
+关键数字（2026-07-27 对齐 fork 当前词表语义）：
   - 特征数  F = 65（8 大类）
-  - 算子数  O = 66
-  - vocab size  = F + O = 131
+  - 算子数  O = len(OPS_CONFIG)（当前 62：07-03 扩到 66 后，07-04 提交 23a5b1e
+    "移除二值算子" 删去 LT/GT 等 4 个二值输出算子以堵训练分虚高，IF_GT 因输出
+    连续被保留；旧断言 66/131 对应移除前的旧版）
+  - vocab size  = F + O（当前 65 + 62 = 127；断言改为从被测模块常量推导，防再漂移）
   - feat_offset = 65
   - VOCAB_VERSION 为确定性哈希（"v" + sha256[:12]）
 """
@@ -52,15 +54,34 @@ class TestKeyNumbers:
         )
 
     def test_operator_count(self):
-        """算子数应 == 66（含 CS_RANK/CS_SCALE/CS_NEUTRALIZE 等新增）。"""
-        assert len(OPS_CONFIG) == 66, (
-            f"期望 66 个算子，实际 {len(OPS_CONFIG)}"
+        """算子表与词表算子段一致，且含 CS_RANK/CS_SCALE/CS_NEUTRALIZE。
+
+        2026-07-27 对齐 fork 当前词表语义：旧断言 ==66 对应 07-04 移除二值算子
+        （23a5b1e）前的旧版，当前为 62。改为与 FORMULA_VOCAB.operator_names
+        交叉校验（注册层须无重复/无遗漏地摄入 OPS_CONFIG），不再硬编码计数。
+        """
+        assert len(OPS_CONFIG) == len(FORMULA_VOCAB.operator_names), (
+            f"OPS_CONFIG 有 {len(OPS_CONFIG)} 个算子，"
+            f"词表算子段却有 {len(FORMULA_VOCAB.operator_names)} 个"
+        )
+        op_names = {name for name, _, _ in OPS_CONFIG}
+        assert {"CS_RANK", "CS_SCALE", "CS_NEUTRALIZE"} <= op_names, (
+            "跨品种算子 CS_RANK/CS_SCALE/CS_NEUTRALIZE 缺失"
+        )
+        assert op_names == set(FORMULA_VOCAB.operator_names), (
+            "OPS_CONFIG 与词表算子段名称集合不一致"
         )
 
     def test_vocab_size(self):
-        """词表总大小 == 65 + 66 == 131。"""
-        assert FORMULA_VOCAB.size == 131, (
-            f"期望 vocab size=131，实际 {FORMULA_VOCAB.size}"
+        """词表总大小 == 特征数 + 算子数（从被测模块常量推导）。
+
+        2026-07-27 对齐 fork 当前词表语义：旧断言 ==131（65+66）对应 07-04
+        移除二值算子前的旧版，当前为 65+62=127。改为跨模块推导，防再漂移。
+        """
+        assert FORMULA_VOCAB.size == len(FEATURE_NAMES) + len(OPS_CONFIG), (
+            f"vocab size={FORMULA_VOCAB.size}，"
+            f"但特征 {len(FEATURE_NAMES)} + 算子 {len(OPS_CONFIG)} "
+            f"= {len(FEATURE_NAMES) + len(OPS_CONFIG)}"
         )
 
     def test_feat_offset(self):
@@ -122,9 +143,22 @@ class TestStackVM:
         vm = StackVM()
         assert vm.feat_offset == 65
 
-    def test_op_map_size_is_66(self):
+    def test_op_map_covers_all_operators(self):
+        """VM 的 op_map 必须恰好覆盖词表算子段的全部 token id。
+
+        2026-07-27 对齐 fork 当前词表语义：原名 test_op_map_size_is_66 断言
+        ==66，对应 07-04 移除二值算子（23a5b1e）前的旧版（当前 62）。改为从
+        OPS_CONFIG/FORMULA_VOCAB 推导并校验 token id 精确覆盖，强度只增不减。
+        """
         vm = StackVM()
-        assert len(vm.op_map) == 66
+        assert len(vm.op_map) == len(OPS_CONFIG), (
+            f"op_map 有 {len(vm.op_map)} 项，OPS_CONFIG 有 {len(OPS_CONFIG)} 个算子"
+        )
+        expected_ids = set(range(FORMULA_VOCAB.operator_offset, FORMULA_VOCAB.size))
+        assert set(vm.op_map.keys()) == expected_ids, (
+            "op_map 的 token id 未精确覆盖词表算子段 "
+            f"[{FORMULA_VOCAB.operator_offset}, {FORMULA_VOCAB.size})"
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────

@@ -10,10 +10,13 @@ Property 7: TS_CORR_10 Correlation Coefficient Boundedness
   当 x 或 y 为常数（窗口填满后）时，对应位置输出为 0。
   **Validates: 需求 F2.5**
 
-Property 8: Temporal Operators Produce No NaN or Inf
-  对任意 [N, T] 输入（包含零值、极大值等边界情况），
-  所有新增时序算子（TS_MEAN_*, TS_STD_*, TS_RANK_*, TS_CORR_10）输出
-  不包含 NaN 或 Inf。
+Property 8: Operators Produce No NaN or Inf
+  对任意 [N, T] 输入（包含零值、极大值等边界情况），OPS_CONFIG 全部注册算子
+  （含时序、基础、跨品种与三元算子）输出不包含 NaN 或 Inf。
+  2026-07-27 对齐 fork 当前算子语义：旧实现用开放切片 OPS_CONFIG[12:]（注释
+  写"索引 12–21 共 10 个时序算子"，只在算子库=22 时成立），算子库扩到 62 后
+  意外吞进 50 个算子且没有三元分派，遇到 IF_GT(arity=3) 即 TypeError 崩溃。
+  现改为显式遍历全表 + 按 arity 1/2/3 分派，覆盖面 10→62 只增不减。
   **Validates: 需求 F2.6**
 """
 
@@ -28,8 +31,20 @@ from hypothesis import strategies as st
 
 from model_core.ops import _ts_rank, _ts_corr_10, _ts_mean, _ts_std, OPS_CONFIG
 
-# ── All 10 new temporal operators from OPS_CONFIG (indices 12–21) ─────────────
-_TS_OPS = OPS_CONFIG[12:]  # list of (name, fn, arity)
+# ── 全部注册算子（2026-07-27：替换陈旧开放切片 OPS_CONFIG[12:]，见文件头）────
+_ALL_OPS = tuple(OPS_CONFIG)  # list of (name, fn, arity)，arity ∈ {1, 2, 3}
+
+
+def _invoke_op(fn, arity: int, x: torch.Tensor, y: torch.Tensor,
+               z: torch.Tensor) -> torch.Tensor:
+    """按算子元数分派调用；未知元数直接失败（let it crash，不静默跳过）。"""
+    if arity == 1:
+        return fn(x)
+    if arity == 2:
+        return fn(x, y)
+    if arity == 3:
+        return fn(x, y, z)
+    raise AssertionError(f"未知算子元数 arity={arity}")
 
 # ── Strategies ────────────────────────────────────────────────────────────────
 
@@ -93,7 +108,7 @@ def test_ts_rank_range_all_windows_via_ops_config(N: int, T: int) -> None:
     torch.manual_seed(1)
     x = _randn_tensor(N, T)
 
-    for name, fn, arity in _TS_OPS:
+    for name, fn, arity in _ALL_OPS:
         if not name.startswith("TS_RANK"):
             continue
         out = fn(x)
@@ -214,22 +229,25 @@ def test_ts_corr_10_constant_y_outputs_zero_after_warmup(
     N=st.integers(min_value=1, max_value=10),
     T=st.integers(min_value=10, max_value=100),
 )
-@settings(max_examples=50)
+# deadline=None：每例串行执行全部 62 个算子，高负载下会超 hypothesis 默认
+# 200ms/例 deadline 造成闪断；deadline 是性能护栏，放宽不降低断言强度。
+@settings(max_examples=50, deadline=None)
 def test_all_ts_ops_no_nan_inf_random(N: int, T: int) -> None:
     """
-    Property 8a: All TS operators produce no NaN or Inf (random normal input).
+    Property 8a: All operators produce no NaN or Inf (random normal input).
+
+    2026-07-27 对齐 fork 当前算子语义：由陈旧切片 OPS_CONFIG[12:]（缺三元分派，
+    IF_GT 即崩）改为全表遍历 + arity 分派，覆盖 62 算子（见文件头）。
 
     **Validates: 需求 F2.6**
     """
     torch.manual_seed(5)
     x = _randn_tensor(N, T)
     y = _randn_tensor(N, T)
+    z = _randn_tensor(N, T)
 
-    for name, fn, arity in _TS_OPS:
-        if arity == 1:
-            out = fn(x)
-        else:  # arity == 2 (TS_CORR_10)
-            out = fn(x, y)
+    for name, fn, arity in _ALL_OPS:
+        out = _invoke_op(fn, arity, x, y, z)
 
         assert not torch.isnan(out).any(), (
             f"{name}: NaN found in output (random input, N={N}, T={T})"
@@ -243,21 +261,23 @@ def test_all_ts_ops_no_nan_inf_random(N: int, T: int) -> None:
     N=st.integers(min_value=1, max_value=10),
     T=st.integers(min_value=10, max_value=100),
 )
-@settings(max_examples=50)
+# deadline=None：理由同 8a（每例全表 62 算子，防高负载闪断，不降断言强度）。
+@settings(max_examples=50, deadline=None)
 def test_all_ts_ops_no_nan_inf_zeros(N: int, T: int) -> None:
     """
-    Property 8b: All TS operators produce no NaN or Inf (all-zeros input).
+    Property 8b: All operators produce no NaN or Inf (all-zeros input).
+
+    全零输入同时覆盖 DIV/SCALE/CS_* 等的除零防护路径。
+    2026-07-27 对齐 fork 当前算子语义：全表遍历 + arity 分派（见文件头）。
 
     **Validates: 需求 F2.6**
     """
     x = torch.zeros(N, T)
     y = torch.zeros(N, T)
+    z = torch.zeros(N, T)
 
-    for name, fn, arity in _TS_OPS:
-        if arity == 1:
-            out = fn(x)
-        else:
-            out = fn(x, y)
+    for name, fn, arity in _ALL_OPS:
+        out = _invoke_op(fn, arity, x, y, z)
 
         assert not torch.isnan(out).any(), (
             f"{name}: NaN found with zero input (N={N}, T={T})"
@@ -271,21 +291,23 @@ def test_all_ts_ops_no_nan_inf_zeros(N: int, T: int) -> None:
     N=st.integers(min_value=1, max_value=10),
     T=st.integers(min_value=10, max_value=100),
 )
-@settings(max_examples=50)
+# deadline=None：理由同 8a（每例全表 62 算子，防高负载闪断，不降断言强度）。
+@settings(max_examples=50, deadline=None)
 def test_all_ts_ops_no_nan_inf_large_values(N: int, T: int) -> None:
     """
-    Property 8c: All TS operators produce no NaN or Inf (very large values 1e8).
+    Property 8c: All operators produce no NaN or Inf (very large values 1e8).
+
+    极大值输入覆盖 PRODUCT_5/POWER 等潜在 float32 溢出路径。
+    2026-07-27 对齐 fork 当前算子语义：全表遍历 + arity 分派（见文件头）。
 
     **Validates: 需求 F2.6**
     """
     x = torch.full((N, T), 1e8)
     y = torch.full((N, T), -1e8)
+    z = torch.full((N, T), 1e8)
 
-    for name, fn, arity in _TS_OPS:
-        if arity == 1:
-            out = fn(x)
-        else:
-            out = fn(x, y)
+    for name, fn, arity in _ALL_OPS:
+        out = _invoke_op(fn, arity, x, y, z)
 
         assert not torch.isnan(out).any(), (
             f"{name}: NaN found with large-value input (N={N}, T={T})"
@@ -303,24 +325,24 @@ def test_all_ts_ops_no_nan_inf_large_values(N: int, T: int) -> None:
         allow_nan=False, allow_infinity=False,
     ),
 )
-@settings(max_examples=50)
+# deadline=None：理由同 8a（每例全表 62 算子，防高负载闪断，不降断言强度）。
+@settings(max_examples=50, deadline=None)
 def test_all_ts_ops_no_nan_inf_constant_input(N: int, T: int, const_val: float) -> None:
     """
-    Property 8d: All TS operators produce no NaN or Inf (constant-value input).
+    Property 8d: All operators produce no NaN or Inf (constant-value input).
 
     This tests the degenerate case where std=0 inside rolling windows, which
     is the main source of division-by-zero risk.
+    2026-07-27 对齐 fork 当前算子语义：全表遍历 + arity 分派（见文件头）。
 
     **Validates: 需求 F2.6**
     """
     x = torch.full((N, T), const_val)
     y = torch.full((N, T), const_val + 1.0)  # distinct constant for TS_CORR_10
+    z = torch.full((N, T), const_val - 1.0)  # 三元算子的第三操作数（同为退化常数）
 
-    for name, fn, arity in _TS_OPS:
-        if arity == 1:
-            out = fn(x)
-        else:
-            out = fn(x, y)
+    for name, fn, arity in _ALL_OPS:
+        out = _invoke_op(fn, arity, x, y, z)
 
         assert not torch.isnan(out).any(), (
             f"{name}: NaN found with constant input (val={const_val:.3g}, N={N}, T={T})"
