@@ -79,8 +79,6 @@ def test_research_loaders_accept_current_scoring_contract(tmp_path: Path) -> Non
     [
         "run_backtest.py",
         "backtest_current.py",
-        "backtest_all_groups.py",
-        "backtest_detailed.py",
         "backtest_index_best.py",
         "deep_backtest_metals.py",
         "generate_factor_equity_curves.py",

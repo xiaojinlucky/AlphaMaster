@@ -150,18 +150,15 @@ class Config:
     }
     VOL_TARGET_REFERENCE_SYMBOL = "XAUUSD"
     VOL_TARGET_REFERENCE_LOT = 0.01
-    VOL_TARGET_SHARPE_REFERENCE = 2.447
+    # 旧 CFD 时期的 Sharpe 常数产自已作废的评分合同（2026-07-24 修复前的口径），
+    # 且对应策略产物已不可复算，禁止再用于实盘手数缩放。表清空后
+    # _vol_target_weight 对所有品种返回中性权重 1.0；重新训练并通过
+    # sealed OOS 评估后，按新评分合同回填。
+    VOL_TARGET_SHARPE_REFERENCE = 0.0
     VOL_TARGET_SHARPE_EXPONENT = 0.50
     VOL_TARGET_MIN_SHARPE_WEIGHT = 0.50
     VOL_TARGET_MAX_SHARPE_WEIGHT = 1.50
-    VOL_TARGET_SHARPE_BY_SYMBOL = {
-        "XAUUSD": 2.447,
-        "US100.cash": 1.811,
-        "US500.cash": 0.959,
-        "US2000.cash": 0.575,
-        "US30.cash": 0.923,
-        "JP225.cash": -0.653,
-    }
+    VOL_TARGET_SHARPE_BY_SYMBOL: dict[str, float] = {}
     MIN_TRADE_EXPOSURE = 0.05      # |tanh(factor)| 小于该值时视为空仓，回测/实盘共用
 
     # ── 策略参数 ──────────────────────────────────────────
