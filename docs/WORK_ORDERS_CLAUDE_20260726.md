@@ -14,6 +14,8 @@
 
 ## 2. 不可违反边界（红线汇总）
 
+0. **训练批次期间源码冻结（2026-07-27 起，批次 batch_a50_d93b6b4bd5fc7704 完成前有效）**：队列每领取新一项都重校验"本地工作区训练源码哈希==批次冻结值 0e5ca8c3…"。因此以下 34 文件集在批次期间本地禁改：`config.py`、`train_file.py`、`data_pipeline/*.py`（含 overlay/dataset_purpose）、`model_core/*.py`、`strategy_manager/__init__.py`、`strategy_manager/signal.py`、`utils/train_logging.py`、`utils/training_runtime.py`、`scripts/slurm_control.py`、`scripts/train_slurm_worker.py`、`scripts/train_alphamaster.sbatch`。改任何一个=下一项领取 SourceHashDriftError 挂起。本地后处理链（run_backtest/回放/信号）虽不入哈希，也应冻结以保证 50 件结果可比。测试文件、docs、evaluation/ 新增模块、新脚本文件不受限。Web 控制台进程与本机不关机同为批次生命线。
+
 1. **sealed OOS 揭盲需用户届时单独明确授权**；持续 Git 授权≠揭盲授权；绝不在冒烟训练产物上揭盲（一次性不可逆消耗）。
 2. 不本机训练；不 reset/checkout/revert 工作区；不创建分支/worktree；不删数据/事故源/G 盘/node13 临时目录（删除前单独确认）；G 盘只读。
 3. Git：禁止 `git add .`/`-A`；只按精确路径分批暂存；staged 快照过 gitleaks（`C:\Users\Administrator\.codex-shared\tools\gitleaks\v8.30.1\gitleaks.exe git --staged --no-banner --redact`）+ 文件类型/体积检查；**提交与推送前须向用户一次性确认清单**；只推 `origin`（xiaojinlucky/AlphaMaster，用户明令保持公开），严禁推 `upstream`。数据/日志/checkpoint/凭据/运行态硬阻断。
@@ -82,21 +84,38 @@
 - 询问时呈报：候选清单（标的/run/validation 成绩注明"模型选择口径"）、揭示消耗的一次性语义、reveal 锁机制、预期产物（sealed report+receipt）。未获授权：不读 sealed parquet、不建 reveal claim、不生成报告。
 - 揭盲后：报告分层呈现 train/validation/sealed-test，sealed 成绩才是样本外结论；对照路线图 A1 的组合层目标语义（组合扣成本 Sharpe>1 + 分位数要求，替代"50 只逐只>1"）。
 
-### WO-AM-06 property/smoke 盲区清理 【状态：排队】
+### WO-AM-06 property/smoke 盲区清理 【状态：✅ 完成（2026-07-27，总控复核 48/48 + 冻结集零改动）】
+
+**结果**：17 个历史失败全数清零=12 过期断言 + 5 环境/flaky，**真实源码缺陷 0、skip 0**；tests/unit 1090/0 + property/smoke 48/0，**测试全树首次全绿**。9 个测试文件 +223/−84，3 个嵌错误数字的测试更名。修法原则=数字断言改为从被测模块常量推导（防再漂移）。
+**关键勘误（更正本板旧口径）**：真实词表=**65 特征 + 62 算子 = 127 词元**（07-03 扩到 66/131 后，07-04 `23a5b1e`"移除二值算子"删 LT/GT 等 4 个，IF_GT 因输出连续保留）。旧"65+66=131"出自 7 月中的 ChatGPT 审核对话，已过时。
+**批次后工单（源码冻结解除后执行）**：① 根 `config.py:126` 遗留 `INPUT_DIM=20` 与 `data_pipeline/data_manager.py:162-176` 不可达 ImportError 兜底（违反 let-it-crash）清理 + 两个冻结值断言同步；② `model_core/config.py:32,44` 过时注释勘误；③ 新建 GitHub Actions workflow（仓库现无 `.github/workflows`）——总控决定：做，但须先解决"真实 G 盘用例在 runner 上的显式环境跳过语义"（skip 必须带 reason 且计数可见，不得静默），与①②同批。
 
 - 对象：9 个 HEAD 即坏失败（`test_feature_props`×2、`test_prop_features`×2、`test_prop_ops`×4、`test_config_fields`×1）+ unit 的 8 个同簇历史失败（e2e vocab/op 计数等）。
 - 方向：逐个判定"断言过期（fork 演进后 vocab=131/特征维数变化）"还是"真实缺陷"；过期者按当前语义更新断言并写明依据，真实缺陷立修。禁止 skip 掩盖。
 - 验收：`pytest tests/` 全量失败数归零（或每个残留失败有书面豁免理由）；CI 范围扩到 property/smoke。
 
-### WO-AM-07 quarantine 207 源修复（真实全量 CSI300 replay 前置） 【状态：排队；独立数据工单】
+### WO-AM-07 quarantine 207 源修复（真实全量 CSI300 replay 前置） 【状态：第一阶段归因 ✅（2026-07-27 只读分析完成），第二阶段按 07A→07B→07A扩→07C→07F 推进】
+
+**归因结论（真实查询，零估算；逐只清单在会话 scratchpad `wo_am07_result.json`）**：六桶=A 仅复权断裂 133 只 / B 无因子+断裂 54 / C 仅无因子 16 / D 次新不足484根 3 / E 单行脏记录 1（600228）/ F 上游无此券 1（990018）。A∪B∪C=203 只（98.1%）同根因=**FreeStockDB 发布者复权因子表覆盖不完整**（工作副本与发布者 manifest 296/299 SHA 一致→非本地损耗，重同步零增益；事故源与此无关）。**单修任何一桶解锁 0 时点**，必须 A+B+C 一揽子。敏感度：修 203 只→224 时点（2006-10-31~2025-05-30 连续）；+D→237 时点至 2026-06-30；**最小集 29 只→解锁 2026-01-23~2026-06-30（6 时点，首个真实全量回放区间）**。三道墙分层口径：状态层 237；退市残留 11 只/12 时点需 07C 语义裁决（否则最长连续段 96 时点 2017-02~2025-01）；日级另有 12 只 available 股窗口内缺口待 07F 拆分（000338×185 天最重）。**正式建议放弃 990018 所在的 2005-04~2006-09 段（18 时点），全量回放史实起点=2006-10-31。**
+
+子工单（验收标准见归因报告，要点）：
+- **07A 复权因子重建**（203 只，主工单；分期：首批 29 只）：先探发布者 manifest 新版/ProApi 额度恢复走同源；否则外源（AKShare 等）——qfq 核对必须比逐日收益而非绝对价；独立 source_id+v4 manifest+逐只审计；v3/事故源零字节改动；203 只断裂清零；过独立对抗审查。
+- **07B replay 资格分级**（D 桶 3 只，零补源）：书面裁决 484 根是训练合同参数不适用于 replay 价格层，v4 加独立 `replay_price_eligible` 列。
+- **07C 退市残留语义裁决**（11 只/12 时点，设计工单）：有交易所退市证据时显式剔除+逐只审计，非静默缩池；裁决前维持失败关闭。
+- **07D 600228 单行修复**（搭车，优先级最低，时点增益 0）。
+- **07F 日级漏数精确化**（执行前置）：用 suspended_days.h5 拆"显式停牌/真漏数"，产出逐日威胁清单（601238/302132 已排除威胁）。
+- **不修清单**：990018（当前不可修，唯一他源被红线禁止）；26 只 2006-10 前退出者（放弃段内，修了不增加时点）。
+
+（原第一阶段描述保留存档）
 
 - 事实（2026-07-27 审查修正）：255/255 个历史时点均含非 available 成分，每时点 **23–111 只**（2005 年最重 108–111，2021–22 年最低 23，2024 年以来 24–28）→ 全量真实 replay 每时点必然失败关闭（硬条件 A 的正确行为）。补源范围评估必须按 23–111 的全域分布做，不能按近年 24–28 低估。
 - 方向：逐只归因 quarantine 原因（FreeStockDB 事故源隔离），评估补源路径（RQAlpha 仅执行层不可作价格源；候选=FreeStockDB 修复版/其他 qfq 一致来源），任何补源必须走独立 source_id+manifest，禁止混 provenance、禁止静默升级。
 - 验收：给出"可完整 replay 的最早连续区间"清单与证据；升级任何标的必须有独立审计记录。
 
-### WO-AM-08 质量配套（路线图 A1/A4 持续项） 【状态：排队】
+### WO-AM-08 质量配套（路线图 A1/A4 持续项） 【状态：备份子项已上线，其余排队】
 
-BRAIN 五项检验闸门进流水线（换手率区间/单票权重截断/覆盖率门槛/sub-universe 复测/入库因子相关性<0.7 去重）；AlphaEval 扰动保真检验；skfolio CombinatorialPurgedCV/WalkForward 替换手写分割；MLflow 本地模式（file/SQLite）管实验与 checkpoint；**checkpoint 异地备份到 /hwdata**（当前模型资产 100% 仅存本机，磁盘故障即归零）。每项独立小工单，动手前先读官方文档确认函数与参数。
+- **checkpoint 异地备份 ✅ 已上线（2026-07-27）**：`scripts/backup_am_assets.py`（增量：>10MiB 同路径同字节跳过、小文件/账本每次重传、tar-over-ssh 管道、传后逐一核对大小、远端永不删除）。目标 `compute-node-11:/hwdata/home/jinqc/AlphaMaster-backup/`。基线 1148 文件/3.15GB 首轮同步中；会话内每 6 小时增量+批次巡检（cron 5b959e4d，**会话级、7 天自动过期——批次跑 11–15 天，第 7 天前须重挂；会话没了就手动/接手模型跑上面那条命令**）。
+- 其余排队（BRAIN 五闸门/AlphaEval/skfolio/MLflow）：**注意批次源码冻结（第 2 节第 0 条）**——skfolio 换 CV 属 model_core 改动、BRAIN/AlphaEval 若接入现有 evaluation 流水线也受"后处理冻结"约束；批次期间只允许做"新增独立模块+独立测试"的准备工作，接线一律等批次完成或明确接受批次挂起再做。动手前先读官方文档确认函数与参数。
 
 ## 5. 对抗审查方案模板（所有复杂工单完成后适用）
 
@@ -130,6 +149,16 @@ BRAIN 五项检验闸门进流水线（换手率区间/单票权重截断/覆盖
 | 07-27 早 | 审查代理 | WO-AM-01 复跑：04C 第三门 PASS 0 blocker（P0=0/P1=3/P2=5）；四文件实测 116/0 | 审查报告全文在会话任务输出 |
 | 07-27 早 | Fable5 总控 | P1-1 三处文档更正；P1-2 verify() 字段级比对+8 反例；P2-②⑤落地；21/21 复验 | replay.py / test_dynamic_replay.py |
 | 07-27 早 | Fable5 总控 | PA_Agent CI 失败（时区依赖测试）只读定位并转交 PA 会话修复 | run 30225188125 |
+| 07-27 08:10 | Fable5 总控（用户全案批准） | WO-AM-02 ✅：七批提交（9ba2f5b→bb280ca）逐批 gitleaks 零泄漏；推送 origin/main 三方 SHA 一致 bb280ca | git log；GitHub API |
+| 07-27 08:11 | Fable5 总控 | P1-3 ✅：违规 worktree+分支已删（tip 13393b7 无损失） | git worktree list / branch |
+| 07-27 08:13 | Fable5 总控 | WO-AM-03 ✅：runtime-v2 经 bundle 离线部署 checkout bb280ca（28 补丁按授权覆盖），跟踪树零脏，三件抽查+合同串确认；部署包两端已清理 | ssh 输出 |
+| 07-27 08:15 | Fable5 总控 | WO-AM-04 点火：check-only VALIDATED → 新批次 `batch_a50_d93b6b4bd5fc7704`（50 项/9000 步/10h/源码 0e5ca8c3…）入 `training_queue_v2.sqlite3`；Web 控制台分离进程启动、8765 监听；旧 run 收敛与首项领取观察中 | enqueue JSON；端口探测 |
+| 07-27 08:20 | Fable5 总控 | 旧 run 被新代码按评分合同正确失败关闭（未污染 READY）；首项 000333 派发成功，**Slurm 作业 577313 在 cu18 RUNNING**（排队≈0） | state.json；squeue |
+| 07-27 08:5x | Fable5 总控 | WO-AM-08 备份子项上线：基线 1148 文件/3.15GB 同步 HPC 完成、逐一核对大小；首跑踩 WSL-bash/GBK 解码坑已修（纯 Python 双进程管道）；6h 增量+巡检 cron 挂起 | backup_am_assets.py 输出 |
+| 07-27 08:5x | Fable5 总控 | 源码冻结红线（批次期间 34 文件禁改）写入本板第 2 节第 0 条；WO-AM-06/07 两代理并行开工 | 本板 |
+| 07-27 09:0x | 分析代理 | WO-AM-07 第一阶段归因 ✅：六桶 207+1、98.1% 同根因（上游复权因子表缺失）、单桶解锁 0 时点、最小集 29 只解锁 2026-01-23 起 6 时点、990018 段建议放弃；子工单 07A–07F 草案 | 本板 WO-AM-07；scratch/wo_am07_attribution/ |
+| 07-27 09:1x | Fable5 总控 | leader 任务书交付（批次监护+07B+07A 首批 29 只，/goal 可粘贴）；归因清单落 scratch/wo_am07_attribution/ | 会话交付 |
+| 07-27 09:2x | 实现代理 | WO-AM-06 ✅：17 失败清零（12 过期断言+5 环境类、源码缺陷 0、skip 0），全树首绿 1090/0+48/0；词表勘误 65+62=127；总控复核 48/48+冻结集零改动 | 本板 WO-AM-06 |
 
 ## 8. 用户侧待办（只有用户本人能做）
 
