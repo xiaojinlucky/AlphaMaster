@@ -22,6 +22,32 @@ from model_core.target_contract import SCORING_CONTRACT_VERSION
 _DIGEST = "a" * 64
 
 
+def _sealed_authorization(
+    strategy_bytes: bytes = b"strategy",
+) -> dict[str, str]:
+    return {
+        "campaign_id": "campaign-1",
+        "contract_sha256": "1" * 64,
+        "sealed_dataset_sha256": "2" * 64,
+        "split_contract_sha256": "3" * 64,
+        "universe_contract_sha256": "4" * 64,
+        "symbol": "BTCUSDT",
+        "data_sha256": "b" * 64,
+        "data_manifest_sha256": "5" * 64,
+        "strategy_sha256": hashlib.sha256(strategy_bytes).hexdigest(),
+        "published_strategy_sha256": hashlib.sha256(
+            strategy_bytes
+        ).hexdigest(),
+        "training_run_id": "run_20250101T000000Z_deadbeef",
+        "training_result_manifest_sha256": "6" * 64,
+        "runtime_git_commit": "7" * 40,
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
+        "test_start": "2024-01-01T00:00:00Z",
+        "test_end": "2024-12-31T00:00:00Z",
+        "report_path": "sealed.json",
+    }
+
+
 def _manager() -> SimpleNamespace:
     times = torch.tensor(
         [[1_700_000_000 + index * 3600 for index in range(4000)]],
@@ -302,18 +328,62 @@ def test_sealed_oos_preserves_mode_and_actual_score_window() -> None:
 
 
 @pytest.mark.parametrize(
-    ("evaluation_mode", "strategy_file", "sealed_report", "single_mode", "match"),
+    (
+        "evaluation_mode",
+        "strategy_file",
+        "sealed_report",
+        "sealed_campaign",
+        "single_mode",
+        "match",
+    ),
     [
-        ("sealed_oos", "strategy.json", None, False, "--sealed-report"),
-        ("out_of_sample", "strategy.json", "sealed.json", False, "仅允许"),
-        ("sealed_oos", None, "sealed.json", False, "--strategy-file"),
-        ("sealed_oos", "strategy.json", "sealed.json", True, "不接受 --single"),
+        (
+            "sealed_oos",
+            "strategy.json",
+            None,
+            "campaign.json",
+            False,
+            "--sealed-report",
+        ),
+        (
+            "sealed_oos",
+            "strategy.json",
+            "sealed.json",
+            None,
+            False,
+            "--sealed-campaign",
+        ),
+        (
+            "out_of_sample",
+            "strategy.json",
+            "sealed.json",
+            None,
+            False,
+            "仅允许",
+        ),
+        (
+            "sealed_oos",
+            None,
+            "sealed.json",
+            "campaign.json",
+            False,
+            "--strategy-file",
+        ),
+        (
+            "sealed_oos",
+            "strategy.json",
+            "sealed.json",
+            "campaign.json",
+            True,
+            "不接受 --single",
+        ),
     ],
 )
 def test_sealed_report_cli_rejects_invalid_combinations(
     evaluation_mode: str,
     strategy_file: str | None,
     sealed_report: str | None,
+    sealed_campaign: str | None,
     single_mode: bool,
     match: str,
 ) -> None:
@@ -322,6 +392,7 @@ def test_sealed_report_cli_rejects_invalid_combinations(
             evaluation_mode=evaluation_mode,
             strategy_file=strategy_file,
             sealed_report=sealed_report,
+            sealed_campaign=sealed_campaign,
             single_mode=single_mode,
         )
 
@@ -331,6 +402,7 @@ def test_sealed_report_cli_accepts_explicit_single_strategy_mode() -> None:
         evaluation_mode="sealed_oos",
         strategy_file="strategy.json",
         sealed_report="sealed.json",
+        sealed_campaign="campaign.json",
         single_mode=False,
     )
 
@@ -351,6 +423,7 @@ def test_sealed_report_requires_exactly_one_symbol_result() -> None:
             },
             data_sha256="b" * 64,
             strategy_bytes=b"strategy",
+            sealed_authorization=_sealed_authorization(),
             commission_pct=0.02,
             slippage_pct=0.01,
         )
@@ -358,6 +431,7 @@ def test_sealed_report_requires_exactly_one_symbol_result() -> None:
 
 def test_sealed_report_has_exact_fields_and_raw_strategy_hash() -> None:
     strategy_bytes = b'{\r\n  "formula": [1, 2, 3]\r\n}\r\n'
+    authorization = _sealed_authorization(strategy_bytes)
 
     payload = _build_sealed_report_payload(
         results_map={
@@ -370,15 +444,27 @@ def test_sealed_report_has_exact_fields_and_raw_strategy_hash() -> None:
         },
         data_sha256="b" * 64,
         strategy_bytes=strategy_bytes,
+        sealed_authorization=authorization,
         commission_pct=0.02,
         slippage_pct=0.01,
     )
 
     assert set(payload) == {
         "format",
+        "campaign_id",
+        "contract_sha256",
+        "sealed_dataset_sha256",
+        "split_contract_sha256",
+        "universe_contract_sha256",
         "symbol",
         "data_sha256",
+        "data_manifest_sha256",
         "strategy_sha256",
+        "published_strategy_sha256",
+        "training_run_id",
+        "training_result_manifest_sha256",
+        "runtime_git_commit",
+        "scoring_contract_version",
         "evaluation_mode",
         "test_start",
         "test_end",
@@ -388,10 +474,33 @@ def test_sealed_report_has_exact_fields_and_raw_strategy_hash() -> None:
         "sharpe",
     }
     assert payload == {
-        "format": "alphamaster_sealed_oos_report_v2",
+        "format": "alphamaster_sealed_oos_report_v3",
+        "campaign_id": authorization["campaign_id"],
+        "contract_sha256": authorization["contract_sha256"],
+        "sealed_dataset_sha256": authorization[
+            "sealed_dataset_sha256"
+        ],
+        "split_contract_sha256": authorization[
+            "split_contract_sha256"
+        ],
+        "universe_contract_sha256": authorization[
+            "universe_contract_sha256"
+        ],
         "symbol": "BTCUSDT",
         "data_sha256": "b" * 64,
+        "data_manifest_sha256": authorization[
+            "data_manifest_sha256"
+        ],
         "strategy_sha256": hashlib.sha256(strategy_bytes).hexdigest(),
+        "published_strategy_sha256": authorization[
+            "published_strategy_sha256"
+        ],
+        "training_run_id": authorization["training_run_id"],
+        "training_result_manifest_sha256": authorization[
+            "training_result_manifest_sha256"
+        ],
+        "runtime_git_commit": authorization["runtime_git_commit"],
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
         "evaluation_mode": "sealed_oos",
         "test_start": "2024-01-01T00:00:00Z",
         "test_end": "2024-12-31T00:00:00Z",
@@ -407,10 +516,21 @@ def test_sealed_report_write_is_atomic_and_never_overwrites(
 ) -> None:
     target = tmp_path / "reports" / "sealed.json"
     payload = {
-        "format": "alphamaster_sealed_oos_report_v2",
+        "format": "alphamaster_sealed_oos_report_v3",
+        "campaign_id": "campaign-1",
+        "contract_sha256": "1" * 64,
+        "sealed_dataset_sha256": "2" * 64,
+        "split_contract_sha256": "3" * 64,
+        "universe_contract_sha256": "4" * 64,
         "symbol": "BTCUSDT",
         "data_sha256": "b" * 64,
+        "data_manifest_sha256": "5" * 64,
         "strategy_sha256": "c" * 64,
+        "published_strategy_sha256": "c" * 64,
+        "training_run_id": "run_20250101T000000Z_deadbeef",
+        "training_result_manifest_sha256": "6" * 64,
+        "runtime_git_commit": "7" * 40,
+        "scoring_contract_version": SCORING_CONTRACT_VERSION,
         "evaluation_mode": "sealed_oos",
         "test_start": "2024-01-01T00:00:00Z",
         "test_end": "2024-12-31T00:00:00Z",
@@ -446,6 +566,7 @@ def test_sealed_report_rejects_non_finite_sharpe(
             },
             data_sha256="b" * 64,
             strategy_bytes=b"strategy",
+            sealed_authorization=_sealed_authorization(),
             commission_pct=0.02,
             slippage_pct=0.01,
         )
@@ -462,6 +583,7 @@ def test_sealed_report_rejects_zero_total_cost() -> None:
             },
             data_sha256="b" * 64,
             strategy_bytes=b"strategy",
+            sealed_authorization=_sealed_authorization(),
             commission_pct=0.0,
             slippage_pct=0.0,
         )
@@ -478,6 +600,7 @@ def test_sealed_report_rejects_declared_cost_mismatch() -> None:
             },
             data_sha256="b" * 64,
             strategy_bytes=b"strategy",
+            sealed_authorization=_sealed_authorization(),
             commission_pct=0.02,
             slippage_pct=0.01,
         )

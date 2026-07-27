@@ -35,7 +35,8 @@ from scripts.freeze_csi_a50_universe import (
 )
 
 
-SPLIT_FORMAT = "alphamaster_a50_sealed_split_v1"
+LEGACY_SPLIT_FORMAT = "alphamaster_a50_sealed_split_v1"
+SPLIT_FORMAT = "alphamaster_a50_sealed_split_v2"
 MIN_SYMBOL_TEST_BARS = 200
 DEFAULT_WARMUP_BARS = 252
 _DATE_RE = re.compile(r"^[0-9]{8}$")
@@ -71,13 +72,24 @@ SPLIT_ITEM_KEYS = (
 TRAINING_ITEM_KEYS = (
     "data_filename",
     "data_sha256",
+    "data_manifest_sha256",
     "dataset_id",
     "data_rows",
     "data_start",
     "data_end",
 )
+LEGACY_TRAINING_ITEM_KEYS = tuple(
+    field
+    for field in TRAINING_ITEM_KEYS
+    if field != "data_manifest_sha256"
+)
 SEALED_EVALUATION_ITEM_KEYS = (
     *TRAINING_ITEM_KEYS,
+    "score_start",
+    "warmup_bars",
+)
+LEGACY_SEALED_EVALUATION_ITEM_KEYS = (
+    *LEGACY_TRAINING_ITEM_KEYS,
     "score_start",
     "warmup_bars",
 )
@@ -210,8 +222,19 @@ def load_a50_sealed_split(path: str | Path) -> dict[str, Any]:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise SealedSplitError("切分合同不是合法 UTF-8 JSON") from exc
     payload = _require_exact_dict(payload, SPLIT_KEYS, "切分合同")
-    if payload["format"] != SPLIT_FORMAT:
+    split_format = payload["format"]
+    if split_format not in {LEGACY_SPLIT_FORMAT, SPLIT_FORMAT}:
         raise SealedSplitError("切分合同 format 不匹配")
+    training_item_keys = (
+        TRAINING_ITEM_KEYS
+        if split_format == SPLIT_FORMAT
+        else LEGACY_TRAINING_ITEM_KEYS
+    )
+    evaluation_item_keys = (
+        SEALED_EVALUATION_ITEM_KEYS
+        if split_format == SPLIT_FORMAT
+        else LEGACY_SEALED_EVALUATION_ITEM_KEYS
+    )
     contract_hash = _require_sha256(
         payload["contract_sha256"],
         "contract_sha256",
@@ -315,12 +338,12 @@ def load_a50_sealed_split(path: str | Path) -> dict[str, Any]:
         )
         training = _require_exact_dict(
             item["training"],
-            TRAINING_ITEM_KEYS,
+            training_item_keys,
             f"{symbol}.training",
         )
         evaluation = _require_exact_dict(
             item["sealed_evaluation"],
-            SEALED_EVALUATION_ITEM_KEYS,
+            evaluation_item_keys,
             f"{symbol}.sealed_evaluation",
         )
         training_hash = _require_sha256(
@@ -330,6 +353,22 @@ def load_a50_sealed_split(path: str | Path) -> dict[str, Any]:
         evaluation_hash = _require_sha256(
             evaluation["data_sha256"],
             f"{symbol}.sealed_evaluation.data_sha256",
+        )
+        training_manifest_hash = (
+            _require_sha256(
+                training["data_manifest_sha256"],
+                f"{symbol}.training.data_manifest_sha256",
+            )
+            if split_format == SPLIT_FORMAT
+            else None
+        )
+        evaluation_manifest_hash = (
+            _require_sha256(
+                evaluation["data_manifest_sha256"],
+                f"{symbol}.sealed_evaluation.data_manifest_sha256",
+            )
+            if split_format == SPLIT_FORMAT
+            else None
         )
         if (
             training["dataset_id"] != f"sha256:{training_hash}"
@@ -381,24 +420,39 @@ def load_a50_sealed_split(path: str | Path) -> dict[str, Any]:
         if evaluation_end != test_end:
             raise SealedSplitError(f"{symbol} 的封存评估终点不一致")
 
-        _training_path, training_manifest = _load_slice_manifest(
+        training_path, training_manifest = _load_slice_manifest(
             root=training_root,
             filename=training["data_filename"],
             symbol=symbol,
             label=f"{symbol}.training",
         )
-        _evaluation_path, evaluation_manifest = _load_slice_manifest(
+        evaluation_path, evaluation_manifest = _load_slice_manifest(
             root=evaluation_root,
             filename=evaluation["data_filename"],
             symbol=symbol,
             label=f"{symbol}.sealed_evaluation",
         )
+        if split_format == SPLIT_FORMAT and (
+            hashlib.sha256(
+                training_path.with_suffix(".manifest.json").read_bytes()
+            ).hexdigest()
+            != training_manifest_hash
+            or hashlib.sha256(
+                evaluation_path.with_suffix(".manifest.json").read_bytes()
+            ).hexdigest()
+            != evaluation_manifest_hash
+        ):
+            raise SealedSplitError(f"{symbol} 的数据 manifest 哈希不匹配")
         for field in TRAINING_ITEM_KEYS:
+            if field == "data_manifest_sha256":
+                continue
             if training_manifest.get(field) != training[field]:
                 raise SealedSplitError(
                     f"{symbol}.training.{field} 与物理数据不一致"
                 )
         for field in TRAINING_ITEM_KEYS:
+            if field == "data_manifest_sha256":
+                continue
             if evaluation_manifest.get(field) != evaluation[field]:
                 raise SealedSplitError(
                     f"{symbol}.sealed_evaluation.{field} 与物理数据不一致"
@@ -628,6 +682,9 @@ def build_a50_sealed_split(
                 "training": {
                     "data_filename": training["data_filename"],
                     "data_sha256": training["data_sha256"],
+                    "data_manifest_sha256": hashlib.sha256(
+                        Path(training["manifest_file"]).read_bytes()
+                    ).hexdigest(),
                     "dataset_id": training["dataset_id"],
                     "data_rows": training["data_rows"],
                     "data_start": training["data_start"],
@@ -636,6 +693,9 @@ def build_a50_sealed_split(
                 "sealed_evaluation": {
                     "data_filename": evaluation["data_filename"],
                     "data_sha256": evaluation["data_sha256"],
+                    "data_manifest_sha256": hashlib.sha256(
+                        Path(evaluation["manifest_file"]).read_bytes()
+                    ).hexdigest(),
                     "dataset_id": evaluation["dataset_id"],
                     "data_rows": evaluation["data_rows"],
                     "data_start": evaluation["data_start"],

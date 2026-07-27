@@ -15,16 +15,10 @@ from portfolio_manager.controller import (
     PortfolioPolicy,
 )
 from portfolio_manager.ledger import PortfolioDecisionLedger
-from portfolio_manager.universe import UniverseContract
+from portfolio_manager.universe import load_csi_a50_universe_contract
 
-SYMBOLS = ("000001", "000002", "000003")
-UNIVERSE = UniverseContract(
-    universe_id="test-universe:20260723",
-    snapshot_date="20260723",
-    constituent_count=3,
-    universe_sha256="e" * 64,
-    symbols=SYMBOLS,
-)
+UNIVERSE = load_csi_a50_universe_contract()
+SYMBOLS = UNIVERSE.symbols
 POLICY = PortfolioPolicy(
     top_k=2,
     dropout_rank=3,

@@ -268,6 +268,7 @@ def _build_portfolio_decision(
     """
     if not isinstance(universe, UniverseContract):
         raise ValueError("universe 必须是经过验证的冻结股票池合同")
+    universe.validate_contract_identity()
     expected_list = tuple(_checked_symbol(symbol) for symbol in universe.symbols)
     expected_set = frozenset(expected_list)
     _validate_policy(policy, len(expected_set))

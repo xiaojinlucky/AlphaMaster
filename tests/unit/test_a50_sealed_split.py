@@ -112,6 +112,14 @@ def test_builds_exact_fifty_physical_train_and_sealed_slices(
     assert len(list(evaluation_dir.glob("*_D1.parquet"))) == 50
     assert all(item["training"]["data_rows"] == 800 for item in contract["items"])
     assert all(
+        len(item["training"]["data_manifest_sha256"]) == 64
+        and len(
+            item["sealed_evaluation"]["data_manifest_sha256"]
+        )
+        == 64
+        for item in contract["items"]
+    )
+    assert all(
         item["sealed_evaluation"]["warmup_bars"] == 252
         for item in contract["items"]
     )
@@ -159,5 +167,8 @@ def test_builds_exact_fifty_physical_train_and_sealed_slices(
         json.dumps(swapped, ensure_ascii=False),
         encoding="utf-8",
     )
-    with pytest.raises(SealedSplitError, match="物理数据|切片派生身份"):
+    with pytest.raises(
+        SealedSplitError,
+        match="物理数据|切片派生身份|manifest 哈希",
+    ):
         load_a50_sealed_split(swapped_path)

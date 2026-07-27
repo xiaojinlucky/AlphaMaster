@@ -115,6 +115,7 @@ def train_from_file(
     require_slurm_training_runtime()
     info = inspect_parquet_file(
         data_file,
+        access_mode="training",
         expected_source_id=data_source,
         expected_periods_per_year=periods_per_year,
         expected_minimum_bars=minimum_bars,
@@ -142,6 +143,7 @@ def train_from_file(
     try:
         mgr = ParquetDataManager(
             data_file,
+            access_mode="training",
             expected_source_id=data_source,
             expected_periods_per_year=periods_per_year,
             expected_minimum_bars=minimum_bars,

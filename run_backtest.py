@@ -43,6 +43,8 @@ from model_core.features import MT5FeatureEngineer
 from strategy_manager.signal import compute_target_positions_stateless
 from evaluation.sealed_oos_campaign import (
     SEALED_REPORT_FORMAT,
+    _begin_controlled_sealed_oos_run,
+    _complete_controlled_sealed_oos_run,
     normalize_cost_policy,
 )
 
@@ -51,9 +53,20 @@ DEFAULT_COMMISSION_PCT = 0.02  # 单边手续费 %
 DEFAULT_SLIPPAGE_PCT = 0.01    # 单边滑点 %
 _SEALED_REPORT_FIELDS = (
     "format",
+    "campaign_id",
+    "contract_sha256",
+    "sealed_dataset_sha256",
+    "split_contract_sha256",
+    "universe_contract_sha256",
     "symbol",
     "data_sha256",
+    "data_manifest_sha256",
     "strategy_sha256",
+    "published_strategy_sha256",
+    "training_run_id",
+    "training_result_manifest_sha256",
+    "runtime_git_commit",
+    "scoring_contract_version",
     "evaluation_mode",
     "test_start",
     "test_end",
@@ -298,14 +311,21 @@ def _validate_sealed_report_cli(
     evaluation_mode: str,
     strategy_file: str | None,
     sealed_report: str | None,
+    sealed_campaign: str | None,
     single_mode: bool,
 ) -> Path | None:
     """校验封存报告只能由显式单策略 sealed_oos 回测生成。"""
     sealed_mode = evaluation_mode == "sealed_oos"
     if sealed_mode and not sealed_report:
         raise ValueError("sealed_oos 必须显式提供 --sealed-report")
+    if sealed_mode and not sealed_campaign:
+        raise ValueError("sealed_oos 必须显式提供 --sealed-campaign")
     if sealed_report and not sealed_mode:
         raise ValueError("--sealed-report 仅允许与 --evaluation-mode sealed_oos 同时使用")
+    if sealed_campaign and not sealed_mode:
+        raise ValueError(
+            "--sealed-campaign 仅允许与 --evaluation-mode sealed_oos 同时使用"
+        )
     if not sealed_mode:
         return None
     if not strategy_file:
@@ -323,6 +343,7 @@ def _build_sealed_report_payload(
     evaluation_contract: dict,
     data_sha256: str,
     strategy_bytes: bytes,
+    sealed_authorization: dict,
     commission_pct: float,
     slippage_pct: float,
 ) -> dict:
@@ -366,12 +387,47 @@ def _build_sealed_report_payload(
     test_end_seconds = _utc_seconds(test_end, "test_end")
     if test_start_seconds >= test_end_seconds:
         raise ValueError("封存报告必须满足 test_start < test_end")
-
-    payload = {
-        "format": SEALED_REPORT_FORMAT,
+    expected_identity = {
         "symbol": symbol,
         "data_sha256": data_sha256,
         "strategy_sha256": hashlib.sha256(strategy_bytes).hexdigest(),
+        "test_start": test_start,
+        "test_end": test_end,
+    }
+    for field, value in expected_identity.items():
+        if sealed_authorization.get(field) != value:
+            raise ValueError(f"封存结果的 {field} 与 campaign 授权不一致")
+
+    payload = {
+        "format": SEALED_REPORT_FORMAT,
+        "campaign_id": sealed_authorization["campaign_id"],
+        "contract_sha256": sealed_authorization["contract_sha256"],
+        "sealed_dataset_sha256": sealed_authorization[
+            "sealed_dataset_sha256"
+        ],
+        "split_contract_sha256": sealed_authorization[
+            "split_contract_sha256"
+        ],
+        "universe_contract_sha256": sealed_authorization[
+            "universe_contract_sha256"
+        ],
+        "symbol": symbol,
+        "data_sha256": data_sha256,
+        "data_manifest_sha256": sealed_authorization[
+            "data_manifest_sha256"
+        ],
+        "strategy_sha256": expected_identity["strategy_sha256"],
+        "published_strategy_sha256": sealed_authorization[
+            "published_strategy_sha256"
+        ],
+        "training_run_id": sealed_authorization["training_run_id"],
+        "training_result_manifest_sha256": sealed_authorization[
+            "training_result_manifest_sha256"
+        ],
+        "runtime_git_commit": sealed_authorization["runtime_git_commit"],
+        "scoring_contract_version": sealed_authorization[
+            "scoring_contract_version"
+        ],
         "evaluation_mode": "sealed_oos",
         "test_start": test_start,
         "test_end": test_end,
@@ -719,6 +775,7 @@ def main():
     evaluation_mode = "auto"
     score_start = None
     sealed_report = None
+    sealed_campaign = None
     commission_pct = DEFAULT_COMMISSION_PCT
     slippage_pct = DEFAULT_SLIPPAGE_PCT
     for i, arg in enumerate(sys.argv):
@@ -739,12 +796,18 @@ def main():
                 print("[ERROR] --sealed-report 缺少输出路径")
                 sys.exit(1)
             sealed_report = sys.argv[i + 1]
+        elif arg == "--sealed-campaign":
+            if i + 1 >= len(sys.argv) or sys.argv[i + 1].startswith("--"):
+                print("[ERROR] --sealed-campaign 缺少合同路径")
+                sys.exit(1)
+            sealed_campaign = sys.argv[i + 1]
 
     try:
         sealed_report_path = _validate_sealed_report_cli(
             evaluation_mode=evaluation_mode,
             strategy_file=strategy_file,
             sealed_report=sealed_report,
+            sealed_campaign=sealed_campaign,
             single_mode=single_mode,
         )
         if sealed_report_path is not None and sealed_report_path.exists():
@@ -852,8 +915,66 @@ def main():
         print(f"[ERROR] Parquet 不存在: {parquet_path}")
         sys.exit(1)
 
+    sealed_authorization = None
+    if sealed_report_path is not None:
+        manifest_path = parquet_path.with_suffix(".manifest.json")
+        try:
+            manifest_bytes = manifest_path.read_bytes()
+            manifest = json.loads(manifest_bytes.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            print(f"[ERROR] 封存数据 manifest 无法读取: {exc}")
+            sys.exit(1)
+        derivation = (
+            manifest.get("derivation")
+            if isinstance(manifest, dict)
+            else None
+        )
+        if (
+            not isinstance(derivation, dict)
+            or derivation.get("purpose") != "sealed_oos_evaluation"
+        ):
+            print("[ERROR] sealed_oos 入口只接受封存评估数据")
+            sys.exit(1)
+        if strategy_bytes is None or len(symbol_formulas) != 1:
+            print("[ERROR] sealed_oos 缺少唯一策略原始字节")
+            sys.exit(1)
+        symbol = next(iter(symbol_formulas))
+        try:
+            sealed_authorization = _begin_controlled_sealed_oos_run(
+                sealed_campaign,
+                symbol=symbol,
+                data_sha256=manifest.get("data_sha256"),
+                strategy_sha256=hashlib.sha256(strategy_bytes).hexdigest(),
+                report_path=sealed_report_path,
+                commission_pct=commission_pct,
+                slippage_pct=slippage_pct,
+            )
+            manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+            if (
+                manifest_sha256
+                != sealed_authorization["data_manifest_sha256"]
+            ):
+                raise ValueError(
+                    "数据 manifest 身份与冻结 campaign item 不一致"
+                )
+            if score_start and score_start != sealed_authorization["test_start"]:
+                raise ValueError(
+                    "--score-start 与冻结 campaign item 不一致"
+                )
+            score_start = sealed_authorization["test_start"]
+        except (OSError, ValueError) as exc:
+            print(f"[ERROR] 封存 campaign 授权失败: {exc}")
+            sys.exit(1)
+
     print(f"正在加载数据（离线 Parquet: {parquet_path}）...")
-    pm = ParquetDataManager(str(parquet_path))
+    pm = ParquetDataManager(
+        str(parquet_path),
+        access_mode=(
+            "sealed_oos_evaluation"
+            if sealed_authorization is not None
+            else "standard"
+        ),
+    )
     pm.load()
     applicable_contracts = strategy_contracts
     if not strategy_file and not single_mode:
@@ -962,10 +1083,16 @@ def main():
                 evaluation_contract=evaluation_contract,
                 data_sha256=pm.data_sha256,
                 strategy_bytes=strategy_bytes,
+                sealed_authorization=sealed_authorization,
                 commission_pct=commission_pct,
                 slippage_pct=slippage_pct,
             )
-            _write_sealed_report_atomic(sealed_report_path, sealed_payload)
+            _complete_controlled_sealed_oos_run(
+                sealed_campaign,
+                symbol=next(iter(results_map)),
+                controlled_session=sealed_authorization,
+                report_payload=sealed_payload,
+            )
         except (OSError, ValueError) as exc:
             print(f"[ERROR] 封存报告生成失败: {exc}")
             sys.exit(1)

@@ -6,8 +6,12 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from config import Config
+from data_pipeline.dataset_purpose import DATASET_PURPOSE_METADATA_KEY
+import data_pipeline.dataset_purpose as dataset_purpose
 from scripts import train_slurm_worker as worker
 
 
@@ -109,6 +113,162 @@ def _write_checkpoint(run_dir: Path, manifest: dict, symbol: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"checkpoint")
     return path
+
+
+def _rewrite_as_akshare_slice(
+    run_dir: Path,
+    manifest: dict,
+    *,
+    purpose: str | None,
+) -> None:
+    old_path = run_dir / "input" / manifest["data_filename"]
+    data_path = run_dir / "input" / "600519_D1.parquet"
+    old_path.unlink()
+    table = pa.table({"time": [1]})
+    metadata = dict(table.schema.metadata or {})
+    if purpose is not None:
+        metadata[DATASET_PURPOSE_METADATA_KEY] = purpose.encode("utf-8")
+    pq.write_table(table.replace_schema_metadata(metadata), data_path)
+    digest = _sha(data_path)
+    manifest.update(
+        {
+            "symbol": "600519",
+            "timeframe": "D1",
+            "data_filename": data_path.name,
+            "data_size": data_path.stat().st_size,
+            "data_sha256": digest,
+            "dataset_id": f"sha256:{digest}",
+            "data_rows": 484,
+            "data_start": "2022-01-04T07:00:00Z",
+            "data_end": "2023-12-04T07:00:00Z",
+            "local_source": "ashare_akshare_sina_hfq",
+            "periods_per_year": 242,
+            "minimum_bars": 484,
+        }
+    )
+    manifest_path = run_dir / "input" / "run_manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    (run_dir / "input" / "run_manifest.sha256").write_text(
+        _sha(manifest_path) + "\n",
+        encoding="ascii",
+    )
+
+
+def _trusted_split_for_hashes(
+    path: Path,
+    *,
+    training_hash: str,
+    sealed_hash: str,
+) -> Path:
+    items = [
+        {
+            "symbol": f"{index:06d}",
+            "training": {
+                "data_sha256": (
+                    training_hash if index == 1 else f"{index:064x}"
+                )
+            },
+            "sealed_evaluation": {
+                "data_sha256": (
+                    sealed_hash
+                    if index == 1
+                    else f"{index + 100:064x}"
+                )
+            },
+        }
+        for index in range(1, 51)
+    ]
+    body = {
+        "format": "alphamaster_a50_sealed_split_v1",
+        "symbol_count": 50,
+        "items": items,
+    }
+    contract_hash = hashlib.sha256(
+        json.dumps(
+            body,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    path.write_text(
+        json.dumps({**body, "contract_sha256": contract_hash}),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_worker_rejects_sealed_purpose_before_training(prepared_run) -> None:
+    run_dir, _python, manifest = prepared_run
+    _rewrite_as_akshare_slice(
+        run_dir,
+        manifest,
+        purpose="sealed_oos_evaluation",
+    )
+
+    with pytest.raises(worker.WorkerError, match="training purpose"):
+        worker._verify_inputs(run_dir)
+
+
+def test_worker_accepts_embedded_training_purpose(prepared_run) -> None:
+    run_dir, _python, manifest = prepared_run
+    _rewrite_as_akshare_slice(
+        run_dir,
+        manifest,
+        purpose="training",
+    )
+
+    loaded, data_path, _manifest_hash = worker._verify_inputs(run_dir)
+
+    assert loaded["local_source"] == "ashare_akshare_sina_hfq"
+    assert data_path.name == "600519_D1.parquet"
+
+
+def test_worker_accepts_legacy_training_bytes_from_trusted_split(
+    prepared_run,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir, _python, manifest = prepared_run
+    _rewrite_as_akshare_slice(run_dir, manifest, purpose=None)
+    data_path = run_dir / "input" / "600519_D1.parquet"
+    split_path = _trusted_split_for_hashes(
+        run_dir / "trusted-split.json",
+        training_hash=_sha(data_path),
+        sealed_hash="f" * 64,
+    )
+    monkeypatch.setattr(
+        dataset_purpose,
+        "TRUSTED_SEALED_SPLIT_CONTRACTS",
+        (split_path,),
+    )
+
+    loaded, verified_path, _manifest_hash = worker._verify_inputs(run_dir)
+
+    assert loaded["local_source"] == "ashare_akshare_sina_hfq"
+    assert verified_path == data_path
+
+
+def test_worker_rejects_legacy_sealed_bytes_from_trusted_split(
+    prepared_run,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir, _python, manifest = prepared_run
+    _rewrite_as_akshare_slice(run_dir, manifest, purpose=None)
+    data_path = run_dir / "input" / "600519_D1.parquet"
+    split_path = _trusted_split_for_hashes(
+        run_dir / "trusted-split.json",
+        training_hash="e" * 64,
+        sealed_hash=_sha(data_path),
+    )
+    monkeypatch.setattr(
+        dataset_purpose,
+        "TRUSTED_SEALED_SPLIT_CONTRACTS",
+        (split_path,),
+    )
+
+    with pytest.raises(worker.WorkerError, match="training purpose"):
+        worker._verify_inputs(run_dir)
 
 
 def test_free_stockdb_source_manifest_is_materialized_for_train_file(

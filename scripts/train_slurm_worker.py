@@ -23,11 +23,17 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from data_pipeline.dataset_contracts import (
+    AKSHARE_HFQ_SOURCE_ID,
     FREE_STOCKDB_QFQ_FORMAT,
     FREE_STOCKDB_QFQ_SOURCE_ID,
     FREE_STOCKDB_SOURCE,
     TRAINING_SOURCE_IDS,
     source_family,
+)
+from data_pipeline.dataset_purpose import (
+    DATASET_PURPOSE_TRAINING,
+    read_parquet_dataset_purpose,
+    trusted_dataset_purpose_for_sha256,
 )
 from model_core.target_contract import SCORING_CONTRACT_VERSION
 
@@ -60,6 +66,7 @@ MAX_ARTIFACT_TOTAL_BYTES = 32 * 1024**3
 REQUIRED_SOURCE_FILES = (
     "train_file.py",
     "data_pipeline/dataset_contracts.py",
+    "data_pipeline/dataset_purpose.py",
     "model_core/config.py",
     "utils/training_runtime.py",
     "scripts/train_slurm_worker.py",
@@ -397,8 +404,87 @@ def _verify_inputs(run_dir: Path) -> tuple[dict[str, Any], Path, str]:
             data_path.with_suffix(".manifest.json"),
             expected_sha256=expected_source_hash,
         )
+    elif (
+        local_source == AKSHARE_HFQ_SOURCE_ID
+        and any(value is not None for value in source_manifest_fields)
+    ):
+        if (
+            manifest.get("data_source_manifest_filename")
+            != DATA_SOURCE_MANIFEST_FILENAME
+        ):
+            raise WorkerError("AKShare 来源 manifest 文件名不匹配")
+        expected_source_hash = _validate_sha256(
+            manifest.get("data_source_manifest_sha256"),
+            "AKShare 来源 manifest 哈希",
+        )
+        expected_source_size = manifest.get("data_source_manifest_size")
+        source_manifest = manifest.get("data_source_manifest")
+        if (
+            isinstance(expected_source_size, bool)
+            or not isinstance(expected_source_size, int)
+            or not 0 < expected_source_size <= MAX_MANIFEST_BYTES
+            or not isinstance(source_manifest, dict)
+            or source_manifest.get("data_sha256") != expected_data_hash
+            or not isinstance(source_manifest.get("derivation"), dict)
+            or source_manifest["derivation"].get("purpose")
+            != DATASET_PURPOSE_TRAINING
+        ):
+            raise WorkerError("AKShare 来源 manifest 训练用途合同不匹配")
+        source_manifest_path = (
+            run_dir / "input" / DATA_SOURCE_MANIFEST_FILENAME
+        )
+        if (
+            _require_file(
+                source_manifest_path,
+                "AKShare 来源 manifest",
+                MAX_MANIFEST_BYTES,
+            )
+            != expected_source_size
+            or _sha256_file(source_manifest_path) != expected_source_hash
+            or _read_json(
+                source_manifest_path, "AKShare 来源 manifest"
+            )
+            != source_manifest
+        ):
+            raise WorkerError("AKShare 来源 manifest 身份不匹配")
+        _materialize_data_source_manifest(
+            source_manifest_path,
+            data_path.with_suffix(".manifest.json"),
+            expected_sha256=expected_source_hash,
+        )
     elif any(value is not None for value in source_manifest_fields):
         raise WorkerError("非 free-stockdb run 不接受来源 manifest 输入")
+
+    if local_source == AKSHARE_HFQ_SOURCE_ID:
+        try:
+            embedded_purpose = read_parquet_dataset_purpose(data_path)
+            trusted_purpose = trusted_dataset_purpose_for_sha256(
+                expected_data_hash
+            )
+        except Exception as exc:
+            raise WorkerError(
+                f"无法验证 AKShare dataset purpose: {exc}"
+            ) from exc
+        source_manifest = manifest.get("data_source_manifest")
+        sidecar_purpose = (
+            source_manifest.get("derivation", {}).get("purpose")
+            if isinstance(source_manifest, dict)
+            and isinstance(source_manifest.get("derivation"), dict)
+            else None
+        )
+        purposes = {
+            value
+            for value in (
+                embedded_purpose,
+                trusted_purpose,
+                sidecar_purpose,
+            )
+            if value is not None
+        }
+        if purposes != {DATASET_PURPOSE_TRAINING}:
+            raise WorkerError(
+                "AKShare Worker 训练只接受受信 training purpose 数据"
+            )
 
     commit = manifest.get("git_commit")
     if not isinstance(commit, str) or not GIT_COMMIT_RE.fullmatch(commit):

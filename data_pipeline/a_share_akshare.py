@@ -30,6 +30,9 @@ from data_pipeline.dataset_contracts import (
     AKSHARE_HFQ_SOURCE_ID,
     AKSHARE_SOURCE,
 )
+from data_pipeline.dataset_purpose import (
+    write_dataframe_with_dataset_purpose,
+)
 
 
 AKSHARE_INTERFACE = "stock_zh_a_daily"
@@ -565,7 +568,11 @@ def publish_akshare_hfq_slice(
     data_published = False
     manifest_published = False
     try:
-        frame.to_parquet(data_temp, index=False)
+        write_dataframe_with_dataset_purpose(
+            frame,
+            data_temp,
+            purpose=purpose,
+        )
         persisted = pd.read_parquet(data_temp)
         validate_canonical_training_frame(persisted)
         if not persisted.equals(frame):
