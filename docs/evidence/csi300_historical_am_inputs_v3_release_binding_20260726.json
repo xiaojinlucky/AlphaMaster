@@ -1,0 +1,36 @@
+{
+  "format": "alphamaster_csi300_historical_am_inputs_v3_release_binding_v1",
+  "release_id": "20260726_csi300_historical_am_inputs_v3",
+  "immutable_artifact": {
+    "manifest_relative_path": "20260726_csi300_historical_am_inputs_v3/manifest.json",
+    "manifest_sha256": "e07fffd04c9d53a897ae688ad05897a03273acf14010f799e1aca85579a8404c",
+    "mutation_policy": "immutable_do_not_rebuild_or_rewrite"
+  },
+  "repository_sources": {
+    "initial_script": {
+      "relative_path": "scripts/build_csi300_historical_am_inputs_v3.py",
+      "sha256": "ffab3102c5afbab0a0ddbf1e34a3928057bdea2e217addedd259aeb72b306b7a",
+      "artifact_relative_path": "source/build_csi300_historical_am_inputs_v3.py",
+      "applies_new_code_indices": [
+        1,
+        360
+      ],
+      "provenance_strength": "available_sidecar_embedded_other_receipts_post_hoc"
+    },
+    "resume_v2_script": {
+      "relative_path": "scripts/build_csi300_historical_am_inputs_v3_resume_v2.py",
+      "sha256": "ae7684fc15f70ea39891a4c8ee673f7ceaf532687e7e5a0bc9239ff7d902b7f2",
+      "artifact_relative_path": "source/build_csi300_historical_am_inputs_v3_resume_v2.py",
+      "applies_new_code_indices": [
+        361,
+        649
+      ],
+      "provenance_strength": "embedded_at_receipt_creation"
+    }
+  },
+  "binding_scope": {
+    "artifact_status": "already_published_immutable",
+    "repository_action": "publish_exact_source_bytes_only",
+    "artifact_rewrite_authorized": false
+  }
+}

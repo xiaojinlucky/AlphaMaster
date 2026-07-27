@@ -1,2 +1,4 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+scripts/build_csi300_historical_am_inputs_v3.py text eol=lf
+scripts/build_csi300_historical_am_inputs_v3_resume_v2.py text eol=lf

@@ -25,7 +25,13 @@ from data_pipeline.a_share_data import (
 )
 from data_pipeline.a_share_akshare import (
     AKSHARE_SLICE_SEALED_EVALUATION,
+    AKSHARE_SLICE_TRAINING,
     load_akshare_hfq_manifest,
+)
+from data_pipeline.dataset_purpose import (
+    read_parquet_dataset_purpose,
+    sha256_file_bytes,
+    trusted_dataset_purpose_for_sha256,
 )
 from data_pipeline.dataset_contracts import (
     AKSHARE_HFQ_SOURCE_ID,
@@ -101,6 +107,14 @@ _TF_ALIASES: dict[str, str] = {
 }
 _CANONICAL_ASHARE_RE = re.compile(r"^[0-9]{6}_(M5|M15|H1|D1)\.parquet$", re.IGNORECASE)
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
+DATA_ACCESS_STANDARD = "standard"
+DATA_ACCESS_TRAINING = AKSHARE_SLICE_TRAINING
+DATA_ACCESS_SEALED_EVALUATION = AKSHARE_SLICE_SEALED_EVALUATION
+_DATA_ACCESS_MODES = {
+    DATA_ACCESS_STANDARD,
+    DATA_ACCESS_TRAINING,
+    DATA_ACCESS_SEALED_EVALUATION,
+}
 
 
 def _utc_iso(unix_seconds: int) -> str:
@@ -118,6 +132,64 @@ def _read_manifest(path: Path) -> dict[str, Any] | None:
     if not isinstance(payload, dict):
         raise ValueError("数据 manifest 顶层必须是对象")
     return payload
+
+
+def preflight_dataset_access(
+    path: str | Path,
+    *,
+    access_mode: str = DATA_ACCESS_STANDARD,
+) -> str | None:
+    """在任何 ``pd.read_parquet`` 前按用途合同授权数据访问。"""
+    if access_mode not in _DATA_ACCESS_MODES:
+        raise ValueError("data access_mode 不受支持")
+    resolved = Path(path)
+    manifest = _read_manifest(resolved)
+    derivation = (
+        manifest.get("derivation")
+        if isinstance(manifest, dict)
+        and isinstance(manifest.get("derivation"), dict)
+        else None
+    )
+    manifest_purpose = (
+        derivation.get("purpose") if isinstance(derivation, dict) else None
+    )
+    if manifest_purpose is not None and manifest_purpose not in {
+        AKSHARE_SLICE_TRAINING,
+        AKSHARE_SLICE_SEALED_EVALUATION,
+    }:
+        raise ValueError("数据 manifest 的 derivation.purpose 不受支持")
+    try:
+        embedded_purpose = read_parquet_dataset_purpose(resolved)
+    except Exception as exc:
+        raise ValueError(f"无法读取 Parquet dataset purpose: {exc}") from exc
+    data_sha256 = sha256_file_bytes(resolved)
+    trusted_purpose = trusted_dataset_purpose_for_sha256(data_sha256)
+    declared_purposes = {
+        value
+        for value in (
+            manifest_purpose,
+            embedded_purpose,
+            trusted_purpose,
+        )
+        if value is not None
+    }
+    if len(declared_purposes) > 1:
+        raise ValueError(
+            "数据 manifest、Parquet footer 与受信 split 的 purpose 不一致"
+        )
+    purpose = next(iter(declared_purposes), None)
+    if purpose == AKSHARE_SLICE_SEALED_EVALUATION:
+        if access_mode != DATA_ACCESS_SEALED_EVALUATION:
+            raise ValueError("封存评估数据禁止进入普通加载或模型训练")
+    elif access_mode == DATA_ACCESS_SEALED_EVALUATION:
+        raise ValueError("封存评估入口只接受 sealed_oos_evaluation 数据")
+    elif (
+        access_mode == DATA_ACCESS_TRAINING
+        and purpose is not None
+        and purpose != AKSHARE_SLICE_TRAINING
+    ):
+        raise ValueError("模型训练只接受 training purpose 数据")
+    return purpose
 
 
 def _validate_generic_manifest(
@@ -367,6 +439,7 @@ def inspect_parquet_file(
     expected_source_id: str | None = None,
     expected_periods_per_year: int | None = None,
     expected_minimum_bars: int | None = None,
+    access_mode: str = DATA_ACCESS_STANDARD,
 ) -> dict[str, Any]:
     p = Path(path)
     if not p.exists():
@@ -374,6 +447,10 @@ def inspect_parquet_file(
     if p.suffix.lower() != ".parquet":
         raise ValueError("请选择 .parquet 文件")
 
+    dataset_purpose = preflight_dataset_access(
+        p,
+        access_mode=access_mode,
+    )
     symbol, timeframe = parse_parquet_filename(p)
     try:
         df = pd.read_parquet(p)
@@ -402,17 +479,6 @@ def inspect_parquet_file(
 
     years = round(bars / periods_per_year, 2)
     manifest = _read_manifest(p)
-    derivation = (
-        manifest.get("derivation")
-        if isinstance(manifest, dict)
-        and isinstance(manifest.get("derivation"), dict)
-        else None
-    )
-    dataset_purpose = (
-        str(derivation.get("purpose"))
-        if isinstance(derivation, dict)
-        else None
-    )
     sealed_evaluation = (
         source_id == AKSHARE_HFQ_SOURCE_ID
         and dataset_purpose == AKSHARE_SLICE_SEALED_EVALUATION
@@ -438,7 +504,7 @@ def inspect_parquet_file(
         "manifest_path": str(p.with_suffix(".manifest.json").resolve()),
         "registration": "registered" if manifest is not None else "bare_legacy",
         "capabilities": {
-            "local_training": True,
+            "local_training": not sealed_evaluation,
             "remote_training": (
                 source_id != "local_file" and not sealed_evaluation
             ),
@@ -462,17 +528,20 @@ class ParquetDataManager:
         expected_source_id: str | None = None,
         expected_periods_per_year: int | None = None,
         expected_minimum_bars: int | None = None,
+        access_mode: str = DATA_ACCESS_STANDARD,
     ) -> None:
         self.file_path = Path(file_path)
         self.symbol, self.timeframe = parse_parquet_filename(self.file_path)
         self.expected_source_id = expected_source_id
         self.expected_periods_per_year = expected_periods_per_year
         self.expected_minimum_bars = expected_minimum_bars
+        self.access_mode = access_mode
         self.periods_per_year = 0
         self.minimum_bars = Config.MIN_BARS
         self.source = "local_file"
         self.data_sha256 = ""
         self.dataset_id = ""
+        self.dataset_purpose: str | None = None
         self.data_rows = 0
         self.data_start = ""
         self.data_end = ""
@@ -481,6 +550,10 @@ class ParquetDataManager:
         self._target_ret: torch.Tensor | None = None
 
     def load(self) -> None:
+        self.dataset_purpose = preflight_dataset_access(
+            self.file_path,
+            access_mode=self.access_mode,
+        )
         df = pd.read_parquet(self.file_path)
         try:
             (
