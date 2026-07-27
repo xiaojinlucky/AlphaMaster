@@ -1,5 +1,111 @@
 # CONTEXT
 
+> **接手入口**：主线唯一现行工单真值 = `docs/WORK_ORDERS_CLAUDE_20260726.md`
+> （架构一页/红线/已完成证据/工单队列 WO-AM-01～08/审查模板/更新纪律）。
+> 任何模型接手先读它；每完成一个重要步骤必须更新该板与本文件顶部。
+> 当前推进位置：WO-AM-01 ✅ PASS 0 blocker（P1 全修复、21/21 复验）；
+> WO-AM-02 清单已冻结，等待用户一次性确认（提交推送+服务器重部署+
+> worktree/分支删除），确认后自动执行 WO-AM-03/04（重部署+训练发射）。
+
+## 2026-07-26 RND-04C 动态组合日线 replay 实现（当前）
+
+- RND-04C 第三步已实现并定向测试通过：`portfolio_manager/replay.py`
+  （DynamicDailyReplay，复用 universe/controller/execution/ledger 四件，
+  不新建平行实现）+ `scripts/run_dynamic_replay.py` 生产 CLI +
+  `tests/unit/test_dynamic_replay.py`（19/19：13 合成 + 6 真实 G 盘）。
+  既有相关回归 176/0（ledger/universe/overlay/execution/controller/
+  calibration/pipeline_adapter 八个文件）。
+- ledger 最小扩展（约 +219 行、零改动既有路径）：新表
+  `portfolio_replay_bindings` + `record_replay_binding` /
+  `get_replay_binding` / `list_executions`，把 overlay identity、
+  universe 合同、v3 价格身份、逐日执行状态与既有执行行 `row_sha256`
+  交叉锁定；语义重算核验在 `DynamicDailyReplay.verify()`。
+- 裁决 04C 侧义务已落实：生产 overlay `identity_sha256` 固化为
+  `PRODUCTION_OVERLAY_IDENTITY_SHA256`（eaf4d145…）并在运行前比对；
+  真实 overlay 实测一致。信号是 engineering replay signal（代码升序
+  Top-N 机制验证信号），universe 固定 reconstructed 模式，产物只作
+  工程证据，无任何策略绩效结论。
+- 关键实证（2026-07-27 对抗审查修正数字）：真实 255 个沪深300时点全部含
+  v3 非 available 成分，每时点 23–111 只（2005 年 108–111、近年 23–28），
+  按硬条件 A 真实全量 CSI300 replay 必然失败关闭——生产
+  CLI 在 2025-12-29 时点如实失败关闭并点名 25 只 quarantine 成分
+  （`local_runs/replay_runs/20260726_rnd04c_real_csi300_failclosed/`）。
+  机制链用真实事件窗 2025-12-29~2026-01-16 + 6 只真实标的的声明式
+  工程 universe 全链跑通（002050 真实触涨停拒单、002049 真实停牌 10 拒
+  →复牌日真实触涨停拒单→次日成交、000800 真实调出强制离场、002384
+  真实调入买入；12 对决策/执行、幂等重跑 12/12/12 无重复），产物在
+  `local_runs/replay_runs/20260726_rnd04c_engineering_e2e_20251229_20260116/`。
+- 下一步：第四步独立对抗审查（0 blocker 后才可放行 RND-05B 授权询问）；
+  RND-05B 揭示仍未授权、未启动。
+
+## 2026-07-26 A1 适应度诚实化 + RND-04A 限域裁决
+
+- A1 适应度诚实化已落地：`model_core/backtest.py` 的 fitness 门控段正式定名
+  **验证段（validation）**，`oos_sor/pnl_oos/mean_oos` 等误导命名全部改为
+  `val_*`，模块头新增 train / validation / sealed-test 三层口径声明；
+  纯改名零数值变化。`evaluate()` 返回值第二项现为 `mean_val`。
+  新增守卫测试 `test_fitness_source_never_labels_validation_as_oos`
+  防止选择性上游同步把 OOS 误标带回来。目标测试 16/16 通过；
+  全量套件 unit 范围失败与上轮基线完全一致（同 8 个历史项，零新增）。
+- 新发现验证盲区：此前"全量 1005"实际只覆盖 tests/unit；tests/property 与
+  tests/smoke 存在 9 个此前未被任何验证覆盖的失败（feature/ops/vocab 与上游
+  漂移的陈旧断言簇，与 A1 改动无关，单独跑亦复现），待专项工单清理。
+- RND-04A 独立裁决完成：**完整 04A = BLOCKED 不变；仅放行严格限域
+  execution-state overlay 子集（PARTIAL_READY）**。裁决全文（必要字段七项、
+  三硬条件、13 条禁止声明、19 组失败关闭测试）见
+  `docs/evidence/rnd04a_execution_overlay_adjudication_20260726.md`。
+  关键新约束：科创板 688 标的整手 200 股（ExecutionQuote 默认 lot_size=100
+  不可直接用）；v3 qfq 价禁止与未复权限价跨口径比较；LOCKED 派生必须命名为
+  "保守日线触及规则"。
+- RQAlpha execution-state overlay 适配器已实现并通过对抗审查：
+  `data_pipeline/rqalpha_execution_overlay.py`（1068 行）+
+  `tests/unit/test_rqalpha_execution_overlay.py`（63 用例=18 真实 bundle+45 合成，
+  实跑全过）；h5py==3.16.0 经文档化锁文件流程进入 requirements-windows.in 与两个
+  Windows 锁（仅新增 h5py，无顺带升级；.venv 中历史临时安装被同版本 pin 正式化）。
+  round_lot 实测：5,553/5,553 CS 记录携带，688xxx 613 只全部 200。
+  对抗审查判决 P0=0/P1=2/P2=3，已全部修复：裁决文档 990018 误述更正
+  （实为 949 矩阵内唯一 source_missing）、`test_target_return_contract.py`
+  漏改名修正、守卫测试升级为正则扫全 model_core、文档补选样勘误与
+  04C 固化 identity_sha256 义务。修复后 32/32 相关测试通过。
+  下一步：RND-04C 动态组合 replay（复用 universe/controller/execution/ledger，
+  不建第二套；replay 用确定性机制验证信号，不出策略绩效结论）。
+
+## 2026-07-26 六张工单阶段收口
+
+- AlphaMaster 不是标准 OpenXQuant CLI run，本阶段没有标准 run artifact set；
+  未运行或宣称 `oxq` 审计、回测或报告流程。
+- `OPS-01` 已完成只读闭环。Slurm job `570548` 的结果属于旧 scoring
+  contract，只能保留作诊断，永不提升为 `READY`。
+- `RND-01/02` 五修后独立 `PASS`；`RND-03` 独立 `PASS`、0 blocker，
+  测试 `7/0`、编译 `3/0`。v3 manifest SHA-256 为
+  `e07fffd04c9d53a897ae688ad05897a03273acf14010f799e1aca85579a8404c`，
+  inventory `2671/2671`，949 个代码为 741 可用、207 隔离、1 缺源；
+  v2 `877/877`、事故源 `300/300`、pristine `296/296` 前后不变。两份
+  exact 脚本、release binding 和 `eol=lf` 已闭合；v2 清单外既有 pyc
+  未删除、未纳入候选，是透明非 blocker。
+- `RND-04B` 独立 `PASS`、0 blocker，相关回归 `125/0`；三类时间篡改在
+  12 个入口全部失败关闭，事务、并发、重启和历史合同通过，真实 30 个
+  SQLite 文件前后不变。`RND-05A` 也已独立 `PASS`，没有真实揭示，
+  training 与 sealed 共 200 个文件的聚合保持不变。
+- `RND-04A` 为 `PASS-as-BLOCKED`：审计语义 0 blocker，但业务状态为
+  `READY 0 / PARTIAL 2 / BLOCKED 5`，仍有 6 条硬阻塞。冻结 D1 为
+  273 ready + 27 quarantine；其中 213 个 ready 文件共有 22,690 个内部
+  开市日缺口，`000002` 在 2006-05-30 只能判为 `UNKNOWN`。
+- ProApi 受限流阻断，BaoStock 在本机和 node13 都因黑名单未取得数据；
+  AKShare TFP 只能冻结为 `PARTIAL reconstructed`。深交所 7,448 行简称
+  变更和 `000002` 公司行动双源也只是 `PARTIAL` 资格证据，尚无正式 JSON
+  和全量冻结，不能满足 strict PIT。3 个路径定位符瑕疵保留为透明非 blocker，
+  不改冻结候选。
+- 按用户长期“完美执行、不降级”偏好，当前继续保持 strict PIT，不擅自降级
+  为 reconstructed。本地数据源资格仍由另一 worker 检查，当前状态是
+  “来源检查中”，不是已经确认无来源。
+- `RND-04C` 因缺 strict PIT 历史执行状态而未启动；`RND-05B` 因
+  `RND-04C` 未通过且没有单独揭示授权而未启动。当前未揭示、未写生产
+  SQLite、未恢复或覆盖事故源，也未提交或推送。
+- node13 隔离探针遗留
+  `/tmp/alphamaster-rnd04a-baostock-20260726-node13-20260726T030508Z`
+  共 `116,207,660` bytes；按删除确认规则尚未删除，等待单独确认。
+
 ## 当前目标
 
 当前以普通大 A 账户为第一落地方向。用户没有可验证的 QMT/PTrade/目标券商实盘渠道，因此本阶段不接券商、不发单；先贯通“服务器 Slurm 模型训练 → 成本回测 → 通达信已收盘 K 线虚拟信号 → 可选飞书推送”。Windows 本机只负责数据准备、控制、回测、信号与前端，所有模型训练一律提交服务器 Slurm，禁止本机训练。
@@ -317,19 +423,12 @@
 
 ## 下一步
 
-网页版 GPT 审核和本机本地化已经完成，当前停在工单设计与审查状态，不执行
-任何工单。候选并行首单为：
-
-- `OPS-01`：只读核验 Slurm `570548` 的 result、manifest、哈希、后处理
-  可见性和本地状态快照；不得下载、写 SQLite、恢复 Web 或续派队列；
-- `RND-01`：复用 G 盘已有 255 个权重时点，冻结 PIT 可知/生效时间语义、
-  949 代码规范化与 273 可用 / 27 隔离 / 649 未导出的覆盖矩阵，并显式
-  处理 2009-12-31 只有 298 只的真实异常。
-
-只有用户另行明确授权执行工单后，本机 Codex 才能按
-`docs/WEB_GPT_REVIEW_AND_WORK_ORDERS_20260726.md` 进入对应现场核验或实现。
-当前 goal 内通过精确暂存与安全门禁的提交/推送仍直接完成；该持续 Git 授权
-不覆盖工单执行、SSH/Slurm、数据下载、数据库写入、Web/队列恢复、正式训练、
-回测或 sealed OOS 揭示。
+- （2026-07-26 更新）“等待 strict PIT 历史执行状态”已被同日独立裁决取代：
+  完整 04A 维持 BLOCKED，仅放行严格限域 execution-state overlay 子集，
+  `RND-04C` 已据此实现并定向测试通过（见顶部当前段）。
+- `RND-04C` 尚需第四步独立对抗审查 0 blocker；之后才可发起 `RND-05B`
+  的授权询问。揭示需用户另行明确授权，在此之前 sealed OOS 保持未揭示。
+- node13 隔离目录的删除需单独确认；未获确认前保留。继续禁止写生产
+  SQLite、恢复或覆盖事故源、恢复 Web/队列、正式训练或揭示。
 
 2026-07-22：`web/slurm_training_client.py` 的远端命令选择器已改用 PowerShell 7 (`pwsh.exe`)，相应单元测试会断言真实选中的可执行文件名；定向测试 `13/0`。这只影响本机发起 Slurm 远端命令的宿主，不改变登录节点、计算节点或 Slurm 调度边界。

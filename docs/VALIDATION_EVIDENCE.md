@@ -2,6 +2,76 @@
 
 本文件只记录已经得到最终汇总的验证。没有最终汇总、仅有 Mock、仅到达外部端点或仍待提交的事项都单独标明。
 
+## 0.000000 2026-07-26 六张工单阶段收口
+
+### 证据边界
+
+- AlphaMaster 不是标准 OpenXQuant CLI run，本阶段没有标准 run artifact set；
+  未运行或宣称 `oxq` 的 spec/runtime audit、backtest 或 report。
+- 本阶段未运行 `RND-04C` 或 `RND-05B`，未真实揭示 sealed OOS，未写生产
+  SQLite，未恢复或覆盖事故源，未提交或推送。
+
+### 已通过的工单
+
+- `OPS-01` 已完成只读闭环。Slurm job `570548` 的结果属于旧 scoring
+  contract，只能保留为诊断结果，永不提升为 `READY`。
+- `RND-01/02` 五修后独立 `PASS`、0 blocker；反例 `4/0`、相关回归
+  `55/0`、三真实样本 `7/0`、编译 `3/0`。
+- `RND-03` 独立 `PASS`、0 blocker；目标测试 `7/0`、三文件编译 `3/0`。
+  v3 manifest SHA-256 为
+  `e07fffd04c9d53a897ae688ad05897a03273acf14010f799e1aca85579a8404c`，
+  inventory `2671/2671`；949 个代码为 741 available、207 quarantine、
+  1 source_missing。v2 `877/877`、事故源 `300/300`、pristine `296/296`
+  前后不变。
+- 两份 exact 脚本 SHA-256 分别为
+  `ffab3102c5afbab0a0ddbf1e34a3928057bdea2e217addedd259aeb72b306b7a`
+  和
+  `ae7684fc15f70ea39891a4c8ee673f7ceaf532687e7e5a0bc9239ff7d902b7f2`；
+  release binding、两条正式脚本路径和 `eol=lf` 已闭合。v2 目录有 1 个
+  冻结清单外既有 pyc，终审前后不变；未删除、未纳入候选，是透明
+  非 blocker。
+- `RND-04B` 独立 `PASS`、0 blocker；专项与相关回归 `125/0`。单改
+  execution `created_at`、单改 account `updated_at`、同时协调修改两者，
+  在 read、retry、next-write 共 12 个入口全部失败关闭。事务回滚、并发、
+  重启幂等、账户连续性和历史合同通过；真实 `local_runs` 的 30 个 SQLite
+  文件在同一聚合口径下前后不变。
+- `RND-05A` 独立 `PASS`、0 blocker；聚焦反例 `13/0`、相关五文件
+  `120/0`。真实 training + sealed 共 200 个文件的 SHA-256 与 mtime
+  聚合前后均为
+  `e591f89a5c2f1004277a2900bb4c49a2762a167bf8253892e7971c33d0d2c96f`；
+  没有运行真实 reveal。
+
+### `RND-04A`：审计通过，但业务仍阻断
+
+- 独立终审为 `PASS-as-BLOCKED`，审计包语义 0 blocker；业务状态仍为
+  `READY 0 / PARTIAL 2 / BLOCKED 5`，共有 6 条硬阻塞，不能放行
+  `RND-04C`。
+- 冻结 D1 独立复算为 273 ready + 27 quarantine；213 个 ready 文件共有
+  22,690 个内部开市日缺口。`000002` 在 2006-05-30 缺 bar，而同日
+  CSI300 有 bar，只能判为 `UNKNOWN`，不能判为 `SUSPENDED`。
+- FreeStockDB ProApi 的四个候选接口都被“测试期超2000次”限流阻断；
+  BaoStock 在本机和 node13 都返回黑名单，均未取得字段记录或数据。
+- AKShare `stock_tfp_em` 只能判为 `PARTIAL reconstructed`，资格审计
+  JSON SHA-256 为
+  `0d696db4696f8b66ece14c2b0535aaf3d594614d4ac7a99ec973d924e3a597fe`；
+  它缺少可满足 strict PIT 的 known-at 证据。
+- 深交所简称变更的冻结最小证据为 7,448 行；`000002` 公司行动有
+  CNInfo 与 Sina 双源最小核对。两者都只是 `PARTIAL` 资格证据，未形成
+  正式结果 JSON，也未完成 949 代码全量冻结，不能满足 strict PIT。
+- 审计 JSON 保留 3 个路径定位符瑕疵；相邻实际文件的 hash/mtime 与声明
+  匹配，证据未缺失，因此它们是透明非 blocker，不改冻结候选。
+
+### 当前门禁与未完成项
+
+- 按用户长期“完美执行、不降级”偏好继续保持 strict PIT，不擅自降级为
+  reconstructed。本地数据源资格检查仍由另一 worker 进行，当前状态为
+  “来源检查中”，不是最终确认无来源。
+- `RND-04C` 因缺少 strict PIT 历史执行状态而未启动。`RND-05B` 因
+  `RND-04C` 未通过且缺少单独揭示授权而未启动。
+- node13 隔离探针遗留
+  `/tmp/alphamaster-rnd04a-baostock-20260726-node13-20260726T030508Z`
+  共 `116,207,660` bytes；按删除确认规则未删除，等待单独确认。
+
 ## 0.00000 2026-07-26 网页版 GPT 审核与本机只读复审
 
 - 网页版 GPT 固定读取公开规划快照
