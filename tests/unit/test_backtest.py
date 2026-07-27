@@ -3,10 +3,14 @@ tests/unit/test_backtest.py — MT5Backtest 单元测试
 
 验证 COST_RATE 默认值、evaluate() 返回类型、
 已知 PnL 序列的 Sortino 计算结果、换手率惩罚以及 80/20 分割点。
+80/20 的后 20% 是验证段（模型选择口径），不是样本外。
 
 Requirements: 5.2, 5.3
 """
 import math
+import re
+from pathlib import Path
+
 import pytest
 import torch
 
@@ -40,11 +44,11 @@ def test_evaluate_return_types():
     factors = torch.randn(N, T)
     target_ret = torch.randn(N, T) * 0.01
 
-    score, oos = bt.evaluate(factors, {}, target_ret)
+    score, mean_val = bt.evaluate(factors, {}, target_ret)
 
     assert isinstance(score, torch.Tensor), "score 应为 torch.Tensor"
     assert score.shape == torch.Size([]), "score 应为标量（零维张量）"
-    assert isinstance(oos, float), "oos 应为 float"
+    assert isinstance(mean_val, float), "mean_val 应为 float"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -72,7 +76,7 @@ def test_simple_known_pnl():
     factors = torch.full((N, T), 10.0)
     target_ret = torch.full((N, T), 0.01)
 
-    score, oos = bt.evaluate(factors, {}, target_ret)
+    score, _mean_val = bt.evaluate(factors, {}, target_ret)
 
     assert torch.isfinite(score), f"score 应为有限值，实际为 {score.item()}"
     assert score.item() > 0, f"全部正收益时 score 应 > 0，实际为 {score.item()}"
@@ -118,8 +122,8 @@ def test_high_turnover_penalty():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_split_point_100():
-    """T=100 时先裁尾部 2 根，再按有效 98 根切出 in-sample 78 根。
-    Requirements: 5.4 (通过检查 OOS 收益来验证分割点)
+    """T=100 时先裁尾部 2 根，再按有效 98 根切出训练段 78 根。
+    Requirements: 5.4 (通过检查验证段收益来验证分割点)
     """
     bt = MT5Backtest()
     T = 100
@@ -134,12 +138,12 @@ def test_split_point_100():
     target_ret[:, split:valid_steps] = -0.1
     target_ret[:, valid_steps:] = 99.0  # 无法实现的尾部占位值必须忽略
 
-    score, oos = bt.evaluate(factors, {}, target_ret)
+    score, mean_val = bt.evaluate(factors, {}, target_ret)
 
-    # in-sample 全正 → score > 0
-    assert score.item() > 0, f"IS score 应 > 0（前80期正收益），实际为 {score.item()}"
-    # oos 全负 → oos < 0
-    assert oos < 0, f"OOS 均值应 < 0（后20期负收益），实际为 {oos}"
+    # 训练段全正 → score > 0
+    assert score.item() > 0, f"训练段 score 应 > 0（前80期正收益），实际为 {score.item()}"
+    # 验证段全负 → mean_val < 0
+    assert mean_val < 0, f"验证段均值应 < 0（后20期负收益），实际为 {mean_val}"
 
 
 def test_split_point_50():
@@ -159,10 +163,10 @@ def test_split_point_50():
     target_ret[:, split:valid_steps] = -0.1
     target_ret[:, valid_steps:] = 99.0
 
-    score, oos = bt.evaluate(factors, {}, target_ret)
+    score, mean_val = bt.evaluate(factors, {}, target_ret)
 
-    assert score.item() > 0, f"IS score 应 > 0（前40期正收益），实际为 {score.item()}"
-    assert oos < 0, f"OOS 均值应 < 0（后10期负收益），实际为 {oos}"
+    assert score.item() > 0, f"训练段 score 应 > 0（前40期正收益），实际为 {score.item()}"
+    assert mean_val < 0, f"验证段均值应 < 0（后10期负收益），实际为 {mean_val}"
 
 
 def test_split_point_exact_count():
@@ -172,26 +176,61 @@ def test_split_point_exact_count():
     for T in [10, 50, 100, 123, 200]:
         valid_steps = T - TARGET_RETURN_HORIZON
         expected_split = math.floor(valid_steps * 0.8)
-        expected_oos = valid_steps - expected_split
+        expected_val = valid_steps - expected_split
 
         bt = MT5Backtest()
         N = 1
 
-        # 设计特殊 target_ret：前 split 期 = +1，后 oos 期 = -1
+        # 设计特殊 target_ret：前 split 期 = +1，后验证段 = -1
         factors = torch.full((N, T), 10.0)
         target_ret = torch.ones(N, T)
         target_ret[:, expected_split:valid_steps] = -1.0
         target_ret[:, valid_steps:] = 99.0
 
-        score, oos = bt.evaluate(factors, {}, target_ret)
+        score, mean_val = bt.evaluate(factors, {}, target_ret)
 
-        # IS 全正 → score > 0；OOS 全负 → oos < 0
+        # 训练段全正 → score > 0；验证段全负 → mean_val < 0
         assert score.item() > 0, (
-            f"T={T}: IS score 应 > 0，期望分割={expected_split}，实际 {score.item()}"
+            f"T={T}: 训练段 score 应 > 0，期望分割={expected_split}，实际 {score.item()}"
         )
-        assert oos < 0, (
-            f"T={T}: OOS 均值应 < 0，期望 OOS={expected_oos} 期，实际 {oos}"
+        assert mean_val < 0, (
+            f"T={T}: 验证段均值应 < 0，期望验证段={expected_val} 期，实际 {mean_val}"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 适应度诚实化守卫（2026-07-26 A1）
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 词元级匹配：字母边界排除 NOISE_BOOST 这类伪命中，但抓得住 oos_score 等新变体
+_OOS_TOKEN_RE = re.compile(r"(?i)(?<![a-z])oos(?![a-z])")
+
+
+def test_fitness_source_never_labels_validation_as_oos():
+    """验证段参与适应度选优，绝不能再被标注成 OOS（样本外）。
+
+    这是 fork 的有意修复：防止后续选择性上游同步把误导性命名带回来。
+    扫描整个 model_core（适应度领域）；凡出现独立 OOS 词元的行，
+    只允许两种豁免——引用 sealed 封存链路、或禁令声明本身（含"禁止"）。
+    样本外结论只允许出自 evaluation/sealed_oos_campaign.py 的受控揭示链路。
+    """
+    model_core = Path(__file__).resolve().parents[2] / "model_core"
+    violations = []
+    for py in sorted(model_core.glob("*.py")):
+        for lineno, line in enumerate(
+            py.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            if not _OOS_TOKEN_RE.search(line):
+                continue
+            if "sealed" in line.lower() or "禁止" in line:
+                continue
+            violations.append(f"{py.name}:{lineno}: {line.strip()}")
+    assert not violations, (
+        "model_core 出现被禁止的 OOS 标注（验证段≠样本外）:\n"
+        + "\n".join(violations)
+    )
+    backtest_src = (model_core / "backtest.py").read_text(encoding="utf-8")
+    assert "验证段" in backtest_src, "适应度门控必须以验证段口径注释"
 
 
 class TestTurnoverQualityContinuousPosition:

@@ -127,14 +127,14 @@ def test_walk_forward_validation_window_charges_first_position_from_flat(
     assert torch.count_nonzero(captured[1][0, 1:]) == 0
 
 
-def test_non_walk_forward_oos_window_charges_first_position_from_flat() -> None:
+def test_non_walk_forward_validation_window_charges_first_position_from_flat() -> None:
     factors = torch.full((1, 22), 10.0)
     target = torch.zeros_like(factors)
     bt = MT5Backtest(cost_rate=0.01)
 
-    _, mean_oos = bt.evaluate(factors, {}, target)
+    _, mean_val = bt.evaluate(factors, {}, target)
 
-    assert mean_oos == pytest.approx(-0.0025, abs=1e-5)
+    assert mean_val == pytest.approx(-0.0025, abs=1e-5)
 
 
 def test_effectiveness_evaluator_defaults_to_current_target_horizon() -> None:

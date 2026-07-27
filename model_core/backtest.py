@@ -16,6 +16,15 @@ symbol_consistency 规则：
   - N 个品种中至少 ceil(N*0.6) 个 Sortino > 0 → 正分
   - 任何品种 Sortino < -2.0 → 重惩罚
   - 全部品种 Sortino > 0 → 额外奖励
+
+数据三层口径（2026-07-26 A1 适应度诚实化）：
+  - 训练段 train：REINFORCE 梯度更新用。
+  - 验证段 validation：evaluate_fold 的 val 切片 / evaluate() 的最后 20%。
+    验证段参与适应度门控与冠军选择，已被搜索过程反复消耗，
+    其成绩属于模型选择口径，绝不能当作样本外泛化证据宣传。
+  - 封存段 sealed test：唯一合法的样本外证据，只能经
+    evaluation/sealed_oos_campaign.py 的受控揭示流程产生。
+  本文件所有评分都属于前两层；禁止把验证段再标注成 OOS。
 """
 import math
 import torch
@@ -332,10 +341,12 @@ class MT5Backtest:
     ) -> tuple[Tensor, Tensor]:
         """在指定训练/验证切片上计算组合多目标得分。
 
-        train_score：用于 REINFORCE 梯度更新（in-sample 多目标）。
-        val_score：用于选冠军，加入 OOS Sortino 门控：
-          - OOS Sortino <= 0：乘以 0.1~0.5 惩罚，强制冠军必须在验证段盈利
-          - OOS Sortino > 0：乘以最多 1.2 奖励
+        train_score：用于 REINFORCE 梯度更新（训练段多目标）。
+        val_score：用于选冠军，加入验证段 Sortino 门控：
+          - 验证段 Sortino <= 0：乘以 0.1~0.5 惩罚，强制冠军必须在验证段盈利
+          - 验证段 Sortino > 0：乘以最多 1.2 奖励
+        验证段参与选优，属于模型选择口径，不是样本外证据；
+        样本外结论只能来自 sealed 封存揭示链路。
         """
         factors, target_ret = align_target_return_window(factors, target_ret)
         valid_steps = factors.shape[1]
@@ -374,7 +385,7 @@ class MT5Backtest:
             eval_bars=train_bars,
         ) + self._turnover_penalty(turnover_train)
 
-        # 验证段：多目标 × OOS Sortino 门控
+        # 验证段：多目标 × 验证段 Sortino 门控（模型选择口径，非样本外）
         val_bars = val_end - val_start
         base_val    = self._multi_objective(
             factors[:, val_start:val_end],
@@ -383,13 +394,13 @@ class MT5Backtest:
             position_val,
             eval_bars=val_bars,
         )
-        oos_sor = self._sortino(pnl_val).item()
-        if oos_sor <= 0:
-            # OOS亏损：重惩罚（Sortino=-1 → mult=0.1；Sortino=0 → mult=0.5）
-            mult = max(0.1, 0.5 + oos_sor * 0.4)
+        val_sor = self._sortino(pnl_val).item()
+        if val_sor <= 0:
+            # 验证段亏损：重惩罚（Sortino=-1 → mult=0.1；Sortino=0 → mult=0.5）
+            mult = max(0.1, 0.5 + val_sor * 0.4)
         else:
-            # OOS盈利：轻奖励（最多+20%）
-            mult = min(1.2, 1.0 + oos_sor * 0.1)
+            # 验证段盈利：轻奖励（最多+20%）
+            mult = min(1.2, 1.0 + val_sor * 0.1)
         val_score = base_val * mult
 
         return train_score, val_score
@@ -568,7 +579,12 @@ class MT5Backtest:
         raw_dict:   dict,
         target_ret: Tensor,
     ) -> tuple[Tensor, float]:
-        """评估一组 Alpha 因子（含 OOS 80/20 门控）。"""
+        """评估一组 Alpha 因子（含验证段 80/20 门控）。
+
+        返回 (score, mean_val)：score 为训练段多目标 × 验证段门控；
+        mean_val 为验证段（最后 20%）平均每根 PnL。
+        验证段参与评分与选优，属于模型选择口径，不是样本外证据。
+        """
         factors, target_ret = align_target_return_window(factors, target_ret)
         T = factors.shape[1]
         if T < 2:
@@ -577,16 +593,16 @@ class MT5Backtest:
         split = int(math.floor(T * 0.8))
         position = compute_target_positions_stateless(factors)
         position_train = position[:, :split]
-        position_oos = position[:, split:]
+        position_val = position[:, split:]
         turnover_train = _turnover_from_flat(position_train)
-        turnover_oos = _turnover_from_flat(position_oos)
+        turnover_val = _turnover_from_flat(position_val)
         pnl_train = (
             position_train * target_ret[:, :split]
             - turnover_train * self.cost_rate
         )
-        pnl_oos = (
-            position_oos * target_ret[:, split:]
-            - turnover_oos * self.cost_rate
+        pnl_val = (
+            position_val * target_ret[:, split:]
+            - turnover_val * self.cost_rate
         )
 
         score = self._multi_objective(
@@ -595,13 +611,13 @@ class MT5Backtest:
             eval_bars=split,
         ) + self._turnover_penalty(turnover_train)
 
-        # OOS 门控（最后 20%）
-        oos_sor = self._sortino(pnl_oos).item()
-        if oos_sor <= 0:
-            mult = max(0.1, 0.5 + oos_sor * 0.4)
+        # 验证段门控（最后 20%）
+        val_sor = self._sortino(pnl_val).item()
+        if val_sor <= 0:
+            mult = max(0.1, 0.5 + val_sor * 0.4)
             score = score * mult
         else:
-            score = score * min(1.2, 1.0 + oos_sor * 0.1)
+            score = score * min(1.2, 1.0 + val_sor * 0.1)
 
-        mean_oos = pnl_oos.mean().item()
-        return score, mean_oos
+        mean_val = pnl_val.mean().item()
+        return score, mean_val

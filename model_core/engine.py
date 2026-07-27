@@ -817,7 +817,7 @@ class AlphaEngine:
                     step_max_val = final_val;  step_best_f = fml
 
                 if final_val > self.best_score:
-                    # OOS 泛化门控：val_score / train_score < 0.5 说明过拟合
+                    # 验证段泛化门控：val_score / train_score < 0.5 说明过拟合
                     train_val = rewards[i].item()
                     if train_val > 0.5 and final_val < train_val * 0.5:
                         tqdm.write(

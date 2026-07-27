@@ -27,11 +27,11 @@ from model_core.target_contract import TARGET_RETURN_HORIZON
 def test_property6_backtest_80_20_split(T: int):
     """
     For any T, MT5Backtest.evaluate() must first remove the final target horizon,
-    then use exactly floor(valid_T*0.8) steps as in-sample and the remainder
-    as out-of-sample.
+    then use exactly floor(valid_T*0.8) steps as the train segment and the
+    remainder as the validation segment (model-selection data, NOT out-of-sample).
 
     Note: _sortino is now called multiple times internally by _multi_objective,
-    so we validate the split via the returned mean_oos instead.
+    so we validate the split via the final validation-segment sortino call.
 
     Validates: Requirements 5.4
     """
@@ -39,7 +39,7 @@ def test_property6_backtest_80_20_split(T: int):
 
     valid_t = T - TARGET_RETURN_HORIZON
     expected_is = math.floor(valid_t * 0.8)
-    expected_oos = valid_t - expected_is
+    expected_val = valid_t - expected_is
 
     captured_sortino_lengths = []
     original_sortino = backtest._sortino
@@ -54,8 +54,8 @@ def test_property6_backtest_80_20_split(T: int):
 
     backtest.evaluate(factors, {}, target_ret)
 
-    assert captured_sortino_lengths[-1] == expected_oos, (
-        f"T={T}: out-of-sample length expected {expected_oos}, "
+    assert captured_sortino_lengths[-1] == expected_val, (
+        f"T={T}: validation segment length expected {expected_val}, "
         f"got {captured_sortino_lengths[-1]}"
     )
 
