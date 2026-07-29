@@ -267,3 +267,100 @@ def test_training_history_root_artifact_is_explicitly_allowed() -> None:
         "training_history_XAUUSD.json"
     )
     assert path.name == "training_history_XAUUSD.json"
+
+
+def test_checkpoint_import_forwards_exact_pinned_script_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client()
+    monkeypatch.setattr(
+        client,
+        "select_compute_host",
+        lambda: "compute-node-12",
+    )
+    observed: dict[str, object] = {}
+    target_run_id = "run_20260729T130000Z_1234abcd"
+    parent_run_id = "run_20260723T235959Z_867bfc69"
+    checkpoint_path = (
+        "checkpoints/D1/"
+        + "6" * 64
+        + "/run_01785293593994423452/ckpt_000617_step_2760.pt"
+    )
+    response = {
+        "ok": True,
+        "imported": True,
+        "target_run_id": target_run_id,
+        "parent_run_id": parent_run_id,
+        "parent_job_id": "581389",
+        "checkpoint_path": checkpoint_path,
+        "checkpoint_sha256": "5" * 64,
+        "checkpoint_size": 5_965_894,
+        "checkpoint_step": 2760,
+    }
+
+    def fake_run(command, **kwargs):
+        observed["command"] = command
+        observed["kwargs"] = kwargs
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(response).encode("utf-8"),
+            stderr=b"",
+        )
+
+    import json
+
+    monkeypatch.setattr(client_module.subprocess, "run", fake_run)
+    result = client.import_checkpoint(
+        target_run_id,
+        {
+            "parent_run_id": parent_run_id,
+            "parent_job_id": "581389",
+            "checkpoint_path": checkpoint_path,
+            "checkpoint_sha256": "5" * 64,
+            "checkpoint_size": 5_965_894,
+            "checkpoint_step": 2760,
+        },
+    )
+
+    assert result["importer_sha256"] == client_module.CHECKPOINT_IMPORTER_SHA256
+    kwargs = observed["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["input"] == client_module.LOCAL_CHECKPOINT_IMPORTER.read_bytes()
+    assert hashlib.sha256(kwargs["input"]).hexdigest() == (
+        client_module.CHECKPOINT_IMPORTER_SHA256
+    )
+    command = observed["command"]
+    assert isinstance(command, list)
+    assert "-n" not in command
+    assert "compute-node-12" in command
+    assert command[-1].startswith(
+        f"{client.remote_root}/.venv/bin/python - "
+    )
+    assert f"- {client.remote_root} {target_run_id}" in command[-1]
+
+
+def test_checkpoint_import_rejects_local_importer_hash_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client()
+    tampered = tmp_path / "slurm_checkpoint_import.py"
+    tampered.write_bytes(b"tampered")
+    monkeypatch.setattr(client_module, "LOCAL_CHECKPOINT_IMPORTER", tampered)
+    with pytest.raises(client_module.SlurmClientError, match="SHA-256"):
+        client.import_checkpoint(
+            "run_20260729T130000Z_1234abcd",
+            {
+                "parent_run_id": "run_20260723T235959Z_867bfc69",
+                "parent_job_id": "581389",
+                "checkpoint_path": (
+                    "checkpoints/D1/"
+                    + "6" * 64
+                    + "/run_01785293593994423452/"
+                    "ckpt_000617_step_2760.pt"
+                ),
+                "checkpoint_sha256": "5" * 64,
+                "checkpoint_size": 5_965_894,
+                "checkpoint_step": 2760,
+            },
+        )

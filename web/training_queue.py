@@ -9,7 +9,7 @@ import sqlite3
 import time
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Sequence
 
 
@@ -44,6 +44,8 @@ _GIT_COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _MEMORY_RE = re.compile(r"^[1-9][0-9]*(?:K|M|G|T)$")
 _TIME_LIMIT_RE = re.compile(r"^(?:[0-9]+-)?[0-9]{2}:[0-9]{2}:[0-9]{2}$")
+_RUN_ID_RE = re.compile(r"^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{8}$")
+_JOB_ID_RE = re.compile(r"^[1-9][0-9]{0,18}$")
 
 
 class TrainingQueueError(RuntimeError):
@@ -112,6 +114,14 @@ class BatchItemRecord:
     data_file: str
     data_sha256: str
     planned_run_id: str
+    execution_run_id: str
+    attempt_number: int
+    parent_run_id: str | None
+    parent_job_id: str | None
+    resume_checkpoint_path: str | None
+    resume_checkpoint_sha256: str | None
+    resume_checkpoint_size: int | None
+    resume_checkpoint_step: int | None
     train_steps: int
     cpus_per_task: int
     memory: str
@@ -205,6 +215,15 @@ class TrainingQueue:
                     data_file TEXT NOT NULL COLLATE NOCASE,
                     data_sha256 TEXT NOT NULL,
                     planned_run_id TEXT NOT NULL UNIQUE,
+                    execution_run_id TEXT NOT NULL UNIQUE,
+                    attempt_number INTEGER NOT NULL DEFAULT 0
+                        CHECK (attempt_number IN (0, 1)),
+                    parent_run_id TEXT,
+                    parent_job_id TEXT,
+                    resume_checkpoint_path TEXT,
+                    resume_checkpoint_sha256 TEXT,
+                    resume_checkpoint_size INTEGER,
+                    resume_checkpoint_step INTEGER,
                     train_steps INTEGER NOT NULL
                         CHECK (train_steps BETWEEN 1 AND 1000000),
                     cpus_per_task INTEGER NOT NULL
@@ -241,6 +260,14 @@ class TrainingQueue:
                 "cpus_per_task": "INTEGER NOT NULL DEFAULT 12",
                 "memory": "TEXT NOT NULL DEFAULT '32G'",
                 "time_limit": "TEXT NOT NULL DEFAULT '00:30:00'",
+                "execution_run_id": "TEXT",
+                "attempt_number": "INTEGER NOT NULL DEFAULT 0",
+                "parent_run_id": "TEXT",
+                "parent_job_id": "TEXT",
+                "resume_checkpoint_path": "TEXT",
+                "resume_checkpoint_sha256": "TEXT",
+                "resume_checkpoint_size": "INTEGER",
+                "resume_checkpoint_step": "INTEGER",
             }
             for column, declaration in migrations.items():
                 if column not in columns:
@@ -248,6 +275,20 @@ class TrainingQueue:
                         f"ALTER TABLE batch_items "
                         f"ADD COLUMN {column} {declaration}"
                     )
+            conn.execute(
+                """
+                UPDATE batch_items
+                SET execution_run_id = planned_run_id
+                WHERE execution_run_id IS NULL OR execution_run_id = ''
+                """
+            )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    idx_batch_items_execution_run_id
+                ON batch_items(execution_run_id)
+                """
+            )
             batch_columns = {
                 str(row["name"])
                 for row in conn.execute("PRAGMA table_info(batches)")
@@ -530,6 +571,14 @@ class TrainingQueue:
                     data_file=item.data_file,
                     data_sha256=item.data_sha256,
                     planned_run_id=item.planned_run_id,
+                    execution_run_id=item.planned_run_id,
+                    attempt_number=0,
+                    parent_run_id=None,
+                    parent_job_id=None,
+                    resume_checkpoint_path=None,
+                    resume_checkpoint_sha256=None,
+                    resume_checkpoint_size=None,
+                    resume_checkpoint_step=None,
                     train_steps=item.train_steps,
                     cpus_per_task=item.cpus_per_task,
                     memory=item.memory,
@@ -584,11 +633,16 @@ class TrainingQueue:
                     """
                     INSERT INTO batch_items (
                         batch_id, ordinal, symbol, timeframe, data_file,
-                        data_sha256, planned_run_id, train_steps,
+                        data_sha256, planned_run_id, execution_run_id,
+                        attempt_number, parent_run_id, parent_job_id,
+                        resume_checkpoint_path, resume_checkpoint_sha256,
+                        resume_checkpoint_size, resume_checkpoint_step, train_steps,
                         cpus_per_task, memory, time_limit, status,
                         job_id, error, created_at, updated_at
                     ) VALUES (
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, 0,
+                        NULL, NULL, NULL, NULL, NULL, NULL,
+                        ?, ?, ?, ?, ?,
                         NULL, NULL, ?, ?
                     )
                     """,
@@ -600,6 +654,7 @@ class TrainingQueue:
                             item.timeframe,
                             item.data_file,
                             item.data_sha256,
+                            item.planned_run_id,
                             item.planned_run_id,
                             item.train_steps,
                             item.cpus_per_task,
@@ -782,6 +837,17 @@ class TrainingQueue:
             row = conn.execute(
                 "SELECT * FROM batch_items WHERE planned_run_id = ?",
                 (planned_run_id,),
+            ).fetchone()
+        return self._item_from_row(row) if row is not None else None
+
+    def get_item_by_execution_run_id(
+        self,
+        execution_run_id: str,
+    ) -> BatchItemRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM batch_items WHERE execution_run_id = ?",
+                (execution_run_id,),
             ).fetchone()
         return self._item_from_row(row) if row is not None else None
 
@@ -1245,4 +1311,159 @@ class TrainingQueue:
             ).fetchone()
         if updated is None:  # pragma: no cover - 更新成功后不应发生
             raise TrainingQueueError("恢复活动作业后无法读取训练项目")
+        return self._item_from_row(updated)
+
+    def begin_checkpoint_recovery(
+        self,
+        planned_run_id: str,
+        *,
+        recovery_run_id: str,
+        parent_job_id: str | int,
+        checkpoint_path: str,
+        checkpoint_sha256: str,
+        checkpoint_size: int,
+        checkpoint_step: int,
+    ) -> BatchItemRecord:
+        """为一次 NODE_FAIL 创建新的物理 run；旧 run/job 作为父谱系保留。"""
+        normalized_recovery_run = self._normalize_text(
+            recovery_run_id,
+            "recovery_run_id",
+        )
+        if _RUN_ID_RE.fullmatch(normalized_recovery_run) is None:
+            raise QueueValidationError("recovery_run_id 格式非法")
+        normalized_parent_job = self._normalize_text(
+            parent_job_id,
+            "parent_job_id",
+        )
+        if _JOB_ID_RE.fullmatch(normalized_parent_job) is None:
+            raise QueueValidationError("parent_job_id 格式非法")
+        normalized_checkpoint_sha = self._normalize_sha256(
+            checkpoint_sha256,
+            "checkpoint_sha256",
+        )
+        if (
+            isinstance(checkpoint_size, bool)
+            or not isinstance(checkpoint_size, int)
+            or not 0 < checkpoint_size <= 8 * 1024**3
+        ):
+            raise QueueValidationError("checkpoint_size 超出允许范围")
+        if (
+            isinstance(checkpoint_step, bool)
+            or not isinstance(checkpoint_step, int)
+            or checkpoint_step <= 0
+        ):
+            raise QueueValidationError("checkpoint_step 必须是正整数")
+        normalized_checkpoint_path = self._normalize_text(
+            checkpoint_path,
+            "checkpoint_path",
+        )
+        posix = PurePosixPath(normalized_checkpoint_path)
+        if (
+            posix.is_absolute()
+            or ".." in posix.parts
+            or not posix.parts
+            or posix.as_posix() != normalized_checkpoint_path
+        ):
+            raise QueueValidationError("checkpoint_path 必须是规范的相对 POSIX 路径")
+
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM batch_items WHERE planned_run_id = ?",
+                (planned_run_id,),
+            ).fetchone()
+            if row is None:
+                raise QueueNotFoundError(f"训练项目不存在: {planned_run_id}")
+            current = self._item_from_row(row)
+            if current.status != NEEDS_ATTENTION:
+                raise StateTransitionError(
+                    f"只有 NEEDS_ATTENTION 项目可以续训: {current.status}"
+                )
+            if current.attempt_number != 0:
+                raise StateTransitionError("一次性 checkpoint 恢复已经使用")
+            if re.fullmatch(
+                r"Slurm NODE_FAIL(?::.*)?",
+                str(current.error or "").strip(),
+                flags=re.IGNORECASE,
+            ) is None:
+                raise StateTransitionError("只有明确的 Slurm NODE_FAIL 可以续训")
+            if current.job_id != normalized_parent_job:
+                raise QueueValidationError("父 job ID 与当前冻结记录不一致")
+            if current.execution_run_id != current.planned_run_id:
+                raise StateTransitionError("初始物理 run 身份已发生变化")
+            if normalized_recovery_run == current.planned_run_id:
+                raise QueueValidationError("恢复 run 必须使用新的物理 run ID")
+            if checkpoint_step >= current.train_steps:
+                raise QueueValidationError("checkpoint_step 必须小于目标总步数")
+            expected_checkpoint = re.fullmatch(
+                rf"checkpoints/{re.escape(current.timeframe)}/"
+                rf"{re.escape(current.data_sha256)}/run_[0-9]{{20}}/"
+                rf"ckpt_{re.escape(current.symbol)}_step_([0-9]{{4,}})\.pt",
+                normalized_checkpoint_path,
+            )
+            if (
+                expected_checkpoint is None
+                or int(expected_checkpoint.group(1)) != checkpoint_step
+            ):
+                raise QueueValidationError("checkpoint_path 与队列训练身份不一致")
+            collision = conn.execute(
+                """
+                SELECT 1 FROM batch_items
+                WHERE planned_run_id = ? OR execution_run_id = ?
+                LIMIT 1
+                """,
+                (normalized_recovery_run, normalized_recovery_run),
+            ).fetchone()
+            if collision is not None:
+                raise QueueValidationError("恢复物理 run ID 已存在")
+            placeholders = ", ".join("?" for _ in ACTIVE_ITEM_STATUSES)
+            active = conn.execute(
+                f"""
+                SELECT 1 FROM batch_items
+                WHERE status IN ({placeholders})
+                LIMIT 1
+                """,
+                ACTIVE_ITEM_STATUSES,
+            ).fetchone()
+            if active is not None:
+                raise StateTransitionError("已有活动项目，不能启动 checkpoint 恢复")
+
+            now = time.time()
+            conn.execute(
+                """
+                UPDATE batch_items
+                SET execution_run_id = ?, attempt_number = 1,
+                    parent_run_id = planned_run_id, parent_job_id = ?,
+                    resume_checkpoint_path = ?,
+                    resume_checkpoint_sha256 = ?,
+                    resume_checkpoint_size = ?, resume_checkpoint_step = ?,
+                    status = ?, job_id = NULL, error = NULL, updated_at = ?
+                WHERE planned_run_id = ?
+                """,
+                (
+                    normalized_recovery_run,
+                    normalized_parent_job,
+                    normalized_checkpoint_path,
+                    normalized_checkpoint_sha,
+                    checkpoint_size,
+                    checkpoint_step,
+                    DISPATCHING,
+                    now,
+                    planned_run_id,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE batches
+                SET status = 'ACTIVE', updated_at = ?
+                WHERE batch_id = ?
+                """,
+                (now, current.batch_id),
+            )
+            updated = conn.execute(
+                "SELECT * FROM batch_items WHERE planned_run_id = ?",
+                (planned_run_id,),
+            ).fetchone()
+        if updated is None:  # pragma: no cover
+            raise TrainingQueueError("checkpoint 恢复状态写入后无法读取")
         return self._item_from_row(updated)

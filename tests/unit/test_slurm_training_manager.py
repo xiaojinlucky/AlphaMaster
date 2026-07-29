@@ -76,7 +76,9 @@ class FakeClient:
         self.checkpoint_problem = checkpoint_problem
         self.prepared: list[str] = []
         self.uploaded: list[str] = []
+        self.imported: list[tuple[str, dict]] = []
         self.submitted: list[str] = []
+        self.actions: list[str] = []
         self.download_calls = 0
         self.cancelled: list[tuple[str, str]] = []
 
@@ -88,16 +90,29 @@ class FakeClient:
 
     def prepare(self, run_id: str):
         self.prepared.append(run_id)
+        self.actions.append(f"prepare:{run_id}")
         self._maybe_interrupt("prepare")
         return {"ok": True}
 
     def upload_inputs(self, *, run_id: str, **_kwargs):
         self.uploaded.append(run_id)
+        self.actions.append(f"upload:{run_id}")
         self._maybe_interrupt("upload")
         return {"ok": True}
 
+    def import_checkpoint(self, run_id: str, recovery: dict):
+        self.imported.append((run_id, dict(recovery)))
+        self.actions.append(f"import:{run_id}")
+        self._maybe_interrupt("import")
+        return {
+            "imported": True,
+            "target_run_id": run_id,
+            **recovery,
+        }
+
     def submit(self, _run_id: str) -> str:
         self.submitted.append(_run_id)
+        self.actions.append(f"submit:{_run_id}")
         self._maybe_interrupt("submit")
         return "4321"
 
@@ -494,6 +509,165 @@ def test_submit_poll_download_and_restart_recovery(
 
     restored = manager_module.SlurmTrainingManager(client=client, local_runs_root=runs)
     assert restored.status()["job"]["remote_state"] == "READY"
+
+
+def test_checkpoint_recovery_imports_after_upload_and_before_submit(
+    isolated_project: Path,
+    tmp_path: Path,
+) -> None:
+    client = FakeClient()
+    runs = tmp_path / "runs"
+    manager = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=runs,
+    )
+    data_file = _dataset(tmp_path)
+    data_sha256 = hashlib.sha256(data_file.read_bytes()).hexdigest()
+    recovery_run_id = "run_20260729T130000Z_1234abcd"
+    recovery = {
+        "parent_run_id": "run_20260723T235959Z_867bfc69",
+        "parent_job_id": "581389",
+        "checkpoint_path": (
+            f"checkpoints/H1/{data_sha256}/"
+            "run_01785293593994423452/ckpt_XAUUSD_step_0100.pt"
+        ),
+        "checkpoint_sha256": "5" * 64,
+        "checkpoint_size": 5_965_894,
+        "checkpoint_step": 100,
+    }
+
+    job = manager.start(
+        str(data_file),
+        "XAUUSD",
+        "H1",
+        from_scratch=False,
+        planned_run_id=recovery_run_id,
+        train_steps=200,
+        checkpoint_recovery=recovery,
+    )
+
+    assert client.actions == [
+        f"prepare:{recovery_run_id}",
+        f"upload:{recovery_run_id}",
+        f"import:{recovery_run_id}",
+        f"submit:{recovery_run_id}",
+    ]
+    assert client.imported == [(recovery_run_id, recovery)]
+    assert job["checkpoint_recovery"] == recovery
+    assert job["checkpoint_import_receipt"] == {
+        "imported": True,
+        "target_run_id": recovery_run_id,
+        **recovery,
+    }
+    manifest = json.loads(
+        (runs / recovery_run_id / "run_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["training_parameters"] == {
+        "train_steps": 200,
+        "from_scratch": False,
+    }
+    assert manifest["checkpoint_recovery"] == recovery
+
+
+def test_checkpoint_recovery_revalidates_import_before_submit_retry(
+    isolated_project: Path,
+    tmp_path: Path,
+) -> None:
+    client = FakeClient(transport_failures={"submit": 1})
+    manager = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=tmp_path / "runs",
+    )
+    data_file = _dataset(tmp_path)
+    data_sha256 = hashlib.sha256(data_file.read_bytes()).hexdigest()
+    recovery_run_id = "run_20260729T130000Z_1234abcd"
+    recovery = {
+        "parent_run_id": "run_20260723T235959Z_867bfc69",
+        "parent_job_id": "581389",
+        "checkpoint_path": (
+            f"checkpoints/H1/{data_sha256}/"
+            "run_01785293593994423452/ckpt_XAUUSD_step_0100.pt"
+        ),
+        "checkpoint_sha256": "5" * 64,
+        "checkpoint_size": 5_965_894,
+        "checkpoint_step": 100,
+    }
+
+    interrupted = manager.start(
+        str(data_file),
+        "XAUUSD",
+        "H1",
+        from_scratch=False,
+        planned_run_id=recovery_run_id,
+        train_steps=200,
+        checkpoint_recovery=recovery,
+    )
+    assert interrupted["remote_state"] == "SUBMITTING"
+    assert interrupted["slurm_job_id"] is None
+
+    retried = manager.status()["job"]
+    assert retried["remote_state"] == "PENDING"
+    assert client.imported == [
+        (recovery_run_id, recovery),
+        (recovery_run_id, recovery),
+    ]
+    assert client.actions.count(f"import:{recovery_run_id}") == 2
+    assert client.actions[-2:] == [
+        f"import:{recovery_run_id}",
+        f"submit:{recovery_run_id}",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("from_scratch", "path_step", "checkpoint_step", "message"),
+    (
+        (True, 100, 100, "不能同时使用 from_scratch"),
+        (False, 101, 100, "路径与训练身份不一致"),
+        (False, 200, 200, "步数必须小于训练总步数"),
+    ),
+)
+def test_checkpoint_recovery_rejects_invalid_contract_before_remote_prepare(
+    isolated_project: Path,
+    tmp_path: Path,
+    from_scratch: bool,
+    path_step: int,
+    checkpoint_step: int,
+    message: str,
+) -> None:
+    client = FakeClient()
+    manager = manager_module.SlurmTrainingManager(
+        client=client,
+        local_runs_root=tmp_path / "runs",
+    )
+    data_file = _dataset(tmp_path)
+    data_sha256 = hashlib.sha256(data_file.read_bytes()).hexdigest()
+    recovery = {
+        "parent_run_id": "run_20260723T235959Z_867bfc69",
+        "parent_job_id": "581389",
+        "checkpoint_path": (
+            f"checkpoints/H1/{data_sha256}/"
+            "run_01785293593994423452/"
+            f"ckpt_XAUUSD_step_{path_step:04d}.pt"
+        ),
+        "checkpoint_sha256": "5" * 64,
+        "checkpoint_size": 5_965_894,
+        "checkpoint_step": checkpoint_step,
+    }
+
+    with pytest.raises(RuntimeError, match=message):
+        manager.start(
+            str(data_file),
+            "XAUUSD",
+            "H1",
+            from_scratch=from_scratch,
+            planned_run_id="run_20260729T130000Z_1234abcd",
+            train_steps=200,
+            checkpoint_recovery=recovery,
+        )
+
+    assert client.actions == []
 
 
 def test_missing_current_pointer_is_the_only_idle_recovery_state(

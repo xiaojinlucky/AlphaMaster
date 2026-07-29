@@ -934,6 +934,70 @@ class SlurmTrainingManager:
             },
         )
 
+    @staticmethod
+    def _normalize_checkpoint_recovery(
+        value: dict[str, Any] | None,
+        *,
+        symbol: str,
+        timeframe: str,
+        data_sha256: str,
+        train_steps: int,
+        from_scratch: bool,
+    ) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        if from_scratch:
+            raise RuntimeError("checkpoint 恢复不能同时使用 from_scratch")
+        if not isinstance(value, dict) or set(value) != {
+            "parent_run_id",
+            "parent_job_id",
+            "checkpoint_path",
+            "checkpoint_sha256",
+            "checkpoint_size",
+            "checkpoint_step",
+        }:
+            raise RuntimeError("checkpoint 恢复合同字段不完整")
+        parent_run_id = str(value.get("parent_run_id") or "")
+        parent_job_id = str(value.get("parent_job_id") or "")
+        checkpoint_path = str(value.get("checkpoint_path") or "")
+        checkpoint_sha256 = str(value.get("checkpoint_sha256") or "").lower()
+        checkpoint_size = value.get("checkpoint_size")
+        checkpoint_step = value.get("checkpoint_step")
+        if RUN_ID_RE.fullmatch(parent_run_id) is None:
+            raise RuntimeError("checkpoint 恢复父 run ID 非法")
+        if re.fullmatch(r"[1-9][0-9]{0,18}", parent_job_id) is None:
+            raise RuntimeError("checkpoint 恢复父 job ID 非法")
+        if re.fullmatch(r"[0-9a-f]{64}", checkpoint_sha256) is None:
+            raise RuntimeError("checkpoint 恢复 SHA-256 非法")
+        if (
+            isinstance(checkpoint_size, bool)
+            or not isinstance(checkpoint_size, int)
+            or not 0 < checkpoint_size <= 8 * 1024**3
+        ):
+            raise RuntimeError("checkpoint 恢复文件大小非法")
+        if (
+            isinstance(checkpoint_step, bool)
+            or not isinstance(checkpoint_step, int)
+            or not 0 < checkpoint_step < train_steps
+        ):
+            raise RuntimeError("checkpoint 恢复步数必须小于训练总步数")
+        matched = re.fullmatch(
+            rf"checkpoints/{re.escape(timeframe)}/{re.escape(data_sha256)}/"
+            rf"run_[0-9]{{20}}/ckpt_{re.escape(symbol)}_step_"
+            rf"([0-9]{{4,}})\.pt",
+            checkpoint_path,
+        )
+        if matched is None or int(matched.group(1)) != checkpoint_step:
+            raise RuntimeError("checkpoint 恢复路径与训练身份不一致")
+        return {
+            "parent_run_id": parent_run_id,
+            "parent_job_id": parent_job_id,
+            "checkpoint_path": checkpoint_path,
+            "checkpoint_sha256": checkpoint_sha256,
+            "checkpoint_size": checkpoint_size,
+            "checkpoint_step": checkpoint_step,
+        }
+
     def _build_run_manifest(
         self,
         *,
@@ -944,6 +1008,7 @@ class SlurmTrainingManager:
         training_parameters: dict[str, Any],
         requested_resources: dict[str, Any],
         git_commit: str,
+        checkpoint_recovery: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         data = self._load_data_manifest(data_file)
         if data.get("symbol") != symbol or data.get("timeframe") != timeframe:
@@ -954,7 +1019,7 @@ class SlurmTrainingManager:
         source_manifest_sha256 = data.get("_data_source_manifest_sha256")
         source_manifest_size = data.get("_data_source_manifest_size")
         source_manifest_payload = data.get("_data_source_manifest")
-        return {
+        manifest = {
             "run_id": run_id,
             "created_at": _utc_now(),
             "symbol": symbol,
@@ -981,6 +1046,9 @@ class SlurmTrainingManager:
             "requested_resources": requested_resources,
             "local_source": data["_source_id"],
         }
+        if checkpoint_recovery is not None:
+            manifest["checkpoint_recovery"] = dict(checkpoint_recovery)
+        return manifest
 
     def start(
         self,
@@ -995,6 +1063,7 @@ class SlurmTrainingManager:
         cpus_per_task: int | None = None,
         memory: str | None = None,
         time_limit: str | None = None,
+        checkpoint_recovery: dict[str, Any] | None = None,
         expected_source_sha256: str | None = None,
         expected_git_commit: str | None = None,
     ) -> dict[str, Any]:
@@ -1031,6 +1100,17 @@ class SlurmTrainingManager:
                 memory=memory,
                 time_limit=time_limit,
             )
+            if not path.is_file():
+                raise RuntimeError("训练数据文件不存在")
+            inspected_data = self._load_data_manifest(path)
+            normalized_recovery = self._normalize_checkpoint_recovery(
+                checkpoint_recovery,
+                symbol=symbol,
+                timeframe=timeframe,
+                data_sha256=str(inspected_data.get("data_sha256") or ""),
+                train_steps=int(training_parameters["train_steps"]),
+                from_scratch=bool(training_parameters["from_scratch"]),
+            )
             if planned_run_id is not None:
                 planned_run_id = str(planned_run_id).strip()
                 if RUN_ID_RE.fullmatch(planned_run_id) is None:
@@ -1066,6 +1146,8 @@ class SlurmTrainingManager:
                         or self._job.get("timeframe") != timeframe
                         or expected_parameters != training_parameters
                         or expected_resources != requested_resources
+                        or self._job.get("checkpoint_recovery")
+                        != normalized_recovery
                     ):
                         raise RuntimeError(
                             "planned_run_id 已绑定不同的训练输入或参数"
@@ -1085,8 +1167,6 @@ class SlurmTrainingManager:
                     return self._public_job() or {}
             if self._job and self._job.get("remote_state") in ACTIVE_REMOTE_STATES:
                 raise RuntimeError(f"已有远程训练任务在运行: {self._job.get('run_id')}")
-            if not path.is_file():
-                raise RuntimeError("训练数据文件不存在")
             run_id = planned_run_id or (
                 datetime.now(timezone.utc).strftime("run_%Y%m%dT%H%M%SZ_")
                 + secrets.token_hex(4)
@@ -1102,6 +1182,7 @@ class SlurmTrainingManager:
                 training_parameters=training_parameters,
                 requested_resources=requested_resources,
                 git_commit=resolved_git_commit,
+                checkpoint_recovery=normalized_recovery,
             )
             if (
                 _source_files_sha256(manifest.get("source_files"))
@@ -1133,6 +1214,7 @@ class SlurmTrainingManager:
                 "expected_source_sha256": resolved_source_sha256,
                 "training_parameters": manifest["training_parameters"],
                 "requested_resources": manifest["requested_resources"],
+                "checkpoint_recovery": normalized_recovery,
                 "cancel_requested": False,
             }
             self._save()
@@ -1172,6 +1254,7 @@ class SlurmTrainingManager:
             "source_files": _source_files(),
             "training_parameters": training_parameters,
             "requested_resources": requested_resources,
+            "checkpoint_recovery": self._job.get("checkpoint_recovery"),
         }
         for field, value in expected.items():
             if manifest.get(field) != value:
@@ -1272,6 +1355,14 @@ class SlurmTrainingManager:
                 state = "SUBMITTING"
             if state == "SUBMITTING":
                 self._assert_dispatch_source_identity("submit")
+                recovery = self._job.get("checkpoint_recovery")
+                if recovery is not None:
+                    receipt = self.client.import_checkpoint(
+                        run_id,
+                        recovery,
+                    )
+                    self._job["checkpoint_import_receipt"] = receipt
+                    self._save()
                 job_id = self.client.submit(run_id)
                 self._job["slurm_job_id"] = job_id
                 self._set_state("SUBMITTED")

@@ -27,6 +27,20 @@ SAFE_REMOTE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_./:-]+$")
 TRAINING_HISTORY_RE = re.compile(r"^training_history_[A-Za-z0-9._-]+\.json$")
 DATA_SOURCE_MANIFEST_FILENAME = "data_source_manifest.json"
 MAX_SOURCE_MANIFEST_BYTES = 1024 * 1024
+LOCAL_RESULT_ADAPTER = (
+    Path(__file__).resolve().parents[1] / "scripts" / "slurm_result_adapter.py"
+)
+RESULT_ADAPTER_SHA256 = (
+    "fdddd12bf0ac1c1fa471807790533b386fb3a02216c9ab3b5c233eabc69373ce"
+)
+LOCAL_CHECKPOINT_IMPORTER = (
+    Path(__file__).resolve().parents[1]
+    / "scripts"
+    / "slurm_checkpoint_import.py"
+)
+CHECKPOINT_IMPORTER_SHA256 = (
+    "de851b775be22b0f8da648bb496bb62ad0fc3d485770db9fd1b1b4124fd90e06"
+)
 
 
 def sha256_file(path: Path) -> str:
@@ -143,12 +157,16 @@ class SlurmTrainingClient:
             raise SlurmTransportError("节点选择器未返回允许的计算节点")
         return match.group(1)
 
-    def _ssh_base(self, host: str) -> list[str]:
+    def _ssh_base(
+        self,
+        host: str,
+        *,
+        forward_stdin: bool = False,
+    ) -> list[str]:
         if host not in ALLOWED_COMPUTE_HOSTS:
             raise SlurmClientError("拒绝在非计算节点执行远端控制命令")
-        return [
+        command = [
             self.ssh,
-            "-n",
             "-o",
             "BatchMode=yes",
             "-o",
@@ -159,6 +177,9 @@ class SlurmTrainingClient:
             "ConnectionAttempts=1",
             host,
         ]
+        if not forward_stdin:
+            command.insert(1, "-n")
+        return command
 
     def _remote_call(
         self,
@@ -174,41 +195,97 @@ class SlurmTrainingClient:
             "tail",
             "cancel",
             "result",
+            "result-adapted",
+            "checkpoint-import",
         }:
             raise SlurmClientError("不允许的远端控制动作")
-        tokens = [
-            self.remote_python,
-            f"{self.remote_root}/scripts/slurm_control.py",
-            action,
-            *[str(arg) for arg in args],
-        ]
+        script_bytes: bytes | None = None
+        if action == "result-adapted":
+            try:
+                script_bytes = LOCAL_RESULT_ADAPTER.read_bytes()
+            except OSError as exc:
+                raise SlurmClientError("无法读取本机结果适配器") from exc
+            if hashlib.sha256(script_bytes).hexdigest() != RESULT_ADAPTER_SHA256:
+                raise SlurmClientError("本机结果适配器 SHA-256 不匹配")
+            tokens = [
+                self.remote_python,
+                "-",
+                self.remote_root,
+                *[str(arg) for arg in args],
+            ]
+        elif action == "checkpoint-import":
+            try:
+                script_bytes = LOCAL_CHECKPOINT_IMPORTER.read_bytes()
+            except OSError as exc:
+                raise SlurmClientError("无法读取本机 checkpoint 导入器") from exc
+            if (
+                hashlib.sha256(script_bytes).hexdigest()
+                != CHECKPOINT_IMPORTER_SHA256
+            ):
+                raise SlurmClientError("本机 checkpoint 导入器 SHA-256 不匹配")
+            tokens = [
+                f"{self.remote_root}/.venv/bin/python",
+                "-",
+                self.remote_root,
+                *[str(arg) for arg in args],
+            ]
+        else:
+            tokens = [
+                self.remote_python,
+                f"{self.remote_root}/scripts/slurm_control.py",
+                action,
+                *[str(arg) for arg in args],
+            ]
         if any(not SAFE_REMOTE_TOKEN_RE.fullmatch(token) for token in tokens):
             raise SlurmClientError("远端控制参数含不允许字符")
         host = self.select_compute_host()
         command = shlex.join(tokens)
+        effective_timeout = (
+            self.transfer_timeout
+            if action in {"result-adapted", "checkpoint-import"}
+            and timeout is None
+            else timeout
+        )
         try:
-            proc = subprocess.run(
-                [*self._ssh_base(host), command],
-                shell=False,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout or self.command_timeout,
-            )
+            if script_bytes is None:
+                proc = subprocess.run(
+                    [*self._ssh_base(host), command],
+                    shell=False,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=effective_timeout or self.command_timeout,
+                )
+                stdout = proc.stdout
+                stderr = proc.stderr
+            else:
+                proc = subprocess.run(
+                    [*self._ssh_base(host, forward_stdin=True), command],
+                    shell=False,
+                    input=script_bytes,
+                    capture_output=True,
+                    timeout=effective_timeout or self.command_timeout,
+                )
+                stdout = proc.stdout.decode("utf-8", "replace")
+                stderr = proc.stderr.decode("utf-8", "replace")
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise SlurmTransportError(f"远端控制动作 {action} 传输中断") from exc
         if proc.returncode != 0:
-            message = (proc.stderr or proc.stdout or "远端控制失败").strip()
+            message = (stderr or stdout or "远端控制失败").strip()
             if proc.returncode == 255:
                 raise SlurmTransportError(message[-1200:])
             raise SlurmClientError(message[-1200:])
         try:
-            payload = json.loads(proc.stdout)
+            payload = json.loads(stdout)
         except json.JSONDecodeError as exc:
             raise SlurmClientError("远端控制器返回非 JSON 数据") from exc
         if not isinstance(payload, dict):
             raise SlurmClientError("远端控制器返回结构非法")
+        if action == "result-adapted":
+            payload["adapter_sha256"] = RESULT_ADAPTER_SHA256
+        elif action == "checkpoint-import":
+            payload["importer_sha256"] = CHECKPOINT_IMPORTER_SHA256
         return payload
 
     def prepare(self, run_id: str) -> dict[str, Any]:
@@ -321,6 +398,72 @@ class SlurmTrainingClient:
             )
         return self._remote_call(*finalize_args)
 
+    def import_checkpoint(
+        self,
+        run_id: str,
+        recovery: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not isinstance(recovery, dict) or set(recovery) != {
+            "parent_run_id",
+            "parent_job_id",
+            "checkpoint_path",
+            "checkpoint_sha256",
+            "checkpoint_size",
+            "checkpoint_step",
+        }:
+            raise SlurmClientError("checkpoint 恢复合同字段不完整")
+        target_run_id = self.validate_run_id(run_id)
+        parent_run_id = self.validate_run_id(
+            str(recovery["parent_run_id"])
+        )
+        parent_job_id = self.validate_job_id(recovery["parent_job_id"])
+        checkpoint_path = str(recovery["checkpoint_path"])
+        posix = PurePosixPath(checkpoint_path)
+        if (
+            posix.is_absolute()
+            or ".." in posix.parts
+            or not posix.parts
+            or posix.as_posix() != checkpoint_path
+        ):
+            raise SlurmClientError("checkpoint 恢复路径非法")
+        checkpoint_sha256 = str(recovery["checkpoint_sha256"]).lower()
+        if re.fullmatch(r"[0-9a-f]{64}", checkpoint_sha256) is None:
+            raise SlurmClientError("checkpoint 恢复 SHA-256 非法")
+        checkpoint_size = recovery["checkpoint_size"]
+        checkpoint_step = recovery["checkpoint_step"]
+        if (
+            isinstance(checkpoint_size, bool)
+            or not isinstance(checkpoint_size, int)
+            or not 0 < checkpoint_size <= 8 * 1024**3
+            or isinstance(checkpoint_step, bool)
+            or not isinstance(checkpoint_step, int)
+            or checkpoint_step <= 0
+        ):
+            raise SlurmClientError("checkpoint 恢复大小或步数非法")
+        payload = self._remote_call(
+            "checkpoint-import",
+            target_run_id,
+            parent_run_id,
+            parent_job_id,
+            checkpoint_path,
+            checkpoint_sha256,
+            str(checkpoint_size),
+            str(checkpoint_step),
+        )
+        if (
+            payload.get("ok") is not True
+            or payload.get("imported") is not True
+            or payload.get("target_run_id") != target_run_id
+            or payload.get("parent_run_id") != parent_run_id
+            or payload.get("parent_job_id") != parent_job_id
+            or payload.get("checkpoint_path") != checkpoint_path
+            or payload.get("checkpoint_sha256") != checkpoint_sha256
+            or payload.get("checkpoint_size") != checkpoint_size
+            or payload.get("checkpoint_step") != checkpoint_step
+        ):
+            raise SlurmClientError("checkpoint 导入回执与请求不一致")
+        return payload
+
     def submit(self, run_id: str) -> str:
         payload = self._remote_call("submit", self.validate_run_id(run_id))
         return self.validate_job_id(payload.get("job_id", ""))
@@ -372,7 +515,7 @@ class SlurmTrainingClient:
     ) -> dict[str, Any]:
         run_id = self.validate_run_id(run_id)
         job_id = self.validate_job_id(job_id)
-        manifest = self._remote_call("result", run_id, job_id)
+        manifest = self._remote_call("result-adapted", run_id, job_id)
         if manifest.get("run_id") != run_id or str(manifest.get("slurm_job_id")) != job_id:
             raise SlurmClientError("结果 manifest 的 run/job 身份不匹配")
         if manifest.get("git_commit") != expected_commit:

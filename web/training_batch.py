@@ -49,7 +49,7 @@ class TrainingBatchController:
         job: dict[str, Any],
     ) -> bool:
         return (
-            str(job.get("run_id") or "") == item.planned_run_id
+            str(job.get("run_id") or "") == item.execution_run_id
             and item.job_id is not None
             and str(job.get("slurm_job_id") or "") == item.job_id
         )
@@ -62,11 +62,11 @@ class TrainingBatchController:
         item: BatchItemRecord,
         job: dict[str, Any],
     ) -> BatchItemRecord:
-        if str(job.get("run_id") or "") != item.planned_run_id:
+        if str(job.get("run_id") or "") != item.execution_run_id:
             return item
         try:
             run_source = self.training_manager.run_source_sha256(
-                item.planned_run_id
+                item.execution_run_id
             )
             batch = self.queue.get_batch(item.batch_id)
             if batch is None:
@@ -92,16 +92,16 @@ class TrainingBatchController:
     ) -> BatchItemRecord:
         job = self._job(training)
         run_id = str(job.get("run_id") or "")
-        if bool(training.get("active")) and run_id != item.planned_run_id:
+        if bool(training.get("active")) and run_id != item.execution_run_id:
             # 可能是 API 状态读取后，另一个进程先提交了任务；不抢占、不取消。
             return item
         retryable_pre_submission_failure = (
-            run_id == item.planned_run_id
+            run_id == item.execution_run_id
             and self._remote_state(job) == "FAILED"
             and not job.get("slurm_job_id")
         )
         should_start = (
-            run_id != item.planned_run_id
+            run_id != item.execution_run_id
             or retryable_pre_submission_failure
         )
         if should_start:
@@ -138,8 +138,20 @@ class TrainingBatchController:
                     symbol=item.symbol,
                     timeframe=item.timeframe,
                     mode="ftmo",
-                    from_scratch=True,
-                    planned_run_id=item.planned_run_id,
+                    from_scratch=item.attempt_number == 0,
+                    planned_run_id=item.execution_run_id,
+                    checkpoint_recovery=(
+                        {
+                            "parent_run_id": item.parent_run_id,
+                            "parent_job_id": item.parent_job_id,
+                            "checkpoint_path": item.resume_checkpoint_path,
+                            "checkpoint_sha256": item.resume_checkpoint_sha256,
+                            "checkpoint_size": item.resume_checkpoint_size,
+                            "checkpoint_step": item.resume_checkpoint_step,
+                        }
+                        if item.attempt_number == 1
+                        else None
+                    ),
                     expected_source_sha256=expected_source_sha256,
                     expected_git_commit=expected_git_commit,
                     train_steps=item.train_steps,
@@ -152,7 +164,10 @@ class TrainingBatchController:
         except Exception as exc:
             refreshed = self.training_manager.status()
             refreshed_job = self._job(refreshed)
-            if str(refreshed_job.get("run_id") or "") == item.planned_run_id:
+            if (
+                str(refreshed_job.get("run_id") or "")
+                == item.execution_run_id
+            ):
                 job = refreshed_job
             elif bool(refreshed.get("active")):
                 return item
@@ -253,13 +268,15 @@ class TrainingBatchController:
                     "DOWNLOADING",
                 }
             ):
-                persisted = self.queue.get_item(current_run_id)
+                persisted = self.queue.get_item_by_execution_run_id(
+                    current_run_id
+                )
                 if (
                     persisted is not None
                     and persisted.status == NEEDS_ATTENTION
                 ):
                     self.queue.recover_submitted_item(
-                        current_run_id,
+                        persisted.planned_run_id,
                         current_job_id,
                     )
             item = self.queue.get_active_item()
@@ -293,7 +310,7 @@ class TrainingBatchController:
                     return self.snapshot()
 
             job = self._job(training)
-            if str(job.get("run_id") or "") == item.planned_run_id:
+            if str(job.get("run_id") or "") == item.execution_run_id:
                 checked = self._ensure_source_identity(item, job)
                 if checked.status == NEEDS_ATTENTION:
                     return self.snapshot(item.batch_id)

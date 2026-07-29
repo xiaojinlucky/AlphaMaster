@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -160,6 +161,92 @@ def test_create_batch_is_idempotent_and_freezes_identity(tmp_path) -> None:
             runtime_git_commit="b" * 40,
             items=[spec],
         )
+
+
+def test_legacy_queue_migration_backfills_execution_identity_without_state_change(
+    tmp_path,
+) -> None:
+    database = tmp_path / "legacy.sqlite3"
+    planned_run_id = "run_20260723T235959Z_867bfc69"
+    with sqlite3.connect(database) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE batches (
+                batch_id TEXT PRIMARY KEY,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL,
+                contract_sha256 TEXT NOT NULL,
+                source_sha256 TEXT,
+                runtime_git_commit TEXT,
+                request_sha256 TEXT NOT NULL,
+                item_count INTEGER NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            CREATE TABLE batch_items (
+                batch_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                symbol TEXT NOT NULL COLLATE NOCASE,
+                timeframe TEXT NOT NULL,
+                data_file TEXT NOT NULL COLLATE NOCASE,
+                data_sha256 TEXT NOT NULL,
+                planned_run_id TEXT NOT NULL UNIQUE,
+                train_steps INTEGER NOT NULL,
+                cpus_per_task INTEGER NOT NULL,
+                memory TEXT NOT NULL,
+                time_limit TEXT NOT NULL,
+                status TEXT NOT NULL,
+                job_id TEXT,
+                error TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (batch_id, ordinal)
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO batches VALUES (
+                'batch-1', 'legacy', 'NEEDS_ATTENTION', ?, ?, ?, ?, 1, 1.0, 2.0
+            )
+            """,
+            (
+                CONTRACT_SHA256,
+                SOURCE_SHA256,
+                RUNTIME_GIT_COMMIT,
+                "d" * 64,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO batch_items VALUES (
+                'batch-1', 0, '000617', 'D1', 'G:/data/000617_D1.parquet',
+                ?, ?, 9000, 12, '32G', '06:00:00', 'NEEDS_ATTENTION',
+                '581389', 'Slurm NODE_FAIL: NODE_FAIL', 1.0, 2.0
+            )
+            """,
+            ("6" * 64, planned_run_id),
+        )
+
+    queue = TrainingQueue(database)
+    item = queue.get_item(planned_run_id)
+
+    assert item is not None
+    assert item.planned_run_id == planned_run_id
+    assert item.execution_run_id == planned_run_id
+    assert item.attempt_number == 0
+    assert item.status == NEEDS_ATTENTION
+    assert item.job_id == "581389"
+    assert item.error == "Slurm NODE_FAIL: NODE_FAIL"
+    with sqlite3.connect(database) as conn:
+        index = conn.execute(
+            """
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'index'
+              AND name = 'idx_batch_items_execution_run_id'
+            """
+        ).fetchone()
+    assert index == (1,)
 
 
 def test_concurrent_claim_allows_only_one_active_item(tmp_path) -> None:
@@ -514,3 +601,110 @@ def test_claim_next_available_keeps_oldest_batch_contiguous(tmp_path) -> None:
     assert next_item.batch_id == first_batch
     assert queue.get_batch(second_batch).status == QUEUED
     assert queue.has_pending_work() is True
+
+
+def test_node_fail_checkpoint_recovery_preserves_logical_identity(
+    tmp_path,
+) -> None:
+    queue = TrainingQueue(tmp_path / "queue.sqlite3")
+    batch_id = _create_two_item_batch(queue, tmp_path)
+    claimed = queue.claim_next(batch_id)
+    assert claimed is not None
+    queue.advance_item(claimed.planned_run_id, TRAINING, job_id="581389")
+    queue.fail_item(claimed.planned_run_id, "Slurm NODE_FAIL: NODE_FAIL")
+    recovery_run_id = "run_20260729T130000Z_1234abcd"
+    checkpoint_path = (
+        f"checkpoints/{claimed.timeframe}/{claimed.data_sha256}/"
+        "run_01785293593994423452/"
+        f"ckpt_{claimed.symbol}_step_0100.pt"
+    )
+
+    recovered = queue.begin_checkpoint_recovery(
+        claimed.planned_run_id,
+        recovery_run_id=recovery_run_id,
+        parent_job_id="581389",
+        checkpoint_path=checkpoint_path,
+        checkpoint_sha256="5" * 64,
+        checkpoint_size=5_965_894,
+        checkpoint_step=100,
+    )
+
+    assert recovered.planned_run_id == claimed.planned_run_id
+    assert recovered.execution_run_id == recovery_run_id
+    assert recovered.attempt_number == 1
+    assert recovered.parent_run_id == claimed.planned_run_id
+    assert recovered.parent_job_id == "581389"
+    assert recovered.resume_checkpoint_path == checkpoint_path
+    assert recovered.resume_checkpoint_sha256 == "5" * 64
+    assert recovered.resume_checkpoint_size == 5_965_894
+    assert recovered.resume_checkpoint_step == 100
+    assert recovered.status == DISPATCHING
+    assert recovered.job_id is None
+    assert recovered.error is None
+    assert queue.get_batch(batch_id).status == "ACTIVE"
+    assert (
+        queue.get_item_by_execution_run_id(recovery_run_id)
+        == recovered
+    )
+
+    active = queue.advance_item(
+        recovered.planned_run_id,
+        TRAINING,
+        job_id="581999",
+    )
+    assert active.job_id == "581999"
+    assert active.parent_job_id == "581389"
+
+
+def test_checkpoint_recovery_is_one_time_and_node_fail_only(tmp_path) -> None:
+    queue = TrainingQueue(tmp_path / "queue.sqlite3")
+    batch_id = _create_two_item_batch(queue, tmp_path)
+    claimed = queue.claim_next(batch_id)
+    assert claimed is not None
+    queue.advance_item(claimed.planned_run_id, TRAINING, job_id="581389")
+    queue.fail_item(claimed.planned_run_id, "not NODE_FAIL")
+    checkpoint_path = (
+        f"checkpoints/{claimed.timeframe}/{claimed.data_sha256}/"
+        "run_01785293593994423452/"
+        f"ckpt_{claimed.symbol}_step_0100.pt"
+    )
+    args = {
+        "recovery_run_id": "run_20260729T130000Z_1234abcd",
+        "parent_job_id": "581389",
+        "checkpoint_path": checkpoint_path,
+        "checkpoint_sha256": "5" * 64,
+        "checkpoint_size": 5_965_894,
+        "checkpoint_step": 100,
+    }
+    with pytest.raises(StateTransitionError, match="NODE_FAIL"):
+        queue.begin_checkpoint_recovery(claimed.planned_run_id, **args)
+
+    with queue._connect() as conn:
+        conn.execute(
+            """
+            UPDATE batch_items
+            SET error = ?
+            WHERE planned_run_id = ?
+            """,
+            ("Slurm NODE_FAIL: NODE_FAIL", claimed.planned_run_id),
+        )
+    recovered = queue.begin_checkpoint_recovery(
+        claimed.planned_run_id,
+        **args,
+    )
+    queue.advance_item(
+        recovered.planned_run_id,
+        TRAINING,
+        job_id="581999",
+    )
+    queue.fail_item(recovered.planned_run_id, "Slurm NODE_FAIL: NODE_FAIL")
+    with pytest.raises(StateTransitionError, match="一次性"):
+        queue.begin_checkpoint_recovery(
+            recovered.planned_run_id,
+            recovery_run_id="run_20260729T130100Z_8765abcd",
+            parent_job_id="581999",
+            checkpoint_path=checkpoint_path,
+            checkpoint_sha256="5" * 64,
+            checkpoint_size=5_965_894,
+            checkpoint_step=100,
+        )

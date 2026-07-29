@@ -459,3 +459,60 @@ def test_default_queue_path_honors_explicit_runtime_override(
     monkeypatch.setenv("ALPHAMASTER_TRAINING_QUEUE_DB", str(override))
 
     assert default_queue_path(tmp_path / "project") == override.resolve()
+
+
+def test_checkpoint_recovery_dispatches_new_physical_run_without_scratch(
+    tmp_path,
+) -> None:
+    queue = TrainingQueue(tmp_path / "queue.sqlite3")
+    batch_id = _batch(queue, tmp_path)
+    claimed = queue.claim_next(batch_id)
+    assert claimed is not None
+    queue.advance_item(RUN_ONE, TRAINING, job_id="581389")
+    queue.fail_item(RUN_ONE, "Slurm NODE_FAIL: NODE_FAIL")
+    recovery_run_id = "run_20260729T130000Z_1234abcd"
+    checkpoint_path = (
+        f"checkpoints/{claimed.timeframe}/{claimed.data_sha256}/"
+        "run_01785293593994423452/"
+        f"ckpt_{claimed.symbol}_step_0100.pt"
+    )
+    queue.begin_checkpoint_recovery(
+        RUN_ONE,
+        recovery_run_id=recovery_run_id,
+        parent_job_id="581389",
+        checkpoint_path=checkpoint_path,
+        checkpoint_sha256="5" * 64,
+        checkpoint_size=5_965_894,
+        checkpoint_step=100,
+    )
+    training = FakeTrainingManager()
+    controller = TrainingBatchController(
+        queue=queue,
+        training_manager=training,
+        pipeline_manager=FakePipelineManager(),
+    )
+
+    snapshot = controller.advance_once(
+        training={"active": False, "job": None},
+        pipeline={"status": "WAITING_TRAINING"},
+    )
+
+    assert len(training.starts) == 1
+    started = training.starts[0]
+    assert started["planned_run_id"] == recovery_run_id
+    assert started["from_scratch"] is False
+    assert started["checkpoint_recovery"] == {
+        "parent_run_id": RUN_ONE,
+        "parent_job_id": "581389",
+        "checkpoint_path": checkpoint_path,
+        "checkpoint_sha256": "5" * 64,
+        "checkpoint_size": 5_965_894,
+        "checkpoint_step": 100,
+    }
+    persisted = queue.get_item(RUN_ONE)
+    assert persisted is not None
+    assert persisted.execution_run_id == recovery_run_id
+    assert persisted.job_id == "568500"
+    assert persisted.status == TRAINING
+    assert snapshot["active_item"]["planned_run_id"] == RUN_ONE
+    assert snapshot["active_item"]["execution_run_id"] == recovery_run_id
