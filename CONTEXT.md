@@ -5,27 +5,36 @@
 > 任何模型接手先读它；每完成一个重要步骤必须更新该板与本文件顶部。
 > 当前公开全项目审查入口：
 > `docs/CURRENT_PUBLIC_REVIEW_PROMPT_20260730.md`。
-> 当前推进位置（2026-07-30 15:54）：000333、000617、000725、000792
-> 四件均已完成训练、回测、虚拟信号和队列四层验收并进入 `READY`。
-> 000792 / run `run_20260723T235959Z_1d99b294` / Slurm 582419 在 cu05
-> 完整运行到 9000 步，`COMPLETED/0:0`，墙钟 08:24:18。远端原始
+> 当前推进位置（2026-07-30 17:27）：000333、000617、000725、000792、
+> 000988 五件均已完成训练、回测、虚拟信号和队列四层验收并进入 `READY`。
+> 000988 / run `run_20260723T235959Z_26c8877c` / Slurm 583711 在 cu05
+> 完整运行到 9000 步，`COMPLETED/0:0`，墙钟 08:14:45。远端原始
 > 452 件产物经本机固定适配器逐件重验后发布 step 9000 checkpoint、
 > 策略和训练历史 3 件；run/job/runtime commit、34 个 source files、
-> 数据 SHA 和评分合同全部一致，合同验收 25/0；best score=2.0245869160。
-> 同训练数据含成本 replay Sharpe=0.9940，不能表述为 sealed OOS；
-> 虚拟信号动作 BUY，目标仓位约 0.1323，未发送飞书。
-> READY 后只执行一次增量备份：1,288 个文件、3,218.5 MB、221 秒；
-> `CURRENT` 指向
+> 数据 SHA 和评分合同全部一致，合同验收 25/0；best score=1.5741169453。
+> 同训练数据含成本 replay Sharpe=1.1902，不能表述为 sealed OOS；
+> 原始信号 SHORT，但普通 A 股账户只做多且当前空仓，生命周期动作 HOLD，
+> 目标仓位 0、交付 NOT_REQUIRED，未发送飞书。
+> 随后一次有效增量备份尝试在远端 staging 闭合校验阶段失败关闭：
+> 下一项 002027 正在改写 `tail.log`，传输前后大小不一致；未发布新
+> generation，未自动重试。旧 `CURRENT` 仍指向
 > `gen-1785374003929226888-1112810-9d40a766076a531c5931cd45`。
-> 当前 generation 共 1,290 个普通文件，无 `.building` 或 `.incoming`
-> 残留；37/37 SQLite 均 integrity=ok、DELETE、WAL/SHM=0。
-> 000792 的 17 个非 SQLite 持久文件逐 SHA 一致，signal SQLite 业务行
-> 一致；备份独立验收 8/0，对抗复审 ACCEPT，P0/P1/P2=`0/0/0`。
-> 队列已自动推进 000988；活动 run/job 身份不进入公开快照，核验时在 cu05
-> RUNNING，训练到 step 7527/9000，best score=1.5741169453；批次为
-> `READY=4/TRAINING=1/QUEUED=45`。冻结训练源码 34 项聚合 SHA-256
-> 仍为 `0e5ca8c3…64ab0`，sealed OOS 未触碰。正式证据：
-> `docs/evidence/wo_am04_000792_ready_backup_20260730.md`。
+> `.building`/`.incoming` 均为空；旧 generation 的 37/37 SQLite 仍
+> integrity=ok、DELETE、WAL/SHM=0，但它不含 000988 最新完整产物，
+> 因此 000988 的异地备份尚未闭环。队列已自动推进 002027；活动
+> run/job 身份只保留在本机巡检证据，核验时在 cu05 RUNNING；批次为
+> `READY=5/TRAINING=1/QUEUED=44`。Web 8765 仍在回环监听，
+> runtime commit 和冻结训练源码 SHA 均未漂移，
+> sealed OOS 未触碰。独立对抗复核 ACCEPT，P0/P1/P2=`0/0/0`。正式证据：
+> `docs/evidence/wo_am04_000988_ready_backup_blocked_20260730.md`。
+> 17:41 只读巡检确认状态未变化：002027 在 cu05 RUNNING，
+> 训练历史 364 条、最新 step key 363、最新完整 checkpoint step 360、
+> best score=1.5041040182，`slurm.err` 为空；活动 run/job/PID 仍只保留
+> 在本机证据；队列、Web、runtime commit、
+> 评分合同和 34 项冻结源码 SHA 均稳定。000988 异地备份仍未闭环，本轮
+> 未重复大备份。巡检证据：
+> `scratch/goal_am_custody/training_patrol_20260730_1741.md`，SHA-256
+> `a00a5f51…e45bc92`。
 > 剩余队列已完成派发前只读预检：50/50 训练文件存在且 SHA 与冻结值一致，
 > ordinal、symbol、planned run ID 全部唯一，资源合同无漂移；剩余 48 个
 > planned run ID 在本机和服务器均无同名运行目录。
