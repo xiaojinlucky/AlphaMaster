@@ -3,30 +3,29 @@
 > **接手入口**：主线唯一现行工单真值 = `docs/WORK_ORDERS_CLAUDE_20260726.md`
 > （架构一页/红线/已完成证据/工单队列 WO-AM-01～08/审查模板/更新纪律）。
 > 任何模型接手先读它；每完成一个重要步骤必须更新该板与本文件顶部。
-> 当前推进位置（2026-07-29 18:27）：000333 / 577313 与
-> 000617 / 581519 均已完成训练、回测、虚拟信号和队列四层验收并进入
-> `READY`。000617 的旧作业 581389 因 cu19 节点重启 `NODE_FAIL` 后，
-> 已按用户授权从 step 2760 checkpoint 恢复到新物理 run
-> `run_20260729T054526Z_1141da4d`；581519 在 cu01 完整运行到 9000 步，
-> `COMPLETED/0:0`，墙钟 04:22:16。首个新 checkpoint step 2780 的
-> 18 字段训练历史前缀与 step 2760 逐项相等，证明不是从 0 重跑。
-> 远端原始结果 315 件/2.001 GB 经固定适配器完整核对后发布 step 9000
-> checkpoint、策略和训练历史 3 件；runtime commit、34 个 source files、
-> 数据 SHA、评分合同和恢复谱系全部一致。训练 best score=1.5200775862；
-> 同训练数据含成本 replay Sharpe=0.9352，不能表述为 sealed OOS 成绩；
-> 虚拟信号当前事件为 HOLD。
-> READY 后增量备份已完成：000617 的 17 个普通持久文件逐文件 SHA 差异 0，
-> 队列和信号 SQLite 在线快照均 integrity=ok、DELETE 模式、WAL/SHM=0。
-> GitHub 发布前复核发现旧备份脚本虽然逐文件原子替换，但 SQLite 主库与
-> WAL/SHM 三件套存在跨文件崩溃窗口。脚本现已改为先构造完整版本目录，
-> 再原子切换 `CURRENT` 指针并保留上一完整版本；仓内合成测试已覆盖旧 WAL
-> 污染、连续两代切换和失败不移动指针。新合同尚未对 3.17 GB 远端资产执行
-> 首次生产迁移，将在下一件 READY 后随正常增量备份实施并独立验收。
-> 队列已自动推进 000725 / run `run_20260723T235959Z_15080906` /
-> Slurm 581904，当前在 cu01 RUNNING；批次为
-> `READY=2/TRAINING=1/QUEUED=47`。冻结训练源码 34 项聚合 SHA-256
+> 当前公开全项目审查入口：
+> `docs/CURRENT_PUBLIC_REVIEW_PROMPT_20260730.md`。
+> 当前推进位置（2026-07-30 15:54）：000333、000617、000725、000792
+> 四件均已完成训练、回测、虚拟信号和队列四层验收并进入 `READY`。
+> 000792 / run `run_20260723T235959Z_1d99b294` / Slurm 582419 在 cu05
+> 完整运行到 9000 步，`COMPLETED/0:0`，墙钟 08:24:18。远端原始
+> 452 件产物经本机固定适配器逐件重验后发布 step 9000 checkpoint、
+> 策略和训练历史 3 件；run/job/runtime commit、34 个 source files、
+> 数据 SHA 和评分合同全部一致，合同验收 25/0；best score=2.0245869160。
+> 同训练数据含成本 replay Sharpe=0.9940，不能表述为 sealed OOS；
+> 虚拟信号动作 BUY，目标仓位约 0.1323，未发送飞书。
+> READY 后只执行一次增量备份：1,288 个文件、3,218.5 MB、221 秒；
+> `CURRENT` 指向
+> `gen-1785374003929226888-1112810-9d40a766076a531c5931cd45`。
+> 当前 generation 共 1,290 个普通文件，无 `.building` 或 `.incoming`
+> 残留；37/37 SQLite 均 integrity=ok、DELETE、WAL/SHM=0。
+> 000792 的 17 个非 SQLite 持久文件逐 SHA 一致，signal SQLite 业务行
+> 一致；备份独立验收 8/0，对抗复审 ACCEPT，P0/P1/P2=`0/0/0`。
+> 队列已自动推进 000988；活动 run/job 身份不进入公开快照，核验时在 cu05
+> RUNNING，训练到 step 7527/9000，best score=1.5741169453；批次为
+> `READY=4/TRAINING=1/QUEUED=45`。冻结训练源码 34 项聚合 SHA-256
 > 仍为 `0e5ca8c3…64ab0`，sealed OOS 未触碰。正式证据：
-> `docs/evidence/wo_am04_000617_node_fail_checkpoint_recovery_20260729.md`。
+> `docs/evidence/wo_am04_000792_ready_backup_20260730.md`。
 > 剩余队列已完成派发前只读预检：50/50 训练文件存在且 SHA 与冻结值一致，
 > ordinal、symbol、planned run ID 全部唯一，资源合同无漂移；剩余 48 个
 > planned run ID 在本机和服务器均无同名运行目录。
@@ -46,9 +45,10 @@
 > 后续备份脚本已把运行中的 SQLite 改为在线快照，并以 0 字节 WAL/SHM
 > 原子中和远端旧日志；发布前复审发现的符号链接删除边界、掉电持久性和
 > 中段失败残留问题已按完整版本合同修复，定向测试 5 通过、0 失败、2 项
-> Windows 平台跳过；最终独立复审接受，P0/P1/P2=`0/0/0`。当前只读演练
-> 通过，尚未执行下一轮 3.17 GB 真实传输；证据：
-> `docs/evidence/wo_am08_live_sqlite_backup_contract_20260729.md`。
+> Windows 平台跳过；最终独立复审接受，P0/P1/P2=`0/0/0`。000725 READY
+> 后首次生产迁移与独立验收已经完成，完整版本合同正式进入生产；设计证据
+> 见 `docs/evidence/wo_am08_live_sqlite_backup_contract_20260729.md`，
+> 生产证据见 `docs/evidence/wo_am04_000725_ready_backup_20260730.md`。
 > GitHub 全量审查候选共 29 个源码、测试、治理和脱敏证据文件；全量 unit
 > 1124 通过、0 失败、2 项 Windows 平台跳过，发布范围与备份合同两路独立
 > 复审均接受，P0/P1/P2=`0/0/0`。冻结 worker、retired WO07A 支线、
@@ -106,7 +106,7 @@
   `docs/evidence/wo_am07a_v4_mainline_accept_20260729.md`。增强支线代码与
   中间证据只保留在本地 scratch，不进入公开主线提交。
 
-## 2026-07-26 RND-04C 动态组合日线 replay 实现（当前）
+## 2026-07-26 RND-04C 动态组合日线 replay 实现（历史阶段，当前结论看文件顶部）
 
 - RND-04C 第三步已实现并定向测试通过：`portfolio_manager/replay.py`
   （DynamicDailyReplay，复用 universe/controller/execution/ledger 四件，
@@ -134,8 +134,8 @@
   →复牌日真实触涨停拒单→次日成交、000800 真实调出强制离场、002384
   真实调入买入；12 对决策/执行、幂等重跑 12/12/12 无重复），产物在
   `local_runs/replay_runs/20260726_rnd04c_engineering_e2e_20251229_20260116/`。
-- 下一步：第四步独立对抗审查（0 blocker 后才可放行 RND-05B 授权询问）；
-  RND-05B 揭示仍未授权、未启动。
+- 当时下一步是第四步独立对抗审查；该阶段后续状态已由文件顶部和总工单
+  取代。RND-05B / sealed OOS 仍须单独揭示授权。
 
 ## 2026-07-26 A1 适应度诚实化 + RND-04A 限域裁决
 
@@ -272,7 +272,8 @@
   `UniverseContract`、组合/执行器和账本只补断点，不从零重建。
 - 历史 GPT-5.6、未来函数和旧实盘方向提示词已统一标成“不得执行”；其中
   的 GitHub MCP、私有仓库、单一最小工单和重复确认规则只作历史证据。
-  当前唯一外部入口是 `docs/WEB_GPT_CONTROLLER_PROMPT.md`；BioMNI 提示词
+  当前全项目外部入口是 `docs/CURRENT_PUBLIC_REVIEW_PROMPT_20260730.md`；
+  `docs/WEB_GPT_CONTROLLER_PROMPT.md` 退役为历史专项；BioMNI 提示词
   已退役为历史证据。
 
 ## 2026-07-24 A50 龙头基线与持续训练
@@ -512,22 +513,23 @@
 - 项目规则：`docs/CODEX_PROJECT_RULES.md`
 - 本机环境与 skills/memory 边界：`docs/LOCAL_EXECUTION_CONTEXT.md`
 - 用户问题、需求、修改意见和完成记录：`docs/REQUIREMENTS_CHANGELOG.md`
-- 当前验证证据：`docs/VALIDATION_EVIDENCE.md`（顶部为 2026-07-25 状态核验，后文保留历史证据）
+- 历史验证汇总：`docs/VALIDATION_EVIDENCE.md`（截至 2026-07-26；当前状态看文件顶部、总工单与正式 evidence）
 - 多标的组合控制：`docs/PORTFOLIO_CONTROLLER_V1.md`
 - 历史 BioMNI 复审指令：`docs/BIOMNI_PORTFOLIO_REVIEW_PROMPT.md`（2026-07-26 退役，不得执行）
 - 历史 GPT-5.6 专项移交：`docs/GPT5_6SOL_HANDOFF.md`（不得作为当前任务指令）
 - 历史实盘方向交接：`docs/LIVE_TRADING_DIRECTION_HANDOFF.md`（已被当前大 A 主线取代）
-- 网页版 GPT 总控指令：`docs/WEB_GPT_CONTROLLER_PROMPT.md`
+- 当前公开全项目审查指令：`docs/CURRENT_PUBLIC_REVIEW_PROMPT_20260730.md`
 - 历史未来函数专项总控指令：`docs/GPT_WEB_PRO_EXTENDED_TASK.md`
 
-## 下一步
+## 当前下一步（2026-07-30）
 
-- （2026-07-26 更新）“等待 strict PIT 历史执行状态”已被同日独立裁决取代：
-  完整 04A 维持 BLOCKED，仅放行严格限域 execution-state overlay 子集，
-  `RND-04C` 已据此实现并定向测试通过（见顶部当前段）。
-- `RND-04C` 尚需第四步独立对抗审查 0 blocker；之后才可发起 `RND-05B`
-  的授权询问。揭示需用户另行明确授权，在此之前 sealed OOS 保持未揭示。
-- node13 隔离目录的删除需单独确认；未获确认前保留。继续禁止写生产
-  SQLite、恢复或覆盖事故源、恢复 Web/队列、正式训练或揭示。
+- 持续监护 WO-AM-04 的 50 只串行训练批次；每出现一件 READY，按训练产物
+  合同完成训练、回测、信号和队列四层验收，再只新增一次增量备份并独立
+  核验持久资产与 SQLite 在线快照。
+- 批次完成前保持 34 个训练文件冻结，不停止或重提作业，不触碰 sealed OOS
+  或旧数据。RND-04C 已有实现与测试，后续审查和接线不能干扰现役训练。
+- WO-AM-05 / RND-05B 的 sealed OOS 揭示仍需单独授权；只有总工单列出的
+  前置项全部满足后才向用户询问。
+- node13 历史隔离目录的删除仍需单独确认；未获确认前保留。
 
 2026-07-22：`web/slurm_training_client.py` 的远端命令选择器已改用 PowerShell 7 (`pwsh.exe`)，相应单元测试会断言真实选中的可执行文件名；定向测试 `13/0`。这只影响本机发起 Slurm 远端命令的宿主，不改变登录节点、计算节点或 Slurm 调度边界。

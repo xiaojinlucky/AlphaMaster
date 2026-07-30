@@ -8,9 +8,9 @@
 
 目标发布仓库：[github.com/xiaojinlucky/AlphaMaster](https://github.com/xiaojinlucky/AlphaMaster)；原作者仓库保留为只读 `upstream`：[rosemarycox5334-debug/AlphaMaster](https://github.com/rosemarycox5334-debug/AlphaMaster)。用户已明确要求目标仓库始终保持公开，以便网页版 GPT 直接读取已提交源码和证据；不得再把改为私有作为发布前提。公开不放宽安全边界：`.env`、真实配置、密钥、原始数据、数据库、模型、checkpoint、训练历史、原始日志和机器可消费的运行态文件始终不上传；只允许提交脱敏、带时间戳且不能作为控制输入的摘要证据。当前 goal 内的提交与推送已有持续授权，但每次仍须精确暂存并通过 staged 安全检查。
 
-现役数据身份、Slurm 批次、checkpoint、回测、虚拟信号和封存评估边界以 [`CONTEXT.md`](CONTEXT.md) 与 [`docs/VALIDATION_EVIDENCE.md`](docs/VALIDATION_EVIDENCE.md) 为准；历史提交不能替代当前运行证据。外部模型还必须读取 [`docs/LOCAL_EXECUTION_CONTEXT.md`](docs/LOCAL_EXECUTION_CONTEXT.md)：它只能提供方向和反方意见，本机 Codex 才能按真实 Skills、数据、代码和运行态重写并执行工单。
+现役数据身份、Slurm 批次、checkpoint、回测、虚拟信号和封存评估边界以 [`CONTEXT.md`](CONTEXT.md)、[`docs/WORK_ORDERS_CLAUDE_20260726.md`](docs/WORK_ORDERS_CLAUDE_20260726.md) 与当前 [`docs/evidence/`](docs/evidence/) 正式证据为准；历史提交不能替代当前运行证据。[`docs/VALIDATION_EVIDENCE.md`](docs/VALIDATION_EVIDENCE.md) 和 [`docs/LOCAL_EXECUTION_CONTEXT.md`](docs/LOCAL_EXECUTION_CONTEXT.md) 均已明确标为历史快照，只用于背景理解。
 
-当前唯一外部审核入口是 [`docs/WEB_GPT_CONTROLLER_PROMPT.md`](docs/WEB_GPT_CONTROLLER_PROMPT.md)：网页版 GPT 审核公开提交并给出方向和工单，本机 Codex 再按真实 Skills、memory、代码、数据和运行态本地化。BioMNI 不再参与当前 goal；其旧提示词只保留为历史证据。当前主线是普通大 A 账户的只做多信号：Windows 本机负责数据、控制、回测和信号展示；所有模型训练固定提交到 Linux Slurm 服务器。
+当前全项目外部审核入口是 [`docs/CURRENT_PUBLIC_REVIEW_PROMPT_20260730.md`](docs/CURRENT_PUBLIC_REVIEW_PROMPT_20260730.md)：审查者绑定公开 `main` 的精确 SHA，覆盖当前源码、测试、主线证据和剩余工单，并给出推进方向。旧 [`docs/WEB_GPT_CONTROLLER_PROMPT.md`](docs/WEB_GPT_CONTROLLER_PROMPT.md) 只保留早期 FreeStockDB 专项审查记录。BioMNI 不再参与当前 goal。当前主线是普通大 A 账户的只做多信号：Windows 本机负责数据、控制、回测和信号展示；所有模型训练固定提交到 Linux Slurm 服务器。
 
 当前 50 只中证 A50 仅作为龙头基线池，用于先跑通批量训练、回测和虚拟信号；它不等于“近一年轮动表现最强 50 只”。官方依据、成熟轮动框架候选、夏普门槛和未完成调研见 [`docs/A50_ROTATION_RESEARCH_EVIDENCE.md`](docs/A50_ROTATION_RESEARCH_EVIDENCE.md)。
 

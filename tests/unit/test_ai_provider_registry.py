@@ -23,6 +23,7 @@ def test_shared_env_utf8_bom_does_not_hide_first_key(
     env_path = tmp_path / "env"
     env_path.write_text("\ufeffDEEPSEEK_API_KEY=secret\n", encoding="utf-8")
     monkeypatch.setattr("web.ai_providers.SHARED_ENV_PATH", env_path)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
 
     values = _provider_environment()
 

@@ -72,7 +72,7 @@
 - **步骤**：把 C\* 同步进服务器本地镜像 `…/Quant/AlphaMaster`（runtime-v2 的 origin）或改从 GitHub 拉取（二选一，倾向镜像路径少动配置）→ runtime-v2 `fetch + checkout C*` → 工作树干净核验 → 三件到位抽查：`model_core/target_contract.py`（含 open_t1_t2_same_index_tail2_v1）、`data_pipeline/dataset_purpose.py`、`universes/csi_a50_20260723_sealed_20250724.json`。
 - **验收（二元）**：远端 `git rev-parse HEAD`==C\*；`git status` 干净；三件抽查存在且哈希与本地一致。
 
-### WO-AM-04 干净训练发射（50 只 A50 新批次） 【状态：ACTIVE——000333/000617 READY；000725 训练中】
+### WO-AM-04 干净训练发射（50 只 A50 新批次） 【状态：ACTIVE——000333/000617/000725/000792 READY；000988 训练中】
 
 - **数据就绪（侦察已证）**：切分合同 `universes/csi_a50_20260723_sealed_20250724.json`（`ec5a9549…`）；训练切片 50 parquet+manifest 在 `local_data/a_share_akshare_sina_hfq/20260723_train_pre_20250724/`；sealed 切片物理隔离；数据无需重切。A50 批与 v3/741 无依赖（不同数据源族）。
 - **发射参数**：`--train-steps 9000 --time-limit 10:00:00`（默认 200 步/30 分钟是跑通档，禁止用于正式）；12 CPU/32G 沿用。
@@ -130,6 +130,32 @@
   队列与信号 SQLite 在线快照均 integrity=ok、DELETE 模式、WAL/SHM=0。
   队列已自动推进 000725 / 581904，当前
   `READY=2/TRAINING=1/QUEUED=47`。
+- **2026-07-30 01:44 000725 全链闭环**：581904 在 cu01
+  `COMPLETED/0:0`，墙钟 06:15:01，完整训练到 9000 步。远端原始结果
+  452 件经固定适配器逐件核验后归一化为 step 9000 checkpoint、策略、
+  训练历史 3 件；run/job/runtime commit/34 源文件/数据/scoring contract
+  全对，本机合同验收 25/0（含远端原始 452 件逐件复验）。训练、含成本
+  replay、虚拟信号和队列四层
+  READY；replay Sharpe=1.2393 仍是同训练数据成绩，不是 sealed OOS。
+  READY 后首次完整版本生产迁移完成：1,268 文件/3,202.5 MB/201 秒，
+  `CURRENT` 原子指向首个 generation。36/36 SQLite 快照
+  integrity=ok、DELETE、WAL/SHM=0；000725 的 17 个非 SQLite 持久文件
+  逐 SHA 一致，signal SQLite 业务行一致；独立验收 8/0、对抗复审
+  ACCEPT，P0/P1/P2=`0/0/0`。队列已自动推进 000792 / 582419，当前
+  `READY=3/TRAINING=1/QUEUED=46`。
+- **2026-07-30 09:15 000792 全链闭环**：582419 在 cu05
+  `COMPLETED/0:0`，墙钟 08:24:18，完整训练到 9000 步。远端原始结果
+  452 件经本机固定适配器逐件核验后归一化为 step 9000 checkpoint、
+  策略、训练历史 3 件；run/job/runtime commit/34 源文件/数据/scoring
+  contract 全对，合同验收 25/0。训练、含成本 replay、虚拟信号和队列
+  四层 READY；replay Sharpe=0.9940 是同训练数据成绩，不是 sealed OOS。
+  READY 后只执行一次增量备份：1,288 文件/3,218.5 MB/221 秒；
+  `CURRENT` 原子切换到第二个 generation。37/37 SQLite 快照
+  integrity=ok、DELETE、WAL/SHM=0；000792 的 17 个非 SQLite 持久文件
+  逐 SHA 一致，signal SQLite 业务行一致；独立验收 8/0、对抗复审
+  ACCEPT，P0/P1/P2=`0/0/0`。队列已自动推进 000988；活动 job 身份不进入
+  公开快照，当前
+  `READY=4/TRAINING=1/QUEUED=45`。
 
 ### WO-AM-05 sealed OOS 揭盲授权门 【状态：远期；三前置缺一不可】
 
@@ -169,7 +195,7 @@
 
 ### WO-AM-08 质量配套（路线图 A1/A4 持续项） 【状态：备份子项已上线，其余排队】
 
-- **checkpoint 异地备份 ✅ 已上线（2026-07-27；完整版本原子切换合同于 2026-07-29 修复）**：`scripts/backup_am_assets.py`。大文件按当前版本的同路径同字节数增量跳过，小文件/账本每次重传；运行中的 SQLite 使用在线一致性快照并生成 0 字节 WAL/SHM。全部文件先进入唯一 staging，随后以上一完整版本的硬链接副本为基底构造新版本；新版本闭合后才原子替换 `CURRENT` 指针，上一完整版本始终保留，避免主库与 sidecar 跨文件崩溃窗口。符号链接删除边界、掉电持久性、中段失败残留和 `CURRENT` 提交边界均已通过故障注入与独立复审，P0/P1/P2=`0/0/0`。目标 `compute-node-11:/hwdata/home/jinqc/AlphaMaster-backup/`。尚待下一件 READY 后执行首次生产迁移与独立验收；当前由本任务 30 分钟心跳监护。
+- **checkpoint 异地备份 ✅ 已上线（2026-07-27；完整版本原子切换合同于 2026-07-29 修复；首次生产迁移于 2026-07-30 通过）**：`scripts/backup_am_assets.py`。大文件按当前版本的同路径同字节数增量跳过，小文件/账本每次重传；运行中的 SQLite 使用在线一致性快照并生成 0 字节 WAL/SHM。全部文件先进入唯一 staging，随后以上一完整版本的硬链接副本为基底构造新版本；新版本闭合后才原子替换 `CURRENT` 指针，上一完整版本始终保留，避免主库与 sidecar 跨文件崩溃窗口。符号链接删除边界、掉电持久性、中段失败残留和 `CURRENT` 提交边界均已通过故障注入与独立复审。000725 READY 后的首次生产迁移为 1,268 文件/3,202.5 MB、generation 1,270 文件、36 个 SQLite；000792 READY 后已推进到第二代 generation 1,290 文件、37 个 SQLite。两次均 `.incoming/.building` 为空，独立验收与对抗复审通过，P0/P1/P2=`0/0/0`。目标 `compute-node-11:/hwdata/home/jinqc/AlphaMaster-backup/`；继续由本任务 30 分钟心跳逐件监护。
 - 其余排队（BRAIN 五闸门/AlphaEval/skfolio/MLflow）：**注意批次源码冻结（第 2 节第 0 条）**——skfolio 换 CV 属 model_core 改动、BRAIN/AlphaEval 若接入现有 evaluation 流水线也受"后处理冻结"约束；批次期间只允许做"新增独立模块+独立测试"的准备工作，接线一律等批次完成或明确接受批次挂起再做。动手前先读官方文档确认函数与参数。
 
 ## 5. 对抗审查方案模板（所有复杂工单完成后适用）
@@ -273,6 +299,10 @@
 | 07-29 13:27 | /goal 接手总控+独立审查 | 冻结集合外的一次性 NODE_FAIL 恢复控制面完成：逻辑/物理 run 分离、一次性恢复事务、父谱系、远端真实 NODE_FAIL 复核、同句柄 checkpoint 哈希+语义验收、每次 SUBMITTING 幂等重验后才 sbatch。固定测试 146/0；独立审查 ACCEPT，P0/P1/P2=0/0/1；importer actual/pin=`c69f00e9…d3224`，34 冻结源码仍 `0e5ca8c3…64ab0`。未迁移生产 DB、未重启 Web、未导入/提交恢复作业 | `docs/evidence/wo_am04_000617_node_fail_checkpoint_recovery_20260729.md` |
 | 07-29 13:32 | /goal 接手总控 | 对生产 SQLite 在线一致性副本完成恢复同构演练：迁移后旧 50 行与 batch 逐列不变，execution backfill=50/50、attempt=0=50/50、唯一索引存在；恢复事务后 immutable digest 仍 `4bc08daf…2735`，其余 49 项旧列精确不变，状态成为 READY=1/DISPATCHING=1/QUEUED=48、batch=ACTIVE，000617 父谱系及 step 2760 字节身份全对，integrity=ok。随后反查生产库仍是旧 schema、READY=1/NEEDS_ATTENTION=1/QUEUED=48、完整行摘要 `c4f63cab…2cd8`；演练 run 不在生产，Web PID 68008 未变 | `scratch/goal_am_custody/node_fail_recovery_rehearsal_20260729T0530Z/`；同一正式证据 |
 | 07-29 13:42 | /goal 接手总控+独立审查 | 生产只读实探发现 frozen status 路径被终态 job 的 `squeue Invalid job id` 阻断，但 compute-node-11/12/13 的 `sacct` 均唯一返回 581389=`NODE_FAIL/0:0`。导入器改用固定 argv `sacct` 主行验签，并与冻结 binding、owner、job name、base state 交叉核对；duplicate/仅 step/wrong owner/wrong name/12 字段全部失败关闭。最终指定测试 152/0，独立审查 ACCEPT、P0/P1/P2=0/0/0；importer actual/pin=`de851b77…0e06`，34 冻结源码不变。全程只读 Slurm，未创建 run/job | `docs/evidence/wo_am04_000617_node_fail_checkpoint_recovery_20260729.md` |
+| 07-30 01:44 | /goal 接手总控+独立审查 | 000725/581904 完成 9000 步并通过训练、回测、信号、队列四层 READY；远端 452 件经固定适配器归一化为 3 件，run/job/runtime/34 源文件/scoring 全对，合同验收 25/0（含远端原始 452 件逐件复验）。首次完整版本生产迁移完成：1,268 文件/3,202.5 MB/201 秒，当前 generation 1,270 文件；36/36 SQLite integrity=ok、DELETE、WAL/SHM=0，17 个普通持久文件逐 SHA 一致，signal SQLite 逻辑行一致，备份验收 8/0、对抗复审 ACCEPT、P0/P1/P2=0/0/0。队列推进为 READY=3/TRAINING=1/QUEUED=46，000792/582419 在 cu05 RUNNING | `docs/evidence/wo_am04_000725_ready_backup_20260730.md` |
+| 07-30 01:54～08:38 | /goal 接手总控 | 000792 连续 12 次只读巡检从 step 1389 推进至 8628/9000，best score 由 1.983448 提高到 2.024587；队列始终 READY=3/TRAINING=1/QUEUED=46、NEEDS_ATTENTION=0，SQLite integrity=ok，Web 回环监听、runtime commit、scoring contract 与冻结源码 SHA 均不变。无新 READY、失败或源码漂移，未重复备份、未干预作业；活动 PID 不进入公开快照，逐次证据只保留在本机 scratch | 本机 `scratch/goal_am_custody/training_patrol_20260730_*.md` |
+| 07-30 09:15 | /goal 接手总控+独立审查 | 000792/582419 完成 9000 步并通过训练、回测、信号、队列四层 READY；远端 452 件经固定适配器归一化为 3 件，run/job/runtime/34 源文件/scoring 全对，合同验收 25/0。增量备份同步 1,288 文件/3,218.5 MB/221 秒，新 generation 1,290 文件；37/37 SQLite integrity=ok、DELETE、WAL/SHM=0，17 个普通持久文件逐 SHA 一致，signal SQLite 逻辑行一致，备份验收 8/0；对抗复审 ACCEPT、P0/P1/P2=0/0/0。队列推进为 READY=4/TRAINING=1/QUEUED=45，000988 在 cu05 RUNNING；活动 run/job 身份不进入公开快照 | `docs/evidence/wo_am04_000792_ready_backup_20260730.md` SHA-256 `55aeba85…628202c6` |
+| 07-30 09:38～15:54 | /goal 接手总控 | 000988 连续 12 次只读巡检从 step 633 推进至 7527/9000，best score 1.574117；队列始终 READY=4/TRAINING=1/QUEUED=45、NEEDS_ATTENTION=0，SQLite integrity=ok，Web 回环监听、runtime commit、scoring contract 与冻结源码 SHA 均不变。无新 READY、失败或源码漂移，未重复备份、未干预作业；活动 run/job/PID 不进入公开快照，逐次证据只保留在本机 scratch | 本机 `scratch/goal_am_custody/training_patrol_20260730_*.md` |
 
 ## 8. 用户侧待办（只有用户本人能做）
 

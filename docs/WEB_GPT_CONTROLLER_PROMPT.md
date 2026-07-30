@@ -1,5 +1,10 @@
 # 网页版 GPT 方向审查与工单启动指令
 
+> **历史专项入口，当前不要再执行下文。**
+> 当前全项目审查请使用
+> [`CURRENT_PUBLIC_REVIEW_PROMPT_20260730.md`](CURRENT_PUBLIC_REVIEW_PROMPT_20260730.md)。
+> 下文固定在早期 `b3bbefef…` FreeStockDB 专项，只用于追溯当时裁决。
+
 将下面整段内容复制给网页版 GPT。它负责方向、架构、依赖和对抗审查；
 本机 Codex 负责把结论映射到真实环境，并在已有授权范围内执行。两者不能
 互相冒充。
